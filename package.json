@@ -1,0 +1,43 @@
+{
+	"name": "lint-kit",
+	"version": "0.1.0",
+	"description": "Lint rules for Svelte 5 / SvelteKit, i18n, Tailwind / shadcn and FastAPI, with an init command that installs the sets a project picks.",
+	"license": "MIT",
+	"type": "module",
+	"repository": "github:shayshahal/lint-kit",
+	"bin": {
+		"lint-kit": "bin/lint-kit.js"
+	},
+	"exports": {
+		"./svelte-skills": "./src/svelte-skills.js",
+		"./untranslated-text": "./src/untranslated-text.js",
+		"./tailwind-patterns": "./src/tailwind-patterns.js",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"src",
+		"bin",
+		"README.md"
+	],
+	"engines": {
+		"node": ">=20"
+	},
+	"scripts": {
+		"test": "node --test \"test/*.test.js\""
+	},
+	"peerDependencies": {
+		"eslint": ">=9"
+	},
+	"dependencies": {
+		"yaml": "^2.9.1"
+	},
+	"devDependencies": {
+		"@typescript-eslint/parser": "^8.71.0",
+		"eslint": "^10.11.0",
+		"eslint-plugin-svelte": "^3.23.0",
+		"svelte": "^5.57.1",
+		"svelte-eslint-parser": "^1.8.1",
+		"typescript": "^5.9.3"
+	},
+	"packageManager": "pnpm@11.3.0"
+}

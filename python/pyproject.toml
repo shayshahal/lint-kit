@@ -1,0 +1,32 @@
+[project]
+name = "lint-kit-fastapi"
+version = "0.1.0"
+description = "FastAPI rules ruff does not have, as a flake8 plugin (FAP001-017)."
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["flake8>=7", "fastapi>=0.100"]
+
+[project.entry-points."flake8.extension"]
+FAP = "lint_kit_fastapi:Plugin"
+
+[project.scripts]
+lint-kit-fastapi = "lint_kit_fastapi.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]
+testpaths = ["tests"]

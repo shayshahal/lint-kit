@@ -1,0 +1,28 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - uses: astral-sh/setup-uv@v6
+      - run: pnpm install --frozen-lockfile
+      # before the JS tests: init.test.js runs the real flake8 from python/.venv
+      - run: uv sync --frozen
+        working-directory: python
+      - run: uv run ruff check . && uv run ruff format --check .
+        working-directory: python
+      - run: uv run pytest -q
+        working-directory: python
+      - run: pnpm test
