@@ -85,9 +85,15 @@ function packageManager(cwd) {
 	}
 }
 
+/** On Windows npm / pnpm are .cmd files, which only run through a shell; quote what it would split. */
+export function shellArgs(args, shell = process.platform === 'win32') {
+	return shell ? args.map((arg) => (/[s&|<>^"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg)) : args;
+}
+
 function run(cmd, cmdArgs, cwd) {
-	say(`$ ${cmd} ${cmdArgs.join(' ')}`);
-	execFileSync(cmd, cmdArgs, { cwd, stdio: 'inherit', shell: process.platform === 'win32' });
+	const shell = process.platform === 'win32';
+	say(`$ ${cmd} ${shellArgs(cmdArgs, true).join(' ')}`);
+	execFileSync(cmd, shellArgs(cmdArgs, shell), { cwd, stdio: 'inherit', shell });
 }
 
 // ── ESLint ──────────────────────────────────────────────────────────────────────

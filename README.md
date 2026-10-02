@@ -33,8 +33,8 @@ in a monorepo.
 By hand:
 
 ```sh
-pnpm add -D github:shayshahal/lint-kit#v0.1.0
-uv add --dev "lint-kit-fastapi @ git+https://github.com/shayshahal/lint-kit@v0.1.0#subdirectory=python"
+pnpm add -D github:shayshahal/lint-kit#v0.1.1
+uv add --dev "lint-kit-fastapi @ git+https://github.com/shayshahal/lint-kit@v0.1.1#subdirectory=python"
 ```
 
 ## ESLint sets

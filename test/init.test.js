@@ -6,7 +6,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import { parse } from 'yaml';
-import { main, patchEslintConfig } from '../bin/lint-kit.js';
+import { main, patchEslintConfig, shellArgs } from '../bin/lint-kit.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Inside the repo, so the generated configs resolve eslint and its plugins from its node_modules.
@@ -127,4 +127,10 @@ test('a FastAPI backend in a subfolder: settings, .flake8, lefthook steps, and f
 	};
 	assert.match(out('flake8', ['api']), /FAP001 `time\.sleep\(\)` blocks the event loop/);
 	assert.match(out('lint-kit-fastapi', ['check-deps']), /classify weasyprint/);
+});
+
+test('arguments with spaces survive the Windows shell', () => {
+	const spec = 'lint-kit-fastapi @ git+https://github.com/x/y@v1#subdirectory=python';
+	assert.deepEqual(shellArgs(['add', '--dev', spec], true), ['add', '--dev', `"${spec}"`]);
+	assert.deepEqual(shellArgs(['add', spec], false), ['add', spec]);
 });
