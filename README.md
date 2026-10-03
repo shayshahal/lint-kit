@@ -11,6 +11,9 @@ instead.
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 
+Each ESLint rule links to its section in [`docs/`](docs) (editors show the link with the
+message); the FAP rules are listed in the module docstring (below).
+
 ## Install
 
 ```sh

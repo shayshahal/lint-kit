@@ -83,7 +83,10 @@ export const toDvh = (text) =>
 const viewportVh = {
 	meta: {
 		type: 'problem',
-		docs: { description: 'h-screen / [90vh] where dvh follows the mobile browser bar.' },
+		docs: {
+			description: 'h-screen / [90vh] where dvh follows the mobile browser bar.',
+			url: 'https://github.com/shayshahal/lint-kit/blob/main/docs/tailwind-patterns.md#viewport-vh',
+		},
 		fixable: 'code',
 		schema: [{ type: 'object', properties: { message: { type: 'string' } }, additionalProperties: false }],
 	},

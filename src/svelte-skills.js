@@ -698,6 +698,9 @@ function classExpression(sourceCode, attribute) {
 	return '`' + template + '`';
 }
 
+for (const [name, rule] of Object.entries(rules))
+	rule.meta.docs.url = `https://github.com/shayshahal/lint-kit/blob/main/docs/svelte-skills.md#${name}`;
+
 export const plugin = { meta: { name: 'svelte-skills' }, rules };
 
 export default { plugin, rules, config };

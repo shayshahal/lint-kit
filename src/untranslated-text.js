@@ -58,7 +58,10 @@ const CODE_MESSAGE =
 export const rule = {
 	meta: {
 		type: 'problem',
-		docs: { description: 'Text the user reads must come from the message catalogue.' },
+		docs: {
+			description: 'Text the user reads must come from the message catalogue.',
+			url: 'https://github.com/shayshahal/lint-kit/blob/main/docs/untranslated-text.md#no-untranslated-text',
+		},
 		schema: [
 			{
 				type: 'object',
