@@ -1,6 +1,6 @@
 [project]
 name = "lint-kit-fastapi"
-version = "0.1.2"
+version = "0.2.0"
 description = "FastAPI rules ruff does not have, as a flake8 plugin (FAP001-017)."
 license = "MIT"
 readme = "README.md"

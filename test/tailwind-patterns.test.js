@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { classRule, config } from '../src/tailwind-patterns.js';
-import { lint } from './helpers.js';
+import { classRule, config, plugin, toDvh } from '../src/tailwind-patterns.js';
+import { lint, svelteTester, tsTester } from './helpers.js';
 
 const PAGE = 'src/routes/+page.svelte';
 const UI = 'src/lib/components/ui/button/button.svelte';
@@ -26,6 +26,43 @@ test('vh: h-screen and [..vh] fail, dvh / svh pass', () => {
 	assert.equal(count('<div class="max-h-[90vh]"></div>', PAGE), 1);
 	assert.equal(count('<div class="max-h-[calc(100vh-2rem)]"></div>', UI), 1);
 	assert.equal(count('<div class="h-dvh max-h-[90dvh] min-h-svh"></div>', PAGE), 0);
+});
+
+test('vh: --fix swaps in dvh and leaves the rest of the class alone', () => {
+	assert.equal(toDvh('"md:min-h-screen h-screen! p-2 max-h-[90vh]"'), '"md:min-h-dvh h-dvh! p-2 max-h-[90dvh]"');
+	assert.equal(toDvh('[calc(100vh-10vh)]'), '[calc(100dvh-10dvh)]');
+	assert.equal(toDvh('`a ${b} h-screen`'), '`a ${b} h-dvh`');
+	assert.equal(toDvh('"w-screen h-screen-ish 90vh"'), '"w-screen h-screen-ish 90vh"');
+});
+
+svelteTester.run('viewport-vh (svelte)', plugin.rules['viewport-vh'], {
+	valid: [{ code: '<div class="h-dvh min-h-svh max-h-[90dvh]"></div>', filename: PAGE }],
+	invalid: [
+		{
+			code: '<div class="p-2 min-h-screen"></div>',
+			filename: PAGE,
+			errors: [{ message: /dvh/ }],
+			output: '<div class="p-2 min-h-dvh"></div>',
+		},
+		{
+			code: '<div class={cn(\'max-h-[90vh]\', x)}></div>',
+			filename: PAGE,
+			errors: 1,
+			output: '<div class={cn(\'max-h-[90dvh]\', x)}></div>',
+		},
+	],
+});
+
+tsTester.run('viewport-vh (ts)', plugin.rules['viewport-vh'], {
+	valid: ["const c = 'h-dvh';"],
+	invalid: [
+		{
+			code: 'const c = `sm:h-screen ${x}`;',
+			errors: [{ message: 'custom' }],
+			options: [{ message: 'custom' }],
+			output: 'const c = `sm:h-dvh ${x}`;',
+		},
+	],
 });
 
 test('dark: colour overrides fail outside ui/ only; sizes after dark: pass', () => {

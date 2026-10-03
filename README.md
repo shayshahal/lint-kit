@@ -11,6 +11,9 @@ instead.
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 
+Each ESLint rule links to its section in [`docs/`](docs) (editors show the link with the
+message); the FAP rules are listed in the module docstring (below).
+
 ## Install
 
 ```sh
@@ -20,11 +23,14 @@ npx github:shayshahal/lint-kit init
 It asks which sets you want (defaults come from your dependencies), installs them from git with
 your package manager (and `uv` for the Python plugin), and writes the config:
 
-- **ESLint sets:** `eslint.lint-kit.js` holds lint-kit's entries; `eslint.config.js` spreads it
-  last. Without an ESLint config, you get one with the Svelte / TypeScript parser setup. Re-run
-  `init` to add or remove sets.
+- **ESLint sets:** `eslint.lint-kit.js` holds lint-kit's entries; your ESLint config
+  (`eslint.config.js`, or `.mjs` / `.cjs` / `.ts` / `.mts` / `.cts`) spreads it last. Without
+  one, you get an `eslint.config.js` with the Svelte / TypeScript parser setup.
 - **fastapi:** `[tool.lint-kit-fastapi]` in `pyproject.toml`, `FAP` in `.flake8`, and two
   pre-commit steps in `lefthook.yml` when the repository has one.
+
+Re-run `init` to add or remove sets. Sets it installed before default to yes; turning fastapi off
+removes the dev dependency, the settings table, the FAP selection and the lefthook steps.
 
 Options: `--sets svelte-skills,fastapi` and `--yes` skip the questions, `--no-install` writes
 config only, `--ref <tag or sha>` pins another version, `--python <dir>` points at the backend
@@ -33,8 +39,8 @@ in a monorepo.
 By hand:
 
 ```sh
-pnpm add -D github:shayshahal/lint-kit#v0.1.2
-uv add --dev "lint-kit-fastapi @ git+https://github.com/shayshahal/lint-kit@v0.1.2#subdirectory=python"
+pnpm add -D github:shayshahal/lint-kit#v0.2.0
+uv add --dev "lint-kit-fastapi @ git+https://github.com/shayshahal/lint-kit@v0.2.0#subdirectory=python"
 ```
 
 ## ESLint sets
@@ -71,7 +77,12 @@ export default [
 
 `svelteSkills.config()` also turns on three eslint-plugin-svelte rules: `valid-compile` with
 warnings, `require-each-key` and `prefer-style-directive`. The plugins are exported too
-(`svelteSkills.plugin`, `untranslatedText.plugin`) for wiring rules one by one.
+(`svelteSkills.plugin`, `untranslatedText.plugin`, `tailwindPatterns.plugin`) for wiring rules
+one by one.
+
+`eslint --fix` rewrites what has one right answer: `class:` directives into the class attribute,
+`{@const}` into `$derived`, `throw error()` into `error()`, `$derived(() => …)` into
+`$derived.by`, and `h-screen` / `[90vh]` into `h-dvh` / `[90dvh]`.
 
 ## fastapi
 
@@ -104,3 +115,8 @@ pnpm install && (cd python && uv sync)
 pnpm test                      # RuleTester for every ESLint rule, and init end to end
 (cd python && uv run pytest)   # every FAP rule
 ```
+
+To release, bump the version in `package.json`, `python/pyproject.toml`, the `Plugin` class in
+`python/src/lint_kit_fastapi/__init__.py`, `python/uv.lock` and the install commands above
+(`test/version.test.js` fails until they agree). Once CI passes on `main`, the Release workflow
+tags `v<version>` and publishes a GitHub release.

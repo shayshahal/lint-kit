@@ -1,6 +1,6 @@
 {
 	"name": "lint-kit",
-	"version": "0.1.2",
+	"version": "0.2.0",
 	"description": "Lint rules for Svelte 5 / SvelteKit, i18n, Tailwind / shadcn and FastAPI, with an init command that installs the sets a project picks.",
 	"license": "MIT",
 	"type": "module",
