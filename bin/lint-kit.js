@@ -85,9 +85,12 @@ function packageManager(cwd) {
 	}
 }
 
-/** On Windows npm / pnpm are .cmd files, which only run through a shell; quote what it would split. */
+/**
+ * On Windows npm / pnpm are .cmd files, which only run through a shell; quote what it would split.
+ * A quote inside is doubled: cmd stays inside the quotes, and the program reads "" as one ".
+ */
 export function shellArgs(args, shell = process.platform === 'win32') {
-	return shell ? args.map((arg) => (/[s&|<>^"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg)) : args;
+	return shell ? args.map((arg) => (/[\s&|<>^"]/.test(arg) ? `"${arg.replace(/"/g, '""')}"` : arg)) : args;
 }
 
 function run(cmd, cmdArgs, cwd) {
