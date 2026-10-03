@@ -79,6 +79,33 @@ test('an existing config keeps its entries, spreads lint-kit last, and a re-run 
 	assert.equal(patchEslintConfig(config).match(/lintKit/g).length, 2);
 });
 
+test('a CommonJS config is patched in place and ESLint loads lint-kit through it', async () => {
+	const dir = project('svelte-cjs', {
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
+		'eslint.config.cjs': `const svelte = require('eslint-plugin-svelte');\nconst tsParser = require('@typescript-eslint/parser');\n\nmodule.exports = [\n\t...(svelte.default ?? svelte).configs.recommended,\n\t{ files: ['**/*.ts'], languageOptions: { parser: tsParser } },\n\t{ rules: { 'no-var': 'error' } },\n];\n`,
+		'src/lib/x.ts': "var a = 1;\nimport { page } from '$app/stores';\n",
+	});
+	await quiet(['init', '--sets', 'svelte-skills', '--no-install', '--cwd', dir]);
+	assert.equal(fs.existsSync(path.join(dir, 'eslint.config.js')), false);
+	assert.deepEqual(await ruleIds(dir, 'src/lib/x.ts'), ['no-var', 'svelte-skills/no-legacy-syntax']);
+	const once = fs.readFileSync(path.join(dir, 'eslint.config.cjs'), 'utf8');
+	await quiet(['init', '--sets', 'svelte-skills', '--no-install', '--cwd', dir]);
+	assert.equal(fs.readFileSync(path.join(dir, 'eslint.config.cjs'), 'utf8'), once);
+});
+
+test('a TypeScript config is patched in place, not shadowed by a new eslint.config.js', async () => {
+	const dir = project('svelte-ts', {
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
+		'eslint.config.ts': "import { defineConfig } from 'eslint/config';\n\nexport default defineConfig([{ rules: { 'no-var': 'error' } }]);\n",
+	});
+	await quiet(['init', '--sets', 'svelte-skills', '--no-install', '--cwd', dir]);
+	assert.equal(fs.existsSync(path.join(dir, 'eslint.config.js')), false);
+	assert.equal(
+		fs.readFileSync(path.join(dir, 'eslint.config.ts'), 'utf8'),
+		"import lintKit from './eslint.lint-kit.js';\nimport { defineConfig } from 'eslint/config';\n\nconst config = defineConfig([{ rules: { 'no-var': 'error' } }]);\n\nexport default [...[config].flat(), ...lintKit];\n",
+	);
+});
+
 test('a FastAPI backend in a subfolder: settings, .flake8, lefthook steps, and flake8 finds FAP', async () => {
 	const dir = project('repo', {
 		'.git/HEAD': 'ref: refs/heads/main\n',

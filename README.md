@@ -20,9 +20,10 @@ npx github:shayshahal/lint-kit init
 It asks which sets you want (defaults come from your dependencies), installs them from git with
 your package manager (and `uv` for the Python plugin), and writes the config:
 
-- **ESLint sets:** `eslint.lint-kit.js` holds lint-kit's entries; `eslint.config.js` spreads it
-  last. Without an ESLint config, you get one with the Svelte / TypeScript parser setup. Re-run
-  `init` to add or remove sets.
+- **ESLint sets:** `eslint.lint-kit.js` holds lint-kit's entries; your ESLint config
+  (`eslint.config.js`, or `.mjs` / `.cjs` / `.ts` / `.mts` / `.cts`) spreads it last. Without
+  one, you get an `eslint.config.js` with the Svelte / TypeScript parser setup. Re-run `init` to
+  add or remove sets.
 - **fastapi:** `[tool.lint-kit-fastapi]` in `pyproject.toml`, `FAP` in `.flake8`, and two
   pre-commit steps in `lefthook.yml` when the repository has one.
 

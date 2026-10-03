@@ -6,7 +6,7 @@
  *                                        [--yes] [--no-install] [--ref <git ref>] [--python <dir>]
  *
  * ESLint sets: eslint.lint-kit.js holds lint-kit's entries and is rewritten on every run (so a
- * re-run adds or removes sets); eslint.config.js imports it once. A project without an ESLint
+ * re-run adds or removes sets); eslint.config.* imports it once. A project without an ESLint
  * config gets one with the Svelte / TypeScript parser setup.
  * fastapi: [tool.lint-kit-fastapi] in pyproject.toml, FAP in .flake8, and lefthook steps when the
  * repository uses lefthook.
@@ -151,17 +151,30 @@ export default [
 ];
 `;
 
-/** Make eslint.config.js spread lint-kit's entries last: they hold one list per restricted-* rule. */
+/** ESLint's own lookup order. */
+export const ESLINT_CONFIGS = ['js', 'mjs', 'cjs', 'ts', 'mts', 'cts'].map((ext) => `eslint.config.${ext}`);
+
+/** Make the ESLint config spread lint-kit's entries last: they hold one list per restricted-* rule. */
 export function patchEslintConfig(text) {
 	if (text.includes('eslint.lint-kit.js')) return text;
-	const at = text.search(/^export default /m);
-	if (at < 0) throw new Error('eslint.config.js has no `export default`; add ...lintKit yourself');
-	const body = text.slice(at + 'export default '.length).replace(/;\s*$/, '');
+	const esm = text.search(/^export default /m);
+	if (esm >= 0) {
+		const body = text.slice(esm + 'export default '.length).replace(/;\s*$/, '');
+		return (
+			`import lintKit from './eslint.lint-kit.js';\n` +
+			text.slice(0, esm) +
+			`const config = ${body};\n\n` +
+			`export default [...[config].flat(), ...lintKit];\n`
+		);
+	}
+	// CommonJS cannot import eslint.lint-kit.js synchronously; ESLint awaits an exported promise.
+	const cjs = text.match(/^module\.exports\s*=\s*/m);
+	if (!cjs) throw new Error('the ESLint config has no `export default` or `module.exports`; add ...lintKit yourself');
+	const body = text.slice(cjs.index + cjs[0].length).replace(/;\s*$/, '');
 	return (
-		`import lintKit from './eslint.lint-kit.js';\n` +
-		text.slice(0, at) +
+		text.slice(0, cjs.index) +
 		`const config = ${body};\n\n` +
-		`export default [...[config].flat(), ...lintKit];\n`
+		`module.exports = (async () => [...[config].flat(), ...(await import('./eslint.lint-kit.js')).default])();\n`
 	);
 }
 
@@ -175,7 +188,7 @@ function writeEslint(cwd, sets) {
 	}
 	fs.writeFileSync(own, next);
 	say('✔ eslint.lint-kit.js');
-	const existing = ['eslint.config.js', 'eslint.config.mjs'].find((f) => fs.existsSync(path.join(cwd, f)));
+	const existing = ESLINT_CONFIGS.find((f) => fs.existsSync(path.join(cwd, f)));
 	if (!existing) {
 		fs.writeFileSync(path.join(cwd, 'eslint.config.js'), NEW_ESLINT_CONFIG);
 		return say('✔ eslint.config.js (new, with the Svelte / TypeScript parser setup)');
