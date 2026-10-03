@@ -133,4 +133,12 @@ test('arguments with spaces survive the Windows shell', () => {
 	const spec = 'lint-kit-fastapi @ git+https://github.com/x/y@v1#subdirectory=python';
 	assert.deepEqual(shellArgs(['add', '--dev', spec], true), ['add', '--dev', `"${spec}"`]);
 	assert.deepEqual(shellArgs(['add', spec], false), ['add', spec]);
+	// whitespace and cmd's metacharacters are quoted, plain flags and names are not
+	assert.deepEqual(shellArgs(['install', '--save-dev', 'a b', 'x&y', 'a"b'], true), [
+		'install',
+		'--save-dev',
+		'"a b"',
+		'"x&y"',
+		'"a""b"',
+	]);
 });

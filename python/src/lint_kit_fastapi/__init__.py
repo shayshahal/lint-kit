@@ -584,7 +584,7 @@ def _find_root(directory: pathlib.Path) -> tuple[pathlib.Path, Settings] | None:
 
 class Plugin:
     name = "lint-kit-fastapi"
-    version = "0.1.1"
+    version = "0.1.2"
 
     def __init__(self, tree: ast.Module, filename: str) -> None:
         self.tree = tree
