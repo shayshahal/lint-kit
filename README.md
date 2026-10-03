@@ -104,3 +104,8 @@ pnpm install && (cd python && uv sync)
 pnpm test                      # RuleTester for every ESLint rule, and init end to end
 (cd python && uv run pytest)   # every FAP rule
 ```
+
+To release, bump the version in `package.json`, `python/pyproject.toml`, the `Plugin` class in
+`python/src/lint_kit_fastapi/__init__.py`, `python/uv.lock` and the install commands above
+(`test/version.test.js` fails until they agree). Once CI passes on `main`, the Release workflow
+tags `v<version>` and publishes a GitHub release.
