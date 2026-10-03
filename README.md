@@ -25,10 +25,12 @@ your package manager (and `uv` for the Python plugin), and writes the config:
 
 - **ESLint sets:** `eslint.lint-kit.js` holds lint-kit's entries; your ESLint config
   (`eslint.config.js`, or `.mjs` / `.cjs` / `.ts` / `.mts` / `.cts`) spreads it last. Without
-  one, you get an `eslint.config.js` with the Svelte / TypeScript parser setup. Re-run `init` to
-  add or remove sets.
+  one, you get an `eslint.config.js` with the Svelte / TypeScript parser setup.
 - **fastapi:** `[tool.lint-kit-fastapi]` in `pyproject.toml`, `FAP` in `.flake8`, and two
   pre-commit steps in `lefthook.yml` when the repository has one.
+
+Re-run `init` to add or remove sets. Sets it installed before default to yes; turning fastapi off
+removes the dev dependency, the settings table, the FAP selection and the lefthook steps.
 
 Options: `--sets svelte-skills,fastapi` and `--yes` skip the questions, `--no-install` writes
 config only, `--ref <tag or sha>` pins another version, `--python <dir>` points at the backend
