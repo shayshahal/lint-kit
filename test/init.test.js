@@ -55,8 +55,8 @@ test('a Svelte project without an ESLint config gets one, from what it depends o
 	// no paraglide dependency, so not chosen by default
 	assert.doesNotMatch(own, /untranslatedText/);
 	assert.deepEqual(await ruleIds(dir, 'src/routes/+page.svelte'), [
-		'no-restricted-syntax',
 		'svelte-skills/no-legacy-syntax',
+		'tailwind-patterns/viewport-vh',
 	]);
 });
 

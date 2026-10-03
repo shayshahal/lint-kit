@@ -326,16 +326,21 @@ export const rules = {
 		},
 	})),
 
-	'derived-by-for-functions': problem('$derived given a function.', (context) => ({
-		'CallExpression[callee.name="$derived"]'(node) {
-			if (/FunctionExpression$/.test(node.arguments[0]?.type ?? ''))
-				context.report({
-					node,
-					message:
-						'$derived takes an expression; given a function, the value IS the function. Use $derived.by(() => …).',
-				});
-		},
-	})),
+	'derived-by-for-functions': problem(
+		'$derived given a function.',
+		(context) => ({
+			'CallExpression[callee.name="$derived"]'(node) {
+				if (/FunctionExpression$/.test(node.arguments[0]?.type ?? ''))
+					context.report({
+						node,
+						message:
+							'$derived takes an expression; given a function, the value IS the function. Use $derived.by(() => …).',
+						fix: (fixer) => fixer.replaceText(node.callee, '$derived.by'),
+					});
+			},
+		}),
+		true,
+	),
 
 	'no-state-write-in-effect': problem(
 		'$state / $derived assigned in the body of an $effect.',

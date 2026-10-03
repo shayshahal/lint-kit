@@ -7,6 +7,7 @@
  *   darkOverride     a dark: colour override outside the ui/ folder: the token should carry it
  *   transitionAll    transition-all, which animates layout too
  *   viewportVh       h-screen / [90vh]: vh runs under the mobile browser bar; dvh follows it
+ *                    (a rule of its own, tailwind-patterns/viewport-vh, so --fix can swap in dvh)
  *   untitledOverlay  a Dialog / AlertDialog / Modal / Sheet / Drawer .Content without a .Title
  *   lucideBarrel     importing icons from the @lucide/svelte root, which loads every icon in dev
  *
@@ -68,6 +69,47 @@ export const MESSAGES = {
 	lucideBarrel: "Import each icon from its own path: `import XIcon from '@lucide/svelte/icons/x'`.",
 };
 
+// h-screen / min-h-screen / max-h-screen with any prefix, between quotes, spaces or ${ }.
+const SCREEN_TOKEN = /(^|[\s'"`{}])(!?(?:[^\s'"`{}:]+:)*!?(?:(?:min|max)-)?h-)screen(?=!?(?:[\s'"`${}]|$))/g;
+// A number followed by vh inside an arbitrary value: [90vh], [calc(100vh-2rem)].
+const ARBITRARY_VALUE = /\[[^\s\]]*\]/g;
+
+/** `text` (a literal's source) with h-screen → h-dvh and [..90vh..] → [..90dvh..]. */
+export const toDvh = (text) =>
+	text
+		.replace(SCREEN_TOKEN, '$1$2dvh')
+		.replace(ARBITRARY_VALUE, (value) => value.replace(/(\d)vh\b/g, '$1dvh'));
+
+const viewportVh = {
+	meta: {
+		type: 'problem',
+		docs: { description: 'h-screen / [90vh] where dvh follows the mobile browser bar.' },
+		fixable: 'code',
+		schema: [{ type: 'object', properties: { message: { type: 'string' } }, additionalProperties: false }],
+	},
+	create(context) {
+		const pattern = new RegExp(VIEWPORT_VH.slice(1, -1));
+		const message = context.options[0]?.message ?? MESSAGES.viewportVh;
+		const check = (node, value) => {
+			if (typeof value !== 'string' || !pattern.test(value)) return;
+			const source = context.sourceCode.getText(node);
+			const fixed = toDvh(source);
+			context.report({
+				node,
+				message,
+				fix: fixed === source ? null : (fixer) => fixer.replaceText(node, fixed),
+			});
+		};
+		return {
+			SvelteLiteral: (node) => check(node, node.value),
+			Literal: (node) => check(node, node.value),
+			TemplateElement: (node) => check(node, node.value.raw),
+		};
+	},
+};
+
+export const plugin = { meta: { name: 'tailwind-patterns' }, rules: { 'viewport-vh': viewportVh } };
+
 /** @param {string} message */
 export const lucideBarrel = (message = MESSAGES.lucideBarrel) => ({
 	name: '@lucide/svelte',
@@ -103,7 +145,9 @@ export function config({
 	return [
 		{
 			files,
+			plugins: { 'tailwind-patterns': plugin },
 			rules: {
+				'tailwind-patterns/viewport-vh': ['error', { message: m.viewportVh }],
 				'no-restricted-imports': [
 					'error',
 					{ paths: [lucideBarrel(m.lucideBarrel), ...restrictedImports] },
@@ -114,7 +158,6 @@ export function config({
 					...classRule(DARK_OVERRIDE, m.darkOverride),
 					...classRule(TRANSITION_ALL, m.transitionAll),
 					...extraUi,
-					...classRule(VIEWPORT_VH, m.viewportVh),
 					{ selector: UNTITLED_OVERLAY, message: m.untitledOverlay },
 					...extra,
 				],
@@ -124,17 +167,18 @@ export function config({
 			// ui/ is where dark: overrides belong, and where the overlay wrappers (no title of their
 			// own) live. lightOnly, transition-all and vh stay errors there too.
 			files: uiFiles,
+			plugins: { 'tailwind-patterns': plugin },
 			rules: {
+				'tailwind-patterns/viewport-vh': ['error', { message: m.viewportVh }],
 				'no-restricted-syntax': [
 					'error',
 					...lightOnly,
 					...classRule(TRANSITION_ALL, m.transitionAll),
 					...extraUi,
-					...classRule(VIEWPORT_VH, m.viewportVh),
 				],
 			},
 		},
 	];
 }
 
-export default { config, classRule, lucideBarrel, PATTERNS, MESSAGES };
+export default { config, classRule, lucideBarrel, plugin, toDvh, PATTERNS, MESSAGES };

@@ -129,7 +129,11 @@ svelteTester.run('derived-by-for-functions', rules['derived-by-for-functions'], 
 		{ code: script('let a = 1; const d = $derived.by(() => a * 2);'), filename: S },
 		{ code: script('let a = 1; const d = $derived(a * 2);'), filename: S },
 	],
-	invalid: [svelteCase(script('let a = 1; const d = $derived(() => a * 2);'), [{ message: /\$derived\.by/ }])],
+	invalid: [
+		svelteCase(script('let a = 1; const d = $derived(() => a * 2);'), [{ message: /\$derived\.by/ }], {
+			output: script('let a = 1; const d = $derived.by(() => a * 2);'),
+		}),
+	],
 });
 
 svelteTester.run('no-state-write-in-effect', rules['no-state-write-in-effect'], {

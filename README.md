@@ -72,7 +72,12 @@ export default [
 
 `svelteSkills.config()` also turns on three eslint-plugin-svelte rules: `valid-compile` with
 warnings, `require-each-key` and `prefer-style-directive`. The plugins are exported too
-(`svelteSkills.plugin`, `untranslatedText.plugin`) for wiring rules one by one.
+(`svelteSkills.plugin`, `untranslatedText.plugin`, `tailwindPatterns.plugin`) for wiring rules
+one by one.
+
+`eslint --fix` rewrites what has one right answer: `class:` directives into the class attribute,
+`{@const}` into `$derived`, `throw error()` into `error()`, `$derived(() => …)` into
+`$derived.by`, and `h-screen` / `[90vh]` into `h-dvh` / `[90dvh]`.
 
 ## fastapi
 
