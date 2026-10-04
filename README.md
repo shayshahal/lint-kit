@@ -26,11 +26,18 @@ your package manager (and `uv` for the Python plugin), and writes the config:
 - **ESLint sets:** `eslint.lint-kit.js` holds lint-kit's entries; your ESLint config
   (`eslint.config.js`, or `.mjs` / `.cjs` / `.ts` / `.mts` / `.cts`) spreads it last. Without
   one, you get an `eslint.config.js` with the Svelte / TypeScript parser setup.
-- **fastapi:** `[tool.lint-kit-fastapi]` in `pyproject.toml`, `FAP` in `.flake8`, and two
-  pre-commit steps in `lefthook.yml` when the repository has one.
+- **fastapi:** `[tool.lint-kit-fastapi]` in `pyproject.toml`, `FAP` in `.flake8`, and ruff's
+  `FAST` and `ASYNC` rules in the ruff config ruff reads for the backend (`ruff.toml`, or
+  `[tool.ruff.lint]`), added to `extend-select` with a comment naming what was added. FAP holds
+  only what those rules miss, so the set expects both. `ruff` becomes a dev dependency if it
+  isn't one.
+- **lefthook:** when the repository has a `lefthook.yml`, pre-commit steps run ESLint on staged
+  `src/` files, flake8 (FAP) on the app package, `check-deps` when `pyproject.toml` changes, and
+  `ruff check`. The ESLint and ruff steps are skipped when a step already runs that tool.
 
 Re-run `init` to add or remove sets. Sets it installed before default to yes; turning fastapi off
-removes the dev dependency, the settings table, the FAP selection and the lefthook steps.
+removes the dev dependency, the settings table, the FAP selection, the ruff rules it added and the
+lefthook steps (ruff itself stays installed). Turning every ESLint set off removes the ESLint step.
 
 Options: `--sets svelte-skills,fastapi` and `--yes` skip the questions, `--no-install` writes
 config only, `--ref <tag or sha>` pins another version, `--python <dir>` points at the backend
