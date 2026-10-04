@@ -11,6 +11,7 @@ what to write instead.
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
 | `error-handling` | ESLint | catch blocks (and promise `.catch()`) that drop the error, only log it, return a fixed default, or turn it into a string |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
+| `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for the Svelte app, `pyright` for the backend |
 
 Each ESLint rule links to its section in [`docs/`](docs) (editors show the link with the
 message); the FAP rules are listed in the module docstring (below).
@@ -35,10 +36,18 @@ your package manager (and `uv` for the Python plugin), and writes the config:
 - **lefthook:** when the repository has a `lefthook.yml`, pre-commit steps run ESLint on staged
   `src/` files, flake8 (FAP) on the app package, `check-deps` when `pyproject.toml` changes, and
   `ruff check`. The ESLint and ruff steps are skipped when a step already runs that tool.
+- **typecheck:** pre-push steps in `lefthook.yml`, since a type checker needs the whole project,
+  not the staged files: `svelte-kit sync && svelte-check --tsgo` when the push touches the Svelte
+  app, `uv run pyright` when it touches the backend. `--tsgo` needs TypeScript 7 next to the 6
+  svelte-check loads Svelte with, so `init` adds `svelte-check` and
+  `@typescript/native@npm:typescript@7` if they are missing, and `pyright` to the backend. Like
+  svelte-check's `--incremental`, `--tsgo` skips `.svelte` files outside the tsconfig's root
+  folder. On by default when the repository has a `lefthook.yml`.
 
 Re-run `init` to add or remove sets. Sets it installed before default to yes; turning fastapi off
 removes the dev dependency, the settings table, the FAP selection, the ruff rules it added and the
-lefthook steps (ruff itself stays installed). Turning every ESLint set off removes the ESLint step.
+lefthook steps (ruff itself stays installed). Turning every ESLint set off removes the ESLint step;
+turning typecheck off removes the pre-push steps (svelte-check and pyright stay installed).
 
 Options: `--sets svelte-skills,fastapi` and `--yes` skip the questions, `--no-install` writes
 config only, `--ref <tag or sha>` pins another version, `--python <dir>` points at the backend
