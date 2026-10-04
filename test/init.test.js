@@ -243,6 +243,35 @@ test('a ruff.toml at the repository root gets the rules, not a pyproject.toml th
 		assert.equal(fs.readFileSync(path.join(dir, f), 'utf8'), files[f], f);
 });
 
+test('typecheck: svelte-check --tsgo and pyright before each push, and off again', async () => {
+	const files = {
+		'.git/HEAD': 'ref: refs/heads/main\n',
+		'lefthook.yml': 'pre-commit:\n  commands:\n    format:\n      run: pnpm format\n',
+		'web/pnpm-lock.yaml': '',
+		'web/package.json': JSON.stringify({ devDependencies: { svelte: '^5', '@sveltejs/kit': '^2' } }),
+		'api/pyproject.toml': '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+	};
+	const dir = project('typecheck', files);
+	const args = ['--no-install', '--cwd', path.join(dir, 'web'), '--python', '../api'];
+	// on by default: the repository has lefthook and a Svelte app
+	await quiet(['init', '--yes', ...args]);
+	const hooks = parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'));
+	assert.deepEqual(hooks['pre-push'].commands, {
+		'lint-kit-svelte-check': {
+			glob: 'web/*.{svelte,ts,js}',
+			root: 'web/',
+			run: 'pnpm exec svelte-kit sync && pnpm exec svelte-check --tsgo',
+		},
+		'lint-kit-pyright': { glob: 'api/*.py', root: 'api/', run: 'uv run pyright' },
+	});
+	const once = fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8');
+	await quiet(['init', '--yes', ...args]);
+	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), once);
+	// off: the pre-push section goes with its steps
+	await quiet(['init', '--sets', '', ...args]);
+	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), files['lefthook.yml']);
+});
+
 test('a step that already runs ESLint is left alone', async () => {
 	const lefthook = 'pre-commit:\n  commands:\n    lint:\n      run: npx eslint --fix {staged_files}\n';
 	const dir = project('eslint-hooked', {

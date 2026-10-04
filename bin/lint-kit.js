@@ -10,6 +10,8 @@
  * config gets one with the Svelte / TypeScript parser setup.
  * fastapi: [tool.lint-kit-fastapi] in pyproject.toml, FAP in .flake8, ruff's FAST and ASYNC rules
  * in the ruff config.
+ * typecheck: svelte-check (with TypeScript's Go compiler, --tsgo) and pyright as lefthook
+ * pre-push steps; they need the whole project, so they run before a push, not on staged files.
  * When the repository uses lefthook, pre-commit steps run what was chosen on staged files.
  */
 import { execFileSync } from 'node:child_process';
@@ -30,6 +32,7 @@ export const SETS = {
 	'tailwind-patterns': { kind: 'eslint', about: 'Tailwind / shadcn class conventions (vh, transition-all, dark:, dialog titles)' },
 	'error-handling': { kind: 'eslint', about: 'catch blocks that drop, only log, or stringify the error' },
 	fastapi: { kind: 'python', about: 'FastAPI rules ruff lacks, as a flake8 plugin (FAP001-017)' },
+	typecheck: { kind: 'typecheck', about: 'svelte-check --tsgo and pyright before each push (lefthook)' },
 };
 const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', '@typescript-eslint/parser'];
 
@@ -49,7 +52,7 @@ function parseArgs(argv) {
 	return args;
 }
 
-const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null);
+const read = (file) => (file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null);
 const say = (msg) => console.log(msg);
 
 function detect(cwd, pythonDir) {
@@ -65,6 +68,9 @@ function detect(cwd, pythonDir) {
 		'tailwind-patterns': 'tailwindcss' in deps || installed('tailwind-patterns'),
 		'error-handling': 'svelte' in deps || 'typescript' in deps || installed('error-handling'),
 		fastapi: /["']fastapi/i.test(pyproject) || FASTAPI_TABLE.test(pyproject),
+		typecheck:
+			TYPECHECK_STEPS.some((step) => (read(lefthookFile(cwd)?.file) ?? '').includes(step)) ||
+			(lefthookFile(cwd) !== null && ('svelte' in deps || /["']fastapi/i.test(pyproject))),
 	};
 }
 
@@ -414,9 +420,11 @@ export function unpatchFlake8(text) {
 /** lefthook.yml without lint-kit's pre-commit steps. */
 export function unpatchLefthook(text, steps = LEFTHOOK_STEPS) {
 	const doc = parseDocument(text);
-	for (const name of steps) doc.deleteIn(['pre-commit', 'commands', name]);
-	if (doc.getIn(['pre-commit', 'commands'])?.items?.length === 0) doc.deleteIn(['pre-commit', 'commands']);
-	if (doc.getIn(['pre-commit'])?.items?.length === 0) doc.deleteIn(['pre-commit']);
+	for (const hook of ['pre-commit', 'pre-push']) {
+		for (const name of steps) if (doc.hasIn([hook, 'commands', name])) doc.deleteIn([hook, 'commands', name]);
+		if (doc.getIn([hook, 'commands'])?.items?.length === 0) doc.deleteIn([hook, 'commands']);
+		if (doc.getIn([hook])?.items?.length === 0) doc.deleteIn([hook]);
+	}
 	return doc.toString();
 }
 
@@ -498,6 +506,78 @@ function writePython(pythonDir, args) {
 	}
 }
 
+// ── typecheck ───────────────────────────────────────────────────────────────────
+
+const TYPECHECK_STEPS = ['lint-kit-svelte-check', 'lint-kit-pyright'];
+/** svelte-check's --tsgo runs TypeScript 7 (Go) beside the TypeScript 6 it loads Svelte with. */
+const TSGO = ['@typescript/native', '@typescript/native-preview'];
+
+/**
+ * lefthook pre-push steps: svelte-check over the frontend and pyright over the backend, each when
+ * the push touches its files. `frontend` / `backend` are { root, exec } or null.
+ */
+export function patchLefthookTypecheck(text, frontend, backend) {
+	const doc = parseDocument(text);
+	const step = (name, value) => {
+		if (!doc.hasIn(['pre-push', 'commands'])) doc.setIn(['pre-push', 'commands'], doc.createNode({}));
+		if (!doc.hasIn(['pre-push', 'commands', name])) doc.setIn(['pre-push', 'commands', name], doc.createNode(value));
+	};
+	if (frontend) {
+		const dir = lefthookRoot(frontend.root);
+		const sync = frontend.kit ? `${frontend.exec} svelte-kit sync && ` : '';
+		step('lint-kit-svelte-check', {
+			glob: `${dir}*.{svelte,ts,js}`,
+			...(dir ? { root: dir } : {}),
+			run: `${sync}${frontend.exec} svelte-check --tsgo`,
+		});
+	}
+	if (backend) {
+		const dir = lefthookRoot(backend.root);
+		step('lint-kit-pyright', { glob: `${dir}*.py`, ...(dir ? { root: dir } : {}), run: 'uv run pyright' });
+	}
+	// a side that is gone (Svelte or the backend removed) loses its step
+	const gone = [!frontend && 'lint-kit-svelte-check', !backend && 'lint-kit-pyright'].filter(Boolean);
+	return unpatchLefthook(doc.toString(), gone);
+}
+
+function writeTypecheck(cwd, pythonDir, args) {
+	const lefthook = lefthookFile(cwd);
+	if (!lefthook) return say('→ typecheck runs as lefthook pre-push steps, and this repository has no lefthook.yml');
+	const pkg = JSON.parse(read(path.join(cwd, 'package.json')) ?? '{}');
+	const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+	const pyproject = read(path.join(pythonDir, 'pyproject.toml'));
+	const pm = packageManager(cwd);
+	const frontend =
+		'svelte' in deps ? { root: path.relative(lefthook.repo, cwd), exec: EXEC[pm], kit: '@sveltejs/kit' in deps } : null;
+	const backend = pyproject !== null ? { root: path.relative(lefthook.repo, pythonDir) } : null;
+	if (args.install && frontend) {
+		const missing = [
+			...('svelte-check' in deps ? [] : ['svelte-check']),
+			...(TSGO.some((p) => p in deps) ? [] : ['@typescript/native@npm:typescript@7']),
+		];
+		if (missing.length) run(pm, [...(pm === 'npm' ? ['install', '--save-dev'] : ['add', '-D']), ...missing], cwd);
+	}
+	if (args.install && backend && !/["']pyright\b/.test(pyproject)) {
+		if (fs.existsSync(path.join(pythonDir, 'uv.lock'))) run('uv', ['add', '--dev', 'pyright'], pythonDir);
+		else say('→ install pyright: pip install pyright');
+	}
+	const before = fs.readFileSync(lefthook.file, 'utf8');
+	const after = patchLefthookTypecheck(before, frontend, backend);
+	if (after !== before) fs.writeFileSync(lefthook.file, after);
+	const which = [frontend && 'svelte-check --tsgo', backend && 'pyright'].filter(Boolean);
+	say(`✔ ${path.basename(lefthook.file)} runs ${which.join(' and ') || 'nothing (no Svelte or Python here)'} before each push`);
+}
+
+function removeTypecheck(cwd) {
+	const lefthook = lefthookFile(cwd);
+	if (!lefthook) return;
+	const before = fs.readFileSync(lefthook.file, 'utf8');
+	const after = unpatchLefthook(before, TYPECHECK_STEPS);
+	if (after === before) return;
+	fs.writeFileSync(lefthook.file, after);
+	say(`✔ ${path.basename(lefthook.file)} without the typecheck steps (svelte-check and pyright stay installed)`);
+}
+
 // ── main ────────────────────────────────────────────────────────────────────────
 
 export async function main(argv = process.argv.slice(2)) {
@@ -512,7 +592,8 @@ export async function main(argv = process.argv.slice(2)) {
 	const sets = await choose(args, detect(cwd, pythonDir));
 	const hadEslint = fs.existsSync(path.join(cwd, 'eslint.lint-kit.js'));
 	const hadPython = FASTAPI_TABLE.test(read(path.join(pythonDir, 'pyproject.toml')) ?? '');
-	if (!sets.length && !hadEslint && !hadPython) return say('nothing chosen'), 0;
+	const hadTypecheck = TYPECHECK_STEPS.some((s) => (read(lefthookFile(cwd)?.file) ?? '').includes(s));
+	if (!sets.length && !hadEslint && !hadPython && !hadTypecheck) return say('nothing chosen'), 0;
 	say(`rule sets: ${sets.join(', ') || 'none'}`);
 
 	if (sets.some((s) => SETS[s].kind === 'eslint')) {
@@ -528,6 +609,8 @@ export async function main(argv = process.argv.slice(2)) {
 	} else if (hadEslint) writeEslint(cwd, sets); // every ESLint set turned off: an empty list
 	if (sets.includes('fastapi')) writePython(pythonDir, args);
 	else removePython(pythonDir, args);
+	if (sets.includes('typecheck')) writeTypecheck(cwd, pythonDir, args);
+	else removeTypecheck(cwd);
 	say('done');
 	return 0;
 }
