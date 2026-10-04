@@ -1,7 +1,7 @@
 {
 	"name": "lint-kit",
 	"version": "0.2.0",
-	"description": "Lint rules for Svelte 5 / SvelteKit, i18n, Tailwind / shadcn and FastAPI, with an init command that installs the sets a project picks.",
+	"description": "Lint rules for Svelte 5 / SvelteKit, i18n, Tailwind / shadcn, error handling and FastAPI, with an init command that installs the sets a project picks.",
 	"license": "MIT",
 	"type": "module",
 	"repository": "github:shayshahal/lint-kit",
@@ -12,6 +12,7 @@
 		"./svelte-skills": "./src/svelte-skills.js",
 		"./untranslated-text": "./src/untranslated-text.js",
 		"./tailwind-patterns": "./src/tailwind-patterns.js",
+		"./error-handling": "./src/error-handling.js",
 		"./package.json": "./package.json"
 	},
 	"files": [

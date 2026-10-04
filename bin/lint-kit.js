@@ -2,7 +2,7 @@
 /**
  * lint-kit init: ask which rule sets this project gets, install them from git, write the config.
  *
- *   npx github:shayshahal/lint-kit init [--sets svelte-skills,untranslated-text,tailwind-patterns,fastapi]
+ *   npx github:shayshahal/lint-kit init [--sets svelte-skills,untranslated-text,tailwind-patterns,error-handling,fastapi]
  *                                        [--yes] [--no-install] [--ref <git ref>] [--python <dir>]
  *
  * ESLint sets: eslint.lint-kit.js holds lint-kit's entries and is rewritten on every run (so a
@@ -28,6 +28,7 @@ export const SETS = {
 	'svelte-skills': { kind: 'eslint', about: 'Svelte 5 / SvelteKit rules (22) from the Svelte skills and docs' },
 	'untranslated-text': { kind: 'eslint', about: 'text users read comes from the message catalogue' },
 	'tailwind-patterns': { kind: 'eslint', about: 'Tailwind / shadcn class conventions (vh, transition-all, dark:, dialog titles)' },
+	'error-handling': { kind: 'eslint', about: 'catch blocks that drop, only log, or stringify the error' },
 	fastapi: { kind: 'python', about: 'FastAPI rules ruff lacks, as a flake8 plugin (FAP001-017)' },
 };
 const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', '@typescript-eslint/parser'];
@@ -62,6 +63,7 @@ function detect(cwd, pythonDir) {
 		'svelte-skills': 'svelte' in deps || installed('svelte-skills'),
 		'untranslated-text': '@inlang/paraglide-js' in deps || installed('untranslated-text'),
 		'tailwind-patterns': 'tailwindcss' in deps || installed('tailwind-patterns'),
+		'error-handling': 'svelte' in deps || 'typescript' in deps || installed('error-handling'),
 		fastapi: /["']fastapi/i.test(pyproject) || FASTAPI_TABLE.test(pyproject),
 	};
 }
@@ -116,11 +118,13 @@ const ESLINT_ENTRIES = {
 		uiFiles: ['src/lib/components/ui/**'],
 		darkMode: false, // true when the app toggles .dark: bg-white / text-black become errors
 	}),`,
+	'error-handling': () => `	...errorHandling.config(),`,
 };
 const ESLINT_IMPORTS = {
 	'svelte-skills': "import svelteSkills from 'lint-kit/svelte-skills';",
 	'untranslated-text': "import untranslatedText from 'lint-kit/untranslated-text';",
 	'tailwind-patterns': "import tailwindPatterns from 'lint-kit/tailwind-patterns';",
+	'error-handling': "import errorHandling from 'lint-kit/error-handling';",
 };
 
 export function lintKitConfig(sets) {

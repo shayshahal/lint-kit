@@ -1,14 +1,15 @@
 # lint-kit
 
-Lint rules for **Svelte 5 / SvelteKit**, **i18n**, **Tailwind / shadcn** and **FastAPI**, with
-an `init` command that installs only the sets a project picks. Each message says what to write
-instead.
+Lint rules for **Svelte 5 / SvelteKit**, **i18n**, **Tailwind / shadcn**, **error handling** and
+**FastAPI**, with an `init` command that installs only the sets a project picks. Each message says
+what to write instead.
 
 | Set | Linter | What it checks |
 | --- | --- | --- |
 | `svelte-skills` | ESLint | 22 rules: runes instead of Svelte 4 syntax, remote functions, throw-less `error()` / `redirect()`, `$state` written in `$effect` / `$derived`, `{@const}`, index and volatile `{#each}` keys… |
 | `untranslated-text` | ESLint | text users read comes from the message catalogue (Paraglide `m.key()`) |
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
+| `error-handling` | ESLint | catch blocks (and promise `.catch()`) that drop the error, only log it, return a fixed default, or turn it into a string |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 
 Each ESLint rule links to its section in [`docs/`](docs) (editors show the link with the
@@ -52,7 +53,7 @@ uv add --dev "lint-kit-fastapi @ git+https://github.com/shayshahal/lint-kit@v0.2
 
 ## ESLint sets
 
-All three expect the Svelte and TypeScript parsers to be set up (eslint-plugin-svelte's
+All four expect the Svelte and TypeScript parsers to be set up (eslint-plugin-svelte's
 recommended config, `@typescript-eslint/parser`), and default to `src/**` with tests, specs and
 stories left out.
 
@@ -60,6 +61,7 @@ stories left out.
 import svelteSkills from 'lint-kit/svelte-skills';
 import untranslatedText from 'lint-kit/untranslated-text';
 import tailwindPatterns, { classRule } from 'lint-kit/tailwind-patterns';
+import errorHandling from 'lint-kit/error-handling';
 
 export default [
 	// …parsers
@@ -79,13 +81,14 @@ export default [
 		extraUi: classRule(String.raw`/(^|\s)text-destructive(\s|$)/`, 'Use text-error-text.'),
 		restrictedImports: [{ name: 'svelte/transition', importNames: ['fly'], message: '…' }],
 	}),
+	...errorHandling.config(),
 ];
 ```
 
 `svelteSkills.config()` also turns on three eslint-plugin-svelte rules: `valid-compile` with
 warnings, `require-each-key` and `prefer-style-directive`. The plugins are exported too
-(`svelteSkills.plugin`, `untranslatedText.plugin`, `tailwindPatterns.plugin`) for wiring rules
-one by one.
+(`svelteSkills.plugin`, `untranslatedText.plugin`, `tailwindPatterns.plugin`,
+`errorHandling.plugin`) for wiring rules one by one.
 
 `eslint --fix` rewrites what has one right answer: `class:` directives into the class attribute,
 `{@const}` into `$derived`, `throw error()` into `error()`, `$derived(() => …)` into
