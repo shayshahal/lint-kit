@@ -8,8 +8,9 @@
  * ESLint sets: eslint.lint-kit.js holds lint-kit's entries and is rewritten on every run (so a
  * re-run adds or removes sets); eslint.config.* imports it once. A project without an ESLint
  * config gets one with the Svelte / TypeScript parser setup.
- * fastapi: [tool.lint-kit-fastapi] in pyproject.toml, FAP in .flake8, and lefthook steps when the
- * repository uses lefthook.
+ * fastapi: [tool.lint-kit-fastapi] in pyproject.toml, FAP in .flake8, ruff's FAST and ASYNC rules
+ * in the ruff config.
+ * When the repository uses lefthook, pre-commit steps run what was chosen on staged files.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -181,6 +182,21 @@ export function patchEslintConfig(text) {
 	);
 }
 
+/** The command that runs a dev dependency's binary. */
+const EXEC = { pnpm: 'pnpm exec', yarn: 'yarn', npm: 'npx' };
+
+/** lefthook pre-commit step: ESLint on staged files under src/, unless a step already runs ESLint. */
+export function patchLefthookEslint(text, root, exec) {
+	const doc = parseDocument(text);
+	const dir = lefthookRoot(root);
+	addLefthookStep(doc, 'lint-kit-eslint', /\beslint\b/, {
+		glob: `${dir}src/*.{js,ts,svelte}`,
+		...(dir ? { root: dir } : {}),
+		run: `${exec} eslint {staged_files}`,
+	});
+	return doc.toString();
+}
+
 function writeEslint(cwd, sets) {
 	const own = path.join(cwd, 'eslint.lint-kit.js');
 	const next = lintKitConfig(sets);
@@ -194,14 +210,25 @@ function writeEslint(cwd, sets) {
 	const existing = ESLINT_CONFIGS.find((f) => fs.existsSync(path.join(cwd, f)));
 	if (!existing) {
 		fs.writeFileSync(path.join(cwd, 'eslint.config.js'), NEW_ESLINT_CONFIG);
-		return say('✔ eslint.config.js (new, with the Svelte / TypeScript parser setup)');
+		say('✔ eslint.config.js (new, with the Svelte / TypeScript parser setup)');
+	} else {
+		const file = path.join(cwd, existing);
+		const before = fs.readFileSync(file, 'utf8');
+		const after = patchEslintConfig(before);
+		if (after !== before) {
+			fs.writeFileSync(file, after);
+			say(`✔ ${existing} spreads ...lintKit last`);
+		}
 	}
-	const file = path.join(cwd, existing);
-	const before = fs.readFileSync(file, 'utf8');
-	const after = patchEslintConfig(before);
+	const lefthook = lefthookFile(cwd);
+	if (!lefthook) return;
+	const before = fs.readFileSync(lefthook.file, 'utf8');
+	const after = sets.some((s) => SETS[s].kind === 'eslint')
+		? patchLefthookEslint(before, path.relative(lefthook.repo, cwd), EXEC[packageManager(cwd)])
+		: unpatchLefthook(before, ['lint-kit-eslint']);
 	if (after !== before) {
-		fs.writeFileSync(file, after);
-		say(`✔ ${existing} spreads ...lintKit last`);
+		fs.writeFileSync(lefthook.file, after);
+		say(`✔ ${path.basename(lefthook.file)} ${after.includes('lint-kit-eslint') ? 'runs' : 'no longer runs'} ESLint before each commit`);
 	}
 }
 
@@ -230,31 +257,123 @@ export function patchFlake8(text) {
 	return `${text.replace(/\s*$/, '\n')}\n[flake8]\nextend-select = FAP\n`;
 }
 
-/** lefthook pre-commit steps: FAP on staged app files, check-deps when pyproject.toml changes. */
+/** `root` for a lefthook step: the folder relative to the repository, with a trailing slash. */
+const lefthookRoot = (rel) => (rel ? `${rel.replace(/\\/g, '/').replace(/\/?$/, '/')}` : '');
+
+/**
+ * Add a pre-commit step unless it is there, or another step already runs the same tool (`runs`).
+ * lefthook's globs are not path-aware: `*` crosses folders, and `app/**\/*.py` misses app/main.py.
+ */
+function addLefthookStep(doc, name, runs, value) {
+	if (!doc.hasIn(['pre-commit', 'commands'])) doc.setIn(['pre-commit', 'commands'], doc.createNode({}));
+	const steps = doc.getIn(['pre-commit', 'commands']).toJSON() ?? {};
+	if (name in steps) return;
+	if (runs && Object.values(steps).some((step) => runs.test(step?.run ?? ''))) return;
+	doc.setIn(['pre-commit', 'commands', name], doc.createNode(value));
+}
+
+/**
+ * lefthook pre-commit steps: FAP on staged app files, check-deps when pyproject.toml changes, and
+ * ruff unless a step already runs it.
+ */
 export function patchLefthook(text, pythonRoot, app) {
 	const doc = parseDocument(text);
-	const root = pythonRoot ? `${pythonRoot.replace(/\\/g, '/').replace(/\/?$/, '/')}` : '';
-	if (!doc.hasIn(['pre-commit', 'commands'])) doc.setIn(['pre-commit', 'commands'], doc.createNode({}));
-	const add = (name, value) => {
-		if (!doc.hasIn(['pre-commit', 'commands', name])) doc.setIn(['pre-commit', 'commands', name], doc.createNode(value));
-	};
-	add('lint-kit-fastapi', {
-		glob: `${root}${app}/**/*.py`,
-		...(root ? { root } : {}),
-		run: 'uv run flake8 {staged_files}',
-	});
-	add('lint-kit-fastapi-deps', {
+	const root = lefthookRoot(pythonRoot);
+	const at = root ? { root } : {};
+	addLefthookStep(doc, 'lint-kit-fastapi', null, { glob: `${root}${app}/*.py`, ...at, run: 'uv run flake8 {staged_files}' });
+	addLefthookStep(doc, 'lint-kit-fastapi-deps', null, {
 		glob: `${root}pyproject.toml`,
-		...(root ? { root } : {}),
+		...at,
 		run: 'uv run lint-kit-fastapi check-deps',
 	});
+	addLefthookStep(doc, 'lint-kit-ruff', /\bruff\b/, { glob: `${root}*.py`, ...at, run: 'uv run ruff check {staged_files}' });
 	return doc.toString();
+}
+
+/** The repository's lefthook config, if it has one. */
+function lefthookFile(cwd) {
+	const repo = gitRoot(cwd);
+	const file = repo && ['lefthook.yml', 'lefthook.yaml'].map((f) => path.join(repo, f)).find((f) => fs.existsSync(f));
+	return file ? { repo, file } : null;
+}
+
+// ── ruff ──
+
+/** ruff's own rules for FastAPI and async code; FAP holds only what they cannot express. */
+export const RUFF_RULES = ['FAST', 'ASYNC'];
+const RUFF_MARK = '# lint-kit-fastapi added';
+
+/**
+ * The ruff config that applies to pythonDir: the nearest ruff.toml, .ruff.toml or pyproject.toml
+ * with [tool.ruff], up to the repository root. Without one, pythonDir's pyproject.toml.
+ */
+export function findRuffConfig(pythonDir, repo) {
+	for (let dir = pythonDir; ; dir = path.dirname(dir)) {
+		for (const name of ['.ruff.toml', 'ruff.toml']) if (fs.existsSync(path.join(dir, name))) return { file: path.join(dir, name), table: 'lint' };
+		if (/^\[tool\.ruff[\].]/m.test(read(path.join(dir, 'pyproject.toml')) ?? '')) return { file: path.join(dir, 'pyproject.toml'), table: 'tool.ruff.lint' };
+		if (!repo || dir === repo || path.dirname(dir) === dir) break;
+	}
+	return { file: path.join(pythonDir, 'pyproject.toml'), table: 'tool.ruff.lint' };
+}
+
+const tableHeader = (table) => new RegExp(`^\\[${table.replace(/\./g, '\\.')}\\][ \\t]*(#.*)?$`, 'm');
+const quoted = (codes) => codes.map((c) => `"${c}"`).join(', ');
+
+/** Add RUFF_RULES to the lint table's extend-select, with a comment that says which were added. */
+export function patchRuff(text, table) {
+	if (text.includes(RUFF_MARK)) return text;
+	const header = tableHeader(table);
+	const found = header.exec(text);
+	if (!found) {
+		const lines = `[${table}]\n${RUFF_MARK} ${RUFF_RULES.join(', ')}\nextend-select = [${quoted(RUFF_RULES)}]\n`;
+		return `${text.replace(/\s*$/, '\n')}\n${lines}`;
+	}
+	const start = found.index + found[0].length + 1;
+	const next = text.slice(start).search(/^\s*\[/m);
+	const end = next < 0 ? text.length : start + next;
+	const body = text.slice(start, end);
+	const select = /^extend-select\s*=\s*\[([^\]]*)\]/m.exec(body);
+	if (!select) {
+		const lines = `${RUFF_MARK} ${RUFF_RULES.join(', ')}\nextend-select = [${quoted(RUFF_RULES)}]\n`;
+		return text.slice(0, start) + lines + text.slice(start);
+	}
+	const has = new Set([...select[1].matchAll(/["']([A-Z0-9]+)["']/g)].map((m) => m[1]));
+	const missing = RUFF_RULES.filter((c) => !has.has(c));
+	if (!missing.length) return text;
+	const items = select[1].replace(/[\s,]*$/, '');
+	const at = start + select.index + select[0].indexOf('[') + 1 + items.length;
+	const added = `${items ? ', ' : ''}${quoted(missing)}`;
+	return text.slice(0, start + select.index) + `${RUFF_MARK} ${missing.join(', ')}\n` + text.slice(start + select.index, at) + added + text.slice(at);
+}
+
+/** The ruff config without what patchRuff added. */
+export function unpatchRuff(text, table) {
+	const mark = new RegExp(`^${RUFF_MARK} (.*)\\n`, 'm').exec(text);
+	if (!mark) return text;
+	const codes = mark[1].split(', ');
+	let out = text.slice(0, mark.index) + text.slice(mark.index + mark[0].length);
+	const created = `extend-select = [${quoted(codes)}]\n`;
+	if (out.startsWith(created, mark.index)) out = out.slice(0, mark.index) + out.slice(mark.index + created.length);
+	else {
+		const line = out.slice(mark.index);
+		const close = line.indexOf(']');
+		const inner = line.slice(0, close).replace(`, ${quoted(codes)}`, '').replace(quoted(codes), '');
+		out = out.slice(0, mark.index) + inner + line.slice(close);
+	}
+	// a table left empty (patchRuff wrote it): drop it with the blank lines before it
+	const header = tableHeader(table).exec(out);
+	if (header && /^\s*(\[|$)/.test(out.slice(header.index + header[0].length))) {
+		const before = out.slice(0, header.index).replace(/\n+$/, '\n');
+		const after = out.slice(header.index + header[0].length).replace(/^\s*\n/, '');
+		out = after ? `${before}\n${after}` : before;
+	}
+	return out;
 }
 
 const FASTAPI_TABLE = /^\[tool\.lint-kit-fastapi[\].]/m;
 const FLAKE8_NEW =
 	"# flake8 runs lint-kit's FastAPI rules (FAP); ruff or your other linters do the rest.\n[flake8]\nselect = FAP\nmax-line-length = 100\n";
-const LEFTHOOK_STEPS = ['lint-kit-fastapi', 'lint-kit-fastapi-deps'];
+const LEFTHOOK_STEPS = ['lint-kit-fastapi', 'lint-kit-fastapi-deps', 'lint-kit-ruff'];
 
 /** pyproject.toml without the [tool.lint-kit-fastapi] tables (the comments before a later table stay). */
 export function unpatchPyproject(text) {
@@ -289,9 +408,9 @@ export function unpatchFlake8(text) {
 }
 
 /** lefthook.yml without lint-kit's pre-commit steps. */
-export function unpatchLefthook(text) {
+export function unpatchLefthook(text, steps = LEFTHOOK_STEPS) {
 	const doc = parseDocument(text);
-	for (const name of LEFTHOOK_STEPS) doc.deleteIn(['pre-commit', 'commands', name]);
+	for (const name of steps) doc.deleteIn(['pre-commit', 'commands', name]);
 	if (doc.getIn(['pre-commit', 'commands'])?.items?.length === 0) doc.deleteIn(['pre-commit', 'commands']);
 	if (doc.getIn(['pre-commit'])?.items?.length === 0) doc.deleteIn(['pre-commit']);
 	return doc.toString();
@@ -321,13 +440,19 @@ function removePython(pythonDir, args) {
 		}
 	}
 	const repo = gitRoot(pythonDir);
-	const lefthook = repo && ['lefthook.yml', 'lefthook.yaml'].map((f) => path.join(repo, f)).find((f) => fs.existsSync(f));
+	const ruff = findRuffConfig(pythonDir, repo);
+	const ruffText = read(ruff.file);
+	if (ruffText !== null && unpatchRuff(ruffText, ruff.table) !== ruffText) {
+		fs.writeFileSync(ruff.file, unpatchRuff(ruffText, ruff.table));
+		say(`✔ ${path.basename(ruff.file)} without the ruff rules lint-kit added (ruff itself stays installed)`);
+	}
+	const lefthook = lefthookFile(pythonDir);
 	if (lefthook) {
-		const before = fs.readFileSync(lefthook, 'utf8');
+		const before = fs.readFileSync(lefthook.file, 'utf8');
 		const after = unpatchLefthook(before);
 		if (after !== before) {
-			fs.writeFileSync(lefthook, after);
-			say(`✔ ${path.basename(lefthook)} without the FAP steps`);
+			fs.writeFileSync(lefthook.file, after);
+			say(`✔ ${path.basename(lefthook.file)} without the FAP and ruff steps`);
 		}
 	}
 }
@@ -345,8 +470,9 @@ function writePython(pythonDir, args) {
 	const app = findApp(pythonDir);
 	if (args.install) {
 		const spec = `lint-kit-fastapi @ git+https://github.com/${REPO}@${args.ref}#subdirectory=python`;
-		if (fs.existsSync(path.join(pythonDir, 'uv.lock'))) run('uv', ['add', '--dev', spec], pythonDir);
-		else say(`→ install it: pip install "${spec}"`);
+		const ruff = /["']ruff\b/.test(fs.readFileSync(pyproject, 'utf8')) ? [] : ['ruff'];
+		if (fs.existsSync(path.join(pythonDir, 'uv.lock'))) run('uv', ['add', '--dev', spec, ...ruff], pythonDir);
+		else say(`→ install it: pip install "${spec}"${ruff.map((r) => ` ${r}`).join('')}`);
 	}
 	fs.writeFileSync(pyproject, patchPyproject(fs.readFileSync(pyproject, 'utf8'), app));
 	say(`✔ pyproject.toml [tool.lint-kit-fastapi] app = "${app}"`);
@@ -354,11 +480,17 @@ function writePython(pythonDir, args) {
 	fs.writeFileSync(flake8, patchFlake8(read(flake8)));
 	say('✔ .flake8 selects FAP');
 	const repo = gitRoot(pythonDir);
-	const lefthook = repo && ['lefthook.yml', 'lefthook.yaml'].map((f) => path.join(repo, f)).find((f) => fs.existsSync(f));
+	const ruff = findRuffConfig(pythonDir, repo);
+	const ruffText = read(ruff.file) ?? '';
+	if (patchRuff(ruffText, ruff.table) !== ruffText) {
+		fs.writeFileSync(ruff.file, patchRuff(ruffText, ruff.table));
+		say(`✔ ${path.relative(pythonDir, ruff.file)} turns on ruff's ${RUFF_RULES.join(' and ')} rules`);
+	}
+	const lefthook = lefthookFile(pythonDir);
 	if (lefthook) {
-		const rel = path.relative(repo, pythonDir);
-		fs.writeFileSync(lefthook, patchLefthook(fs.readFileSync(lefthook, 'utf8'), rel, app));
-		say(`✔ ${path.basename(lefthook)} runs FAP and check-deps before each commit`);
+		const rel = path.relative(lefthook.repo, pythonDir);
+		fs.writeFileSync(lefthook.file, patchLefthook(fs.readFileSync(lefthook.file, 'utf8'), rel, app));
+		say(`✔ ${path.basename(lefthook.file)} runs FAP, check-deps and ruff before each commit`);
 	}
 }
 

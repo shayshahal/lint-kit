@@ -1,8 +1,8 @@
 """FastAPI rules ruff does not have, as a flake8 plugin (codes FAP0xx).
 
 Sources: the FastAPI 0.135.1 docs and the skill FastAPI ships in the package
-(`fastapi/.agents/skills/fastapi`). Rules ruff already has are switched on in pyproject.toml
-(FAST001-003, ARG001, ASYNC, TID251 banned-api); this file holds only what ruff cannot express.
+(`fastapi/.agents/skills/fastapi`). Rules ruff already has stay in ruff: `lint-kit init` adds
+FAST and ASYNC to the ruff config's extend-select. This file holds only what ruff cannot express.
 
 Run: `flake8 <app>` (select FAP in .flake8). Settings, in pyproject.toml:
 

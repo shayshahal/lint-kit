@@ -6,7 +6,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import { parse } from 'yaml';
-import { main, patchEslintConfig, shellArgs } from '../bin/lint-kit.js';
+import { main, patchEslintConfig, patchRuff, shellArgs, unpatchRuff } from '../bin/lint-kit.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Inside the repo, so the generated configs resolve eslint and its plugins from its node_modules.
@@ -149,8 +149,10 @@ test('a FastAPI backend in a subfolder: settings, .flake8, lefthook steps, and f
 		'ruff',
 		'lint-kit-fastapi',
 		'lint-kit-fastapi-deps',
-	]);
-	assert.equal(hooks['pre-commit'].commands['lint-kit-fastapi'].glob, 'backend/api/**/*.py');
+	]); // ruff already runs, so no lint-kit-ruff step
+	assert.match(pyproject, /\[tool\.ruff\.lint\]\n# lint-kit-fastapi added FAST, ASYNC\nextend-select = \["FAST", "ASYNC"\]\n$/);
+	// lefthook's `*` crosses folders: api/main.py and api/routes/x.py both match
+	assert.equal(hooks['pre-commit'].commands['lint-kit-fastapi'].glob, 'backend/api/*.py');
 	assert.equal(hooks['pre-commit'].commands['lint-kit-fastapi'].root, 'backend/');
 	assert.match(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), /^# hooks/);
 
@@ -186,6 +188,70 @@ test('a FastAPI backend in a subfolder: settings, .flake8, lefthook steps, and f
 	};
 	assert.match(out('flake8', ['api']), /FAP001 `time\.sleep\(\)` blocks the event loop/);
 	assert.match(out('lint-kit-fastapi', ['check-deps']), /classify weasyprint/);
+	assert.match(out('ruff', ['check', '--no-cache', 'api']), /ASYNC251/);
+});
+
+test('ruff rules join the config ruff reads, and come out again', () => {
+	const own = '[tool.ruff.lint]\nselect = ["E", "F"]\nextend-select = [\n  "B",\n  "ASYNC",\n]\n\n[tool.other]\nx = 1\n';
+	const patched = patchRuff(own, 'tool.ruff.lint');
+	// only what is missing, and the comment says what that was
+	assert.equal(
+		patched,
+		'[tool.ruff.lint]\nselect = ["E", "F"]\n# lint-kit-fastapi added FAST\nextend-select = [\n  "B",\n  "ASYNC", "FAST",\n]\n\n[tool.other]\nx = 1\n',
+	);
+	assert.equal(patchRuff(patched, 'tool.ruff.lint'), patched);
+	assert.equal(unpatchRuff(patched, 'tool.ruff.lint'), own);
+	// a table without extend-select, and a ruff.toml's [lint]
+	const table = '[lint]\nselect = ["E"]\n';
+	assert.equal(patchRuff(table, 'lint'), '[lint]\n# lint-kit-fastapi added FAST, ASYNC\nextend-select = ["FAST", "ASYNC"]\nselect = ["E"]\n');
+	assert.equal(unpatchRuff(patchRuff(table, 'lint'), 'lint'), table);
+	// everything already on: nothing to add or take out
+	const all = '[lint]\nextend-select = ["FAST", "ASYNC"]\n';
+	assert.equal(patchRuff(all, 'lint'), all);
+	assert.equal(unpatchRuff(all, 'lint'), all);
+});
+
+test('a ruff.toml at the repository root gets the rules, not a pyproject.toml that would shadow it', async () => {
+	const files = {
+		'.git/HEAD': 'ref: refs/heads/main\n',
+		'ruff.toml': 'line-length = 100\n\n[lint]\nselect = ["E"]\n',
+		'lefthook.yml': 'pre-commit:\n  commands:\n    types:\n      run: pnpm check\n',
+		'pnpm-lock.yaml': '',
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
+		'backend/pyproject.toml': '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+		'backend/api/main.py': 'from fastapi import FastAPI\n\napp = FastAPI()\n',
+	};
+	const dir = project('ruff-root', files);
+	await quiet(['init', '--sets', 'svelte-skills,fastapi', '--no-install', '--cwd', dir, '--python', 'backend']);
+	assert.match(fs.readFileSync(path.join(dir, 'ruff.toml'), 'utf8'), /\[lint\]\n# lint-kit-fastapi added FAST, ASYNC\n/);
+	assert.doesNotMatch(fs.readFileSync(path.join(dir, 'backend/pyproject.toml'), 'utf8'), /tool\.ruff/);
+	const steps = parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'))['pre-commit'].commands;
+	assert.deepEqual(steps['lint-kit-eslint'], { glob: 'src/*.{js,ts,svelte}', run: 'pnpm exec eslint {staged_files}' });
+	assert.deepEqual(steps['lint-kit-ruff'], { glob: 'backend/*.py', root: 'backend/', run: 'uv run ruff check {staged_files}' });
+
+	// ESLint off: its step goes, the Python ones stay
+	await quiet(['init', '--sets', 'fastapi', '--no-install', '--cwd', dir, '--python', 'backend']);
+	assert.deepEqual(Object.keys(parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'))['pre-commit'].commands), [
+		'types',
+		'lint-kit-fastapi',
+		'lint-kit-fastapi-deps',
+		'lint-kit-ruff',
+	]);
+	// everything off: the files are what they were
+	await quiet(['init', '--sets', '', '--no-install', '--cwd', dir, '--python', 'backend']);
+	for (const f of ['ruff.toml', 'lefthook.yml', 'backend/pyproject.toml'])
+		assert.equal(fs.readFileSync(path.join(dir, f), 'utf8'), files[f], f);
+});
+
+test('a step that already runs ESLint is left alone', async () => {
+	const lefthook = 'pre-commit:\n  commands:\n    lint:\n      run: npx eslint --fix {staged_files}\n';
+	const dir = project('eslint-hooked', {
+		'.git/HEAD': 'ref: refs/heads/main\n',
+		'lefthook.yml': lefthook,
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
+	});
+	await quiet(['init', '--sets', 'svelte-skills', '--no-install', '--cwd', dir]);
+	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), lefthook);
 });
 
 test('arguments with spaces survive the Windows shell', () => {
