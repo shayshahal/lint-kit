@@ -85,7 +85,7 @@ const viewportVh = {
 		type: 'problem',
 		docs: {
 			description: 'h-screen / [90vh] where dvh follows the mobile browser bar.',
-			url: 'https://github.com/shayshahal/lint-kit/blob/main/docs/tailwind-patterns.md#viewport-vh',
+			url: new URL('./tailwind-patterns.md#viewport-vh', import.meta.url).href,
 		},
 		fixable: 'code',
 		schema: [{ type: 'object', properties: { message: { type: 'string' } }, additionalProperties: false }],

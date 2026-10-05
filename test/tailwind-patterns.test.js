@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { classRule, config, plugin, toDvh } from '../src/tailwind-patterns.js';
+import { classRule, config, plugin, toDvh } from '../tools/eslint/tailwind-patterns.mjs';
 import { lint, svelteTester, tsTester } from './helpers.js';
 
 const PAGE = 'src/routes/+page.svelte';

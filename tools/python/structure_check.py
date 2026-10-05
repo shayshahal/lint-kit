@@ -1,4 +1,6 @@
-"""`lint-kit-structure --base origin/dev [path ...]`: fail when a branch makes its Python worse.
+"""Fail when a branch makes its Python worse than it was at its base.
+
+    python structure_check.py --base origin/dev [path ...]
 
 Compares the working tree with the merge-base of HEAD and --base, and fails only on what the
 branch introduced, never on what was already there:
@@ -12,7 +14,7 @@ branch introduced, never on what was already there:
   repository: 65s on JewelryX, against under a second for the paths alone.)
 
 The paths (default: the current folder) limit both. The limit is `max-complexity` in
-[tool.lint-kit-structure] of ./pyproject.toml, 10 without one. Exits 0 when nothing new is
+[tool.structure-check] of ./pyproject.toml, 10 without one. Exits 0 when nothing new is
 worse (and when no .py file changed), 1 when something is, 2 when it cannot run.
 """
 
@@ -206,14 +208,14 @@ def max_complexity() -> int:
     if not pyproject.exists():
         return DEFAULT_MAX_COMPLEXITY
     table = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("tool", {})
-    return table.get("lint-kit-structure", {}).get("max-complexity", DEFAULT_MAX_COMPLEXITY)
+    return table.get("structure-check", {}).get("max-complexity", DEFAULT_MAX_COMPLEXITY)
 
 
 def check(base: str, paths: list[str]) -> int:
     merge_base = git("merge-base", "HEAD", base).strip()
     files = changed_python(merge_base, paths)
     if not files:
-        print(f"lint-kit-structure: no Python changes since {base}, skipped")
+        print(f"structure-check: no Python changes since {base}, skipped")
         return 0
     found = complexity_regressions(merge_base, files, max_complexity())
     found += duplication_regressions(merge_base, paths)
@@ -221,24 +223,24 @@ def check(base: str, paths: list[str]) -> int:
         print(regression)
     if found:
         print(
-            f"lint-kit-structure: {len(found)} structure regression(s) since {base} "
+            f"structure-check: {len(found)} structure regression(s) since {base} "
             f"({merge_base[:9]}). Split the function or extract the shared code; "
             "what was already there does not count."
         )
         return 1
-    print(f"lint-kit-structure: {len(files)} changed .py file(s), no new complexity or duplication")
+    print(f"structure-check: {len(files)} changed .py file(s), no new complexity or duplication")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="lint-kit-structure", description=__doc__.split("\n")[0])
+    parser = argparse.ArgumentParser(prog="structure_check.py", description=__doc__.split("\n")[0])
     parser.add_argument("--base", default="origin/HEAD", help="the branch this one merges into")
     parser.add_argument("paths", nargs="*", default=["."], help="folders to check")
     args = parser.parse_args(argv)
     try:
         return check(args.base, args.paths)
     except StructureError as error:
-        print(f"lint-kit-structure: {error}", file=sys.stderr)
+        print(f"structure-check: {error}", file=sys.stderr)
         return 2
 
 

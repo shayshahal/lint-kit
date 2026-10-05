@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { config, rule } from '../src/untranslated-text.js';
+import { config, rule } from '../tools/eslint/untranslated-text.mjs';
 import { lint, svelteTester, tsTester } from './helpers.js';
 
 const S = 'src/routes/x.svelte';

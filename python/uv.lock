@@ -92,9 +92,9 @@ wheels = [
 ]
 
 [[package]]
-name = "lint-kit-fastapi"
+name = "lint-kit-python-tools"
 version = "0.3.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "flake8" },

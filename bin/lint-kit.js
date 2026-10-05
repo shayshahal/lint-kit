@@ -1,21 +1,28 @@
 #!/usr/bin/env node
 /**
- * lint-kit init: ask which rule sets this project gets, install them from git, write the config.
+ * lint-kit init: install the deterministic tools a repository uses, and nothing named after this
+ * installer. The rules are copied into the repository's tools/ folder; everything else is the
+ * tools' own config.
  *
- *   npx github:shayshahal/lint-kit init [--sets svelte-skills,untranslated-text,tailwind-patterns,error-handling,fastapi]
- *                                        [--yes] [--no-install] [--ref <git ref>] [--python <dir>]
- *                                        [--base <branch>]
+ *   npx github:shayshahal/lint-kit init [--sets svelte-skills,untranslated-text,tailwind-patterns,
+ *                                        error-handling,fastapi,typecheck,structure]
+ *                                        [--yes] [--no-install] [--base <branch>] [--cwd <dir>]
  *
- * ESLint sets: eslint.lint-kit.js holds lint-kit's entries and is rewritten on every run (so a
- * re-run adds or removes sets); eslint.config.* imports it once. A project without an ESLint
- * config gets one with the Svelte / TypeScript parser setup.
- * fastapi: [tool.lint-kit-fastapi] in pyproject.toml, FAP in .flake8, ruff's FAST and ASYNC rules
- * in the ruff config.
- * typecheck: svelte-check (with TypeScript's Go compiler, --tsgo) and pyright as lefthook
- * pre-push steps; they need the whole project, so they run before a push, not on staged files.
- * structure: pre-push steps that fail when a branch makes the code's structure worse than at its
- * base (fallow audit for JS / TS, lint-kit-structure for Python), never on what was there.
- * When the repository uses lefthook, pre-commit steps run what was chosen on staged files.
+ * Projects: in a monorepo, the members of the JS workspace (pnpm-workspace.yaml, or "workspaces"
+ * in the root package.json) plus every pyproject.toml with a [project] table; without a
+ * workspace, every package.json and pyproject.toml outside node_modules and hidden folders.
+ * Each set is wired into each project it fits.
+ *
+ * ESLint sets: tools/eslint/<set>.mjs (and its .md), imported by each project's eslint.rules.js,
+ * which its ESLint config spreads last. fastapi: tools/python/fastapi_rules.py, a flake8 local
+ * plugin (.flake8), [tool.fastapi-rules] in pyproject.toml, ruff's FAST and ASYNC rules.
+ * typecheck: svelte-check --tsgo and pyright as lefthook pre-push steps. structure: pre-push
+ * steps that fail when a branch makes the code's structure worse than at its base (fallow audit;
+ * tools/python/structure_check.py). When the repository uses lefthook, pre-commit steps run the
+ * linters on staged files.
+ *
+ * It only adds and updates: a re-run copies the tools again and adds what is missing; turning a
+ * set off is done by hand.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -24,10 +31,8 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { parseDocument } from 'yaml';
 
-const REPO = 'shayshahal/lint-kit';
-const SELF = JSON.parse(
-	fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../package.json'), 'utf8'),
-);
+/** This installer's checkout: the files under tools/ are copied from here. */
+const SELF = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export const SETS = {
 	'svelte-skills': { kind: 'eslint', about: 'Svelte 5 / SvelteKit rules (22) from the Svelte skills and docs' },
@@ -41,17 +46,22 @@ export const SETS = {
 		about: 'fail a push that adds complexity, duplication or dead code the base did not have (lefthook)',
 	},
 };
+/** The JS project dependency each ESLint set is for. */
+const ESLINT_FOR = {
+	'svelte-skills': (deps) => 'svelte' in deps,
+	'untranslated-text': (deps) => '@inlang/paraglide-js' in deps,
+	'tailwind-patterns': (deps) => 'tailwindcss' in deps,
+	'error-handling': (deps) => 'svelte' in deps || 'typescript' in deps,
+};
 const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', '@typescript-eslint/parser'];
 
 function parseArgs(argv) {
-	const args = { command: argv[0], yes: false, install: true, ref: `v${SELF.version}` };
+	const args = { command: argv[0], yes: false, install: true };
 	for (let i = 1; i < argv.length; i++) {
 		const a = argv[i];
 		if (a === '--yes' || a === '-y') args.yes = true;
 		else if (a === '--no-install') args.install = false;
 		else if (a === '--sets') args.sets = argv[++i].split(',').filter(Boolean);
-		else if (a === '--ref') args.ref = argv[++i];
-		else if (a === '--python') args.python = argv[++i];
 		else if (a === '--cwd') args.cwd = argv[++i];
 		else if (a === '--base') args.base = argv[++i];
 		else throw new Error(`unknown option ${a}`);
@@ -60,28 +70,138 @@ function parseArgs(argv) {
 	return args;
 }
 
-const read = (file) => (file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null);
+/** A file's text with LF line endings (a Windows checkout has CRLF), or null. */
+const read = (file) => (file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n') : null);
+/** Write `text` (LF) to `file`, in the line endings the file already has. */
+function write(file, text) {
+	const crlf = fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes('\r\n');
+	fs.writeFileSync(file, crlf ? text.replace(/\n/g, '\r\n') : text);
+}
 const say = (msg) => console.log(msg);
+const posix = (p) => p.replace(/\\/g, '/');
+/** `to` relative to `from`, with slashes; '.' for the same folder. */
+const rel = (from, to) => posix(path.relative(from, to)) || '.';
+const where = (project) => project.rel || '.';
 
-function detect(cwd, pythonDir) {
-	const pkg = JSON.parse(read(path.join(cwd, 'package.json')) ?? '{}');
-	const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-	const pyproject = read(path.join(pythonDir, 'pyproject.toml')) ?? '';
-	// a set lint-kit already installed stays on unless it is turned off
-	const own = read(path.join(cwd, 'eslint.lint-kit.js')) ?? '';
-	const installed = (set) => own.includes(`from 'lint-kit/${set}'`);
+// ── projects ────────────────────────────────────────────────────────────────────
+
+function gitRoot(cwd) {
+	for (let dir = cwd; ; dir = path.dirname(dir)) {
+		if (fs.existsSync(path.join(dir, '.git'))) return dir;
+		if (path.dirname(dir) === dir) return null;
+	}
+}
+
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '__pycache__']);
+
+/** package.json and pyproject.toml files under `repo`, as relative folders ('' for the root). */
+function manifests(repo) {
+	const found = { 'package.json': [], 'pyproject.toml': [] };
+	const walk = (dir) => {
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			if (entry.isDirectory()) {
+				if (!entry.name.startsWith('.') && !SKIP_DIRS.has(entry.name)) walk(path.join(dir, entry.name));
+			} else if (entry.name in found) found[entry.name].push(rel(repo, dir).replace(/^\.$/, ''));
+		}
+	};
+	walk(repo);
+	return found;
+}
+
+/** A workspace glob (packages/*, apps/**) as a regular expression over relative folders. */
+const globRegex = (glob) =>
+	new RegExp(
+		`^${glob
+			.replace(/^\.\//, '')
+			.replace(/\/+$/, '')
+			.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+			.replace(/\*\*/g, '\u0000')
+			.replace(/\*/g, '[^/]*')
+			.replace(/\u0000/g, '.*')}$`,
+	);
+
+/** The JS workspace's member globs, or null when the repository has no workspace. */
+function workspaceGlobs(repo) {
+	const pnpm = read(path.join(repo, 'pnpm-workspace.yaml'));
+	if (pnpm !== null) return parseDocument(pnpm).toJSON()?.packages ?? [];
+	const pkg = JSON.parse(read(path.join(repo, 'package.json')) ?? '{}');
+	const ws = Array.isArray(pkg.workspaces) ? pkg.workspaces : pkg.workspaces?.packages;
+	return ws ?? null;
+}
+
+function hasEslintConfig(dir) {
+	return ESLINT_CONFIGS.some((f) => fs.existsSync(path.join(dir, f)));
+}
+
+/**
+ * The repository's projects. JS: { dir, rel, deps, pm, exec }, the workspace members when there
+ * is a workspace (so a stray package.json in a scratch folder is not a project), else every
+ * package.json. Python: { dir, rel, text } for every pyproject.toml with a [project] table.
+ */
+export function findProjects(repo) {
+	const found = manifests(repo);
+	const globs = workspaceGlobs(repo);
+	const member = (r) => {
+		if (!globs) return true;
+		if (r === '') return true;
+		const include = globs.filter((g) => !g.startsWith('!')).some((g) => globRegex(g).test(r));
+		const exclude = globs.filter((g) => g.startsWith('!')).some((g) => globRegex(g.slice(1)).test(r));
+		return include && !exclude;
+	};
+	const js = found['package.json'].filter(member).map((r) => {
+		const dir = path.join(repo, r);
+		const pkg = JSON.parse(read(path.join(dir, 'package.json')) || '{}');
+		const pm = packageManager(dir);
+		return { dir, rel: r, deps: { ...pkg.dependencies, ...pkg.devDependencies }, pm, exec: EXEC[pm] };
+	});
+	const py = found['pyproject.toml']
+		.map((r) => ({ dir: path.join(repo, r), rel: r, text: read(path.join(repo, r, 'pyproject.toml')) }))
+		.filter((p) => /^\[project\]/m.test(p.text));
+	return { js, py, workspace: globs !== null };
+}
+
+const isFastapi = (py) => /["']fastapi/i.test(py.text) || FASTAPI_TABLE.test(py.text);
+
+/** The folders fallow runs in: the workspace root, or each project without one. */
+const fallowRoots = (projects) =>
+	projects.workspace ? projects.js.filter((p) => p.rel === '') : projects.js;
+
+/** Step names: `base` alone for one project, `base-<folder>` for each of several. */
+function stepNames(base, list) {
+	const short = (p) => (p.rel ? path.posix.basename(p.rel) : 'root');
+	const clash = new Set(list.map(short).filter((s, i, all) => all.indexOf(s) !== i));
+	return new Map(
+		list.map((p) => [p, list.length === 1 ? base : `${base}-${clash.has(short(p)) ? p.rel.replace(/\//g, '-') : short(p)}`]),
+	);
+}
+
+// ── choosing ────────────────────────────────────────────────────────────────────
+
+/** What is there already, so a re-run keeps it on. */
+function installed(repo, projects) {
+	const hooks = read(lefthookFile(repo)?.file) ?? '';
+	const own = projects.js.map((p) => read(path.join(p.dir, ESLINT_RULES)) ?? '').join('\n');
 	return {
-		'svelte-skills': 'svelte' in deps || installed('svelte-skills'),
-		'untranslated-text': '@inlang/paraglide-js' in deps || installed('untranslated-text'),
-		'tailwind-patterns': 'tailwindcss' in deps || installed('tailwind-patterns'),
-		'error-handling': 'svelte' in deps || 'typescript' in deps || installed('error-handling'),
-		fastapi: /["']fastapi/i.test(pyproject) || FASTAPI_TABLE.test(pyproject),
-		typecheck:
-			TYPECHECK_STEPS.some((step) => (read(lefthookFile(cwd)?.file) ?? '').includes(step)) ||
-			(lefthookFile(cwd) !== null && ('svelte' in deps || /["']fastapi/i.test(pyproject))),
-		structure:
-			STRUCTURE_STEPS.some((step) => (read(lefthookFile(cwd)?.file) ?? '').includes(step)) ||
-			(lefthookFile(cwd) !== null && ('svelte' in deps || 'typescript' in deps || /["']fastapi/i.test(pyproject))),
+		eslint: (set) => own.includes(`tools/eslint/${set}.mjs`),
+		fastapi: projects.py.some((p) => FASTAPI_TABLE.test(p.text)),
+		typecheck: /svelte-check --tsgo|uv run pyright/.test(hooks),
+		structure: /structure_check\.py --base|fallow audit --base/.test(hooks),
+	};
+}
+
+function detect(repo, projects) {
+	const had = installed(repo, projects);
+	const hooks = lefthookFile(repo) !== null;
+	const anyDep = (dep) => projects.js.some((p) => dep in p.deps);
+	const fastapi = projects.py.some(isFastapi);
+	const eslint = Object.fromEntries(
+		Object.keys(ESLINT_FOR).map((s) => [s, had.eslint(s) || eslintProjects(projects).some((p) => ESLINT_FOR[s](p.deps))]),
+	);
+	return {
+		...eslint,
+		fastapi: had.fastapi || fastapi,
+		typecheck: had.typecheck || (hooks && (anyDep('svelte') || fastapi)),
+		structure: had.structure || (hooks && (anyDep('svelte') || anyDep('typescript') || fastapi)),
 	};
 }
 
@@ -99,6 +219,8 @@ async function choose(args, defaults) {
 	return chosen;
 }
 
+// ── running ─────────────────────────────────────────────────────────────────────
+
 function packageManager(cwd) {
 	for (let dir = cwd; ; dir = path.dirname(dir)) {
 		if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm';
@@ -107,6 +229,9 @@ function packageManager(cwd) {
 		if (path.dirname(dir) === dir) return 'npm';
 	}
 }
+
+/** The command that runs a dev dependency's binary. */
+const EXEC = { pnpm: 'pnpm exec', yarn: 'yarn', npm: 'npx' };
 
 /**
  * On Windows npm / pnpm are .cmd files, which only run through a shell; quote what it would split.
@@ -122,8 +247,44 @@ function run(cmd, cmdArgs, cwd) {
 	execFileSync(cmd, shellArgs(cmdArgs, shell), { cwd, stdio: 'inherit', shell });
 }
 
+/** Add JS dev dependencies the project does not have yet. */
+function addJs(project, names) {
+	const missing = names.filter((n) => !(n.replace(/(.)@.*$/, '$1') in project.deps));
+	if (!missing.length) return;
+	run(project.pm, [...(project.pm === 'npm' ? ['install', '--save-dev'] : ['add', '-D']), ...missing], project.dir);
+	for (const n of missing) project.deps[n.replace(/(.)@.*$/, '$1')] = 'added';
+}
+
+/** Add Python dev dependencies the project does not mention yet. */
+function addPython(py, names) {
+	const missing = names.filter((n) => !new RegExp(`["']${n}\\b`).test(py.text));
+	if (!missing.length) return;
+	if (fs.existsSync(path.join(py.dir, 'uv.lock'))) run('uv', ['add', '--dev', ...missing], py.dir);
+	else say(`→ ${where(py)}: install ${missing.join(' ')} (pip install ${missing.join(' ')})`);
+	py.text = read(path.join(py.dir, 'pyproject.toml'));
+}
+
+// ── tools/ ──────────────────────────────────────────────────────────────────────
+
+/** Copy files from this installer's tools/ into the repository's; they are rewritten every run. */
+function copyTools(repo, files) {
+	for (const file of files) {
+		const to = path.join(repo, 'tools', file);
+		fs.mkdirSync(path.dirname(to), { recursive: true });
+		fs.copyFileSync(path.join(SELF, 'tools', file), to);
+	}
+	if (files.length) say(`✔ tools/: ${files.join(', ')}`);
+}
+
 // ── ESLint ──────────────────────────────────────────────────────────────────────
 
+const ESLINT_RULES = 'eslint.rules.js';
+const ESLINT_NAMES = {
+	'svelte-skills': 'svelteSkills',
+	'untranslated-text': 'untranslatedText',
+	'tailwind-patterns': 'tailwindPatterns',
+	'error-handling': 'errorHandling',
+};
 const ESLINT_ENTRIES = {
 	'svelte-skills': () => `	...svelteSkills.config(),`,
 	'untranslated-text': () => `	...untranslatedText.config({
@@ -137,18 +298,15 @@ const ESLINT_ENTRIES = {
 	}),`,
 	'error-handling': () => `	...errorHandling.config(),`,
 };
-const ESLINT_IMPORTS = {
-	'svelte-skills': "import svelteSkills from 'lint-kit/svelte-skills';",
-	'untranslated-text': "import untranslatedText from 'lint-kit/untranslated-text';",
-	'tailwind-patterns': "import tailwindPatterns from 'lint-kit/tailwind-patterns';",
-	'error-handling': "import errorHandling from 'lint-kit/error-handling';",
-};
 
-export function lintKitConfig(sets) {
-	const chosen = sets.filter((s) => SETS[s].kind === 'eslint');
-	return `// Written by \`lint-kit init\`. Edit the options here; re-running init rewrites this file (it
-// keeps the previous one as eslint.lint-kit.js.bak), so carry your edits over after a re-run.
-${chosen.map((s) => ESLINT_IMPORTS[s]).join('\n')}
+/** A project ESLint sets can go into: one that has an ESLint config, or a Svelte one. */
+const eslintProjects = (projects) => projects.js.filter((p) => 'svelte' in p.deps || hasEslintConfig(p.dir));
+
+/** eslint.rules.js: the copied rule sets, imported from tools/eslint, with their options. */
+export function rulesConfig(sets, tools) {
+	const chosen = Object.keys(ESLINT_ENTRIES).filter((s) => sets.includes(s));
+	return `// The rules in ${tools}/, with their options. eslint.config spreads this list last.
+${chosen.map((s) => `import ${ESLINT_NAMES[s]} from '${tools}/${s}.mjs';`).join('\n')}
 
 export default [
 ${chosen.map((s) => ESLINT_ENTRIES[s]()).join('\n')}
@@ -158,7 +316,7 @@ ${chosen.map((s) => ESLINT_ENTRIES[s]()).join('\n')}
 
 const NEW_ESLINT_CONFIG = `import svelte from 'eslint-plugin-svelte';
 import tsParser from '@typescript-eslint/parser';
-import lintKit from './eslint.lint-kit.js';
+import toolRules from './${ESLINT_RULES}';
 
 export default [
 	...svelte.configs.recommended,
@@ -171,7 +329,7 @@ export default [
 		ignores: ['**/*.svelte.ts', '**/*.svelte.js'],
 		languageOptions: { parser: tsParser },
 	},
-	...lintKit,
+	...toolRules,
 	{ ignores: ['build/', '.svelte-kit/', 'dist/', 'node_modules/'] },
 ];
 `;
@@ -179,87 +337,122 @@ export default [
 /** ESLint's own lookup order. */
 export const ESLINT_CONFIGS = ['js', 'mjs', 'cjs', 'ts', 'mts', 'cts'].map((ext) => `eslint.config.${ext}`);
 
-/** Make the ESLint config spread lint-kit's entries last: they hold one list per restricted-* rule. */
+/** Make the ESLint config spread eslint.rules.js last: it holds one list per restricted-* rule. */
 export function patchEslintConfig(text) {
-	if (text.includes('eslint.lint-kit.js')) return text;
+	if (text.includes(ESLINT_RULES)) return text;
 	const esm = text.search(/^export default /m);
 	if (esm >= 0) {
 		const body = text.slice(esm + 'export default '.length).replace(/;\s*$/, '');
 		return (
-			`import lintKit from './eslint.lint-kit.js';\n` +
+			`import toolRules from './${ESLINT_RULES}';\n` +
 			text.slice(0, esm) +
 			`const config = ${body};\n\n` +
-			`export default [...[config].flat(), ...lintKit];\n`
+			`export default [...[config].flat(), ...toolRules];\n`
 		);
 	}
-	// CommonJS cannot import eslint.lint-kit.js synchronously; ESLint awaits an exported promise.
+	// CommonJS cannot import eslint.rules.js synchronously; ESLint awaits an exported promise.
 	const cjs = text.match(/^module\.exports\s*=\s*/m);
-	if (!cjs) throw new Error('the ESLint config has no `export default` or `module.exports`; add ...lintKit yourself');
+	if (!cjs) throw new Error(`the ESLint config has no \`export default\` or \`module.exports\`; add ...toolRules yourself`);
 	const body = text.slice(cjs.index + cjs[0].length).replace(/;\s*$/, '');
 	return (
 		text.slice(0, cjs.index) +
 		`const config = ${body};\n\n` +
-		`module.exports = (async () => [...[config].flat(), ...(await import('./eslint.lint-kit.js')).default])();\n`
+		`module.exports = (async () => [...[config].flat(), ...(await import('./${ESLINT_RULES}')).default])();\n`
 	);
 }
 
-/** The command that runs a dev dependency's binary. */
-const EXEC = { pnpm: 'pnpm exec', yarn: 'yarn', npm: 'npx' };
+/** The ESLint sets a project gets: the chosen ones it fits, and those it has (sets only get added). */
+function eslintSetsFor(project, sets) {
+	const had = read(path.join(project.dir, ESLINT_RULES)) ?? '';
+	return Object.keys(ESLINT_FOR).filter(
+		(s) => had.includes(`tools/eslint/${s}.mjs`) || (sets.includes(s) && ESLINT_FOR[s](project.deps)),
+	);
+}
+
+/** Wire `wanted` ESLint sets into one project. */
+function writeEslint(repo, project, wanted, args) {
+	const own = path.join(project.dir, ESLINT_RULES);
+	const previous = read(own);
+	if (args.install) addJs(project, ESLINT_PEERS);
+	const next = rulesConfig(wanted, rel(project.dir, path.join(repo, 'tools', 'eslint')).replace(/^(?!\.)/, './'));
+	if (previous !== null && previous !== next) {
+		write(`${own}.bak`, previous);
+		say(`  (previous ${ESLINT_RULES} kept as ${ESLINT_RULES}.bak)`);
+	}
+	write(own, next);
+	say(`✔ ${where(project)}: ${ESLINT_RULES} (${wanted.join(', ')})`);
+	const existing = ESLINT_CONFIGS.find((f) => fs.existsSync(path.join(project.dir, f)));
+	if (!existing) {
+		write(path.join(project.dir, 'eslint.config.js'), NEW_ESLINT_CONFIG);
+		say(`✔ ${where(project)}: eslint.config.js (new, with the Svelte / TypeScript parser setup)`);
+	} else {
+		const file = path.join(project.dir, existing);
+		const before = read(file);
+		const after = patchEslintConfig(before);
+		if (after !== before) {
+			write(file, after);
+			say(`✔ ${where(project)}: ${existing} spreads ${ESLINT_RULES} last`);
+		}
+	}
+}
+
+// ── lefthook ────────────────────────────────────────────────────────────────────
+
+/** The repository's lefthook config, if it has one. */
+function lefthookFile(repo) {
+	const file = ['lefthook.yml', 'lefthook.yaml'].map((f) => path.join(repo, f)).find((f) => fs.existsSync(f));
+	return file ? { repo, file } : null;
+}
 
 /**
  * lefthook.yml written back as it was: the yaml library folds lines over 80 characters by default,
- * which rewrites every long `run:` the project has even when lint-kit changes nothing.
+ * which rewrites every long `run:` the project has even when the installer changes nothing.
  */
 const AS_WRITTEN = { lineWidth: 0 };
 
-/** lefthook pre-commit step: ESLint on staged files under src/, unless a step already runs ESLint. */
-export function patchLefthookEslint(text, root, exec) {
-	const doc = parseDocument(text);
-	const dir = lefthookRoot(root);
-	addLefthookStep(doc, 'lint-kit-eslint', /\beslint\b/, {
-		glob: everywhere(doc, `${dir}src/`, '*.{js,ts,svelte}'),
-		...(dir ? { root: dir } : {}),
-		run: `${exec} eslint {staged_files}`,
-	});
-	return doc.toString(AS_WRITTEN);
+/** `root` for a lefthook step: the folder relative to the repository, with a trailing slash. */
+const lefthookRoot = (r) => (r ? `${posix(r).replace(/\/?$/, '/')}` : '');
+
+/**
+ * A glob for every file under `dir` (a lefthookRoot) matching `pattern`. lefthook's default
+ * matcher lets `*` cross folders, and `app/**\/*.py` misses app/main.py; with
+ * `glob_matcher: doublestar` `*` stops at a folder, and `**\/` also matches none.
+ */
+const everywhere = (doc, dir, pattern) =>
+	doc.get('glob_matcher') === 'doublestar' ? `${dir}**/${pattern}` : `${dir}${pattern}`;
+
+/**
+ * Add a step to `hook` unless one of that name is there (a re-run keeps the user's edits), or a
+ * step already runs the same tool for this project (`runs`): one whose root is the project's, or
+ * any step when the project is the only one of its kind.
+ */
+function addStep(doc, hook, name, value, runs, only) {
+	if (!doc.hasIn([hook, 'commands'])) doc.setIn([hook, 'commands'], doc.createNode({}));
+	const steps = doc.getIn([hook, 'commands']).toJSON() ?? {};
+	if (name in steps) return;
+	const same = (step) => only || (step?.root ?? '') === (value.root ?? '');
+	if (runs && Object.values(steps).some((step) => runs.test(step?.run ?? '') && same(step))) return;
+	// `commands: {}` would otherwise get every step on one line
+	const commands = doc.getIn([hook, 'commands']);
+	if (commands.flow && !commands.items.length) commands.flow = false;
+	doc.setIn([hook, 'commands', name], doc.createNode(value));
 }
 
-function writeEslint(cwd, sets) {
-	const own = path.join(cwd, 'eslint.lint-kit.js');
-	const next = lintKitConfig(sets);
-	const previous = read(own);
-	if (previous !== null && previous !== next) {
-		fs.writeFileSync(`${own}.bak`, previous);
-		say('  (previous eslint.lint-kit.js kept as eslint.lint-kit.js.bak)');
-	}
-	fs.writeFileSync(own, next);
-	say('✔ eslint.lint-kit.js');
-	const existing = ESLINT_CONFIGS.find((f) => fs.existsSync(path.join(cwd, f)));
-	if (!existing) {
-		fs.writeFileSync(path.join(cwd, 'eslint.config.js'), NEW_ESLINT_CONFIG);
-		say('✔ eslint.config.js (new, with the Svelte / TypeScript parser setup)');
-	} else {
-		const file = path.join(cwd, existing);
-		const before = fs.readFileSync(file, 'utf8');
-		const after = patchEslintConfig(before);
-		if (after !== before) {
-			fs.writeFileSync(file, after);
-			say(`✔ ${existing} spreads ...lintKit last`);
-		}
-	}
-	const lefthook = lefthookFile(cwd);
-	if (!lefthook) return;
-	const before = fs.readFileSync(lefthook.file, 'utf8');
-	const after = sets.some((s) => SETS[s].kind === 'eslint')
-		? patchLefthookEslint(before, path.relative(lefthook.repo, cwd), EXEC[packageManager(cwd)])
-		: unpatchLefthook(before, ['lint-kit-eslint']);
-	if (after !== before) {
-		fs.writeFileSync(lefthook.file, after);
-		say(`✔ ${path.basename(lefthook.file)} ${after.includes('lint-kit-eslint') ? 'runs' : 'no longer runs'} ESLint before each commit`);
-	}
+/** Apply `edit(doc)` to lefthook.yml, if the repository has one. */
+function editLefthook(repo, edit) {
+	const lefthook = lefthookFile(repo);
+	if (!lefthook) return false;
+	const before = read(lefthook.file);
+	const doc = parseDocument(before);
+	edit(doc);
+	const after = doc.toString(AS_WRITTEN);
+	if (after !== before) write(lefthook.file, after);
+	return true;
 }
 
-// ── Python ──────────────────────────────────────────────────────────────────────
+// ── fastapi ─────────────────────────────────────────────────────────────────────
+
+const FASTAPI_TABLE = /^\[tool\.fastapi-rules[\].]/m;
 
 /** The package that creates FastAPI(): the app setting. */
 function findApp(dir) {
@@ -272,79 +465,31 @@ function findApp(dir) {
 	return 'app';
 }
 
-export function patchPyproject(text, app) {
-	if (/^\[tool\.lint-kit-fastapi\]/m.test(text)) return text;
-	return `${text.replace(/\s*$/, '\n')}\n[tool.lint-kit-fastapi]\napp = "${app}"\n\n# FAP001 knows common libraries. Classify the rest: the calls that block the event loop, or why\n# the library is safe in async code. \`lint-kit-fastapi check-deps\` lists what is missing.\n[tool.lint-kit-fastapi.dependencies]\n`;
+export function patchPyproject(text, app, check) {
+	if (FASTAPI_TABLE.test(text)) return text;
+	return `${text.replace(/\s*$/, '\n')}\n[tool.fastapi-rules]\napp = "${app}"\n\n# FAP001 knows common libraries. Classify the rest: the calls that block the event loop, or why\n# the library is safe in async code. This lists what is missing:\n#   ${check}\n[tool.fastapi-rules.dependencies]\n`;
 }
 
-export function patchFlake8(text) {
-	if (text === null) return FLAKE8_NEW;
-	if (/\bFAP\b/.test(text)) return text;
-	if (/^\[flake8\]\s*$/m.test(text)) return text.replace(/^\[flake8\]\s*$/m, '[flake8]\nextend-select = FAP');
-	return `${text.replace(/\s*$/, '\n')}\n[flake8]\nextend-select = FAP\n`;
+/** .flake8 that selects FAP and loads tools/python/fastapi_rules.py as a local plugin. */
+export function patchFlake8(text, toolsDir) {
+	const plugin = `[flake8:local-plugins]\nextension =\n    FAP = fastapi_rules:Plugin\npaths =\n    ${toolsDir}\n`;
+	if (text === null) return `[flake8]\nselect = FAP\nmax-line-length = 100\n\n${plugin}`;
+	let out = text;
+	if (!/\bFAP\b/.test(out.replace(/^.*fastapi_rules.*$/gm, '')))
+		out = /^\[flake8\]\s*$/m.test(out)
+			? out.replace(/^\[flake8\]\s*$/m, '[flake8]\nextend-select = FAP')
+			: `${out.replace(/\s*$/, '\n')}\n[flake8]\nextend-select = FAP\n`;
+	if (out.includes('fastapi_rules:Plugin')) return out;
+	if (!/^\[flake8:local-plugins\]/m.test(out)) return `${out.replace(/\s*$/, '\n')}\n${plugin}`;
+	// the project has local plugins of its own: add one more to each list
+	return out
+		.replace(/^(\[flake8:local-plugins\][\s\S]*?^extension\s*=.*)$/m, '$1\n    FAP = fastapi_rules:Plugin')
+		.replace(/^(\[flake8:local-plugins\][\s\S]*?^paths\s*=.*)$/m, `$1\n    ${toolsDir}`);
 }
-
-/** `root` for a lefthook step: the folder relative to the repository, with a trailing slash. */
-const lefthookRoot = (rel) => (rel ? `${rel.replace(/\\/g, '/').replace(/\/?$/, '/')}` : '');
-
-/**
- * A glob for every file under `dir` (a lefthookRoot) matching `pattern`. lefthook's default
- * matcher lets `*` cross folders, and `app/**\/*.py` misses app/main.py; with
- * `glob_matcher: doublestar` `*` stops at a folder, and `**\/` also matches none.
- */
-const everywhere = (doc, dir, pattern) =>
-	doc.get('glob_matcher') === 'doublestar' ? `${dir}**/${pattern}` : `${dir}${pattern}`;
-
-/**
- * Add a pre-commit step unless it is there, or another step already runs the same tool (`runs`).
- * Globs come from `everywhere`, which knows the project's glob_matcher.
- */
-function addLefthookStep(doc, name, runs, value) {
-	if (!doc.hasIn(['pre-commit', 'commands'])) doc.setIn(['pre-commit', 'commands'], doc.createNode({}));
-	const steps = doc.getIn(['pre-commit', 'commands']).toJSON() ?? {};
-	if (name in steps) return;
-	if (runs && Object.values(steps).some((step) => runs.test(step?.run ?? ''))) return;
-	doc.setIn(['pre-commit', 'commands', name], doc.createNode(value));
-}
-
-/**
- * lefthook pre-commit steps: FAP on staged app files, check-deps when pyproject.toml changes, and
- * ruff unless a step already runs it.
- */
-export function patchLefthook(text, pythonRoot, app) {
-	const doc = parseDocument(text);
-	const root = lefthookRoot(pythonRoot);
-	const at = root ? { root } : {};
-	addLefthookStep(doc, 'lint-kit-fastapi', null, {
-		glob: everywhere(doc, `${root}${app}/`, '*.py'),
-		...at,
-		run: 'uv run flake8 {staged_files}',
-	});
-	addLefthookStep(doc, 'lint-kit-fastapi-deps', null, {
-		glob: `${root}pyproject.toml`,
-		...at,
-		run: 'uv run lint-kit-fastapi check-deps',
-	});
-	addLefthookStep(doc, 'lint-kit-ruff', /\bruff\b/, {
-		glob: everywhere(doc, root, '*.py'),
-		...at,
-		run: 'uv run ruff check {staged_files}',
-	});
-	return doc.toString(AS_WRITTEN);
-}
-
-/** The repository's lefthook config, if it has one. */
-function lefthookFile(cwd) {
-	const repo = gitRoot(cwd);
-	const file = repo && ['lefthook.yml', 'lefthook.yaml'].map((f) => path.join(repo, f)).find((f) => fs.existsSync(f));
-	return file ? { repo, file } : null;
-}
-
-// ── ruff ──
 
 /** ruff's own rules for FastAPI and async code; FAP holds only what they cannot express. */
 export const RUFF_RULES = ['FAST', 'ASYNC'];
-const RUFF_MARK = '# lint-kit-fastapi added';
+const RUFF_NOTE = '# FAST, ASYNC: ruff\'s FastAPI and async rules (FAP in .flake8 has the rest)';
 
 /**
  * The ruff config that applies to pythonDir: the nearest ruff.toml, .ruff.toml or pyproject.toml
@@ -362,273 +507,89 @@ export function findRuffConfig(pythonDir, repo) {
 const tableHeader = (table) => new RegExp(`^\\[${table.replace(/\./g, '\\.')}\\][ \\t]*(#.*)?$`, 'm');
 const quoted = (codes) => codes.map((c) => `"${c}"`).join(', ');
 
-/** Add RUFF_RULES to the lint table's extend-select, with a comment that says which were added. */
+/** Add whichever of RUFF_RULES the lint table's select / extend-select lack to extend-select. */
 export function patchRuff(text, table) {
-	if (text.includes(RUFF_MARK)) return text;
 	const header = tableHeader(table);
 	const found = header.exec(text);
-	if (!found) {
-		const lines = `[${table}]\n${RUFF_MARK} ${RUFF_RULES.join(', ')}\nextend-select = [${quoted(RUFF_RULES)}]\n`;
-		return `${text.replace(/\s*$/, '\n')}\n${lines}`;
-	}
+	if (!found) return `${text.replace(/\s*$/, '\n')}\n[${table}]\n${RUFF_NOTE}\nextend-select = [${quoted(RUFF_RULES)}]\n`;
 	const start = found.index + found[0].length + 1;
 	const next = text.slice(start).search(/^\s*\[/m);
 	const end = next < 0 ? text.length : start + next;
 	const body = text.slice(start, end);
-	const select = /^extend-select\s*=\s*\[([^\]]*)\]/m.exec(body);
-	if (!select) {
-		const lines = `${RUFF_MARK} ${RUFF_RULES.join(', ')}\nextend-select = [${quoted(RUFF_RULES)}]\n`;
-		return text.slice(0, start) + lines + text.slice(start);
-	}
-	const has = new Set([...select[1].matchAll(/["']([A-Z0-9]+)["']/g)].map((m) => m[1]));
+	const lists = [...body.matchAll(/^(?:extend-)?select\s*=\s*\[([^\]]*)\]/gm)].map((m) => m[1]).join(' ');
+	const has = new Set([...lists.matchAll(/["']([A-Z0-9]+)["']/g)].map((m) => m[1]));
 	const missing = RUFF_RULES.filter((c) => !has.has(c));
 	if (!missing.length) return text;
+	const select = /^extend-select\s*=\s*\[([^\]]*)\]/m.exec(body);
+	if (!select) return text.slice(0, start) + `${RUFF_NOTE}\nextend-select = [${quoted(missing)}]\n` + text.slice(start);
 	const items = select[1].replace(/[\s,]*$/, '');
 	const at = start + select.index + select[0].indexOf('[') + 1 + items.length;
-	const added = `${items ? ', ' : ''}${quoted(missing)}`;
-	return text.slice(0, start + select.index) + `${RUFF_MARK} ${missing.join(', ')}\n` + text.slice(start + select.index, at) + added + text.slice(at);
+	const note = body.includes(RUFF_NOTE) ? '' : `${RUFF_NOTE}\n`;
+	return text.slice(0, start + select.index) + note + text.slice(start + select.index, at) + `${items ? ', ' : ''}${quoted(missing)}` + text.slice(at);
 }
 
-/** The ruff config without what patchRuff added. */
-export function unpatchRuff(text, table) {
-	const mark = new RegExp(`^${RUFF_MARK} (.*)\\n`, 'm').exec(text);
-	if (!mark) return text;
-	const codes = mark[1].split(', ');
-	let out = text.slice(0, mark.index) + text.slice(mark.index + mark[0].length);
-	const created = `extend-select = [${quoted(codes)}]\n`;
-	if (out.startsWith(created, mark.index)) out = out.slice(0, mark.index) + out.slice(mark.index + created.length);
-	else {
-		const line = out.slice(mark.index);
-		const close = line.indexOf(']');
-		const inner = line.slice(0, close).replace(`, ${quoted(codes)}`, '').replace(quoted(codes), '');
-		out = out.slice(0, mark.index) + inner + line.slice(close);
-	}
-	// a table left empty (patchRuff wrote it): drop it with the blank lines before it
-	const header = tableHeader(table).exec(out);
-	if (header && /^\s*(\[|$)/.test(out.slice(header.index + header[0].length))) {
-		const before = out.slice(0, header.index).replace(/\n+$/, '\n');
-		const after = out.slice(header.index + header[0].length).replace(/^\s*\n/, '');
-		out = after ? `${before}\n${after}` : before;
-	}
-	return out;
-}
-
-const FASTAPI_TABLE = /^\[tool\.lint-kit-fastapi[\].]/m;
-const FLAKE8_NEW =
-	"# flake8 runs lint-kit's FastAPI rules (FAP); ruff or your other linters do the rest.\n[flake8]\nselect = FAP\nmax-line-length = 100\n";
-const LEFTHOOK_STEPS = ['lint-kit-fastapi', 'lint-kit-fastapi-deps', 'lint-kit-ruff'];
-
-/** pyproject.toml without the [tool.lint-kit-fastapi] tables (the comments before a later table stay). */
-export function unpatchPyproject(text) {
-	const lines = text.split('\n');
-	const out = [];
-	let inside = false;
-	let held = []; // comments and blank lines inside lint-kit's tables, kept if a foreign table follows
-	for (const line of lines) {
-		const header = /^\s*\[/.test(line);
-		if (header) {
-			const ours = /^\s*\[tool\.lint-kit-fastapi[\].]/.test(line);
-			if (inside && !ours) out.push(...held.filter((l, i) => held.slice(i).some((x) => x.trim())));
-			held = [];
-			inside = ours;
-			if (ours) continue;
-		}
-		if (!inside) out.push(line);
-		else if (/^\s*(#|$)/.test(line)) held.push(line);
-		else held = [];
-	}
-	return `${out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s*$/, '')}\n`;
-}
-
-/** .flake8 without lint-kit's FAP selection; null when init wrote the whole file. */
-export function unpatchFlake8(text) {
-	if (text === FLAKE8_NEW) return null;
-	return text
-		.replace(/^extend-select\s*=\s*FAP\s*\n/m, '')
-		.replace(/^(extend-select\s*=.*?),\s*FAP\b/m, '$1')
-		.replace(/^(extend-select\s*=\s*)FAP\s*,\s*/m, '$1')
-		.replace(/\n*\[flake8\]\s*$/, '\n'); // the section init appended, now empty
-}
-
-/** lefthook.yml without lint-kit's pre-commit steps. */
-export function unpatchLefthook(text, steps = LEFTHOOK_STEPS) {
-	const doc = parseDocument(text);
-	for (const hook of ['pre-commit', 'pre-push']) {
-		for (const name of steps) if (doc.hasIn([hook, 'commands', name])) doc.deleteIn([hook, 'commands', name]);
-		if (doc.getIn([hook, 'commands'])?.items?.length === 0) doc.deleteIn([hook, 'commands']);
-		if (doc.getIn([hook])?.items?.length === 0) doc.deleteIn([hook]);
-	}
-	return doc.toString(AS_WRITTEN);
-}
-
-/**
- * Turn fastapi off: the dev dependency, settings, FAP selection and lefthook steps. The dependency
- * stays while the structure set runs lint-kit-structure, which ships in the same package.
- */
-function removePython(pythonDir, args, keepPackage) {
-	const pyproject = path.join(pythonDir, 'pyproject.toml');
-	const text = read(pyproject);
-	if (text === null || !FASTAPI_TABLE.test(text)) return;
-	const depends = /lint-kit-fastapi/.test(unpatchPyproject(text));
-	if (args.install && depends && !keepPackage && fs.existsSync(path.join(pythonDir, 'uv.lock')))
-		run('uv', ['remove', '--dev', 'lint-kit-fastapi'], pythonDir);
-	fs.writeFileSync(pyproject, unpatchPyproject(read(pyproject)));
-	say('✔ pyproject.toml without [tool.lint-kit-fastapi] (its dependency list is in git history)');
-	const flake8 = path.join(pythonDir, '.flake8');
-	const flake8Text = read(flake8);
-	if (flake8Text !== null) {
-		const next = unpatchFlake8(flake8Text);
-		if (next === null) {
-			fs.rmSync(flake8);
-			say('✔ .flake8 removed (init wrote it)');
-		} else {
-			fs.writeFileSync(flake8, next);
-			if (/^select\s*=\s*FAP\s*$/m.test(next)) say('→ .flake8 still selects only FAP: change select yourself');
-			else say('✔ .flake8 no longer selects FAP');
-		}
-	}
-	const repo = gitRoot(pythonDir);
-	const ruff = findRuffConfig(pythonDir, repo);
-	const ruffText = read(ruff.file);
-	if (ruffText !== null && unpatchRuff(ruffText, ruff.table) !== ruffText) {
-		fs.writeFileSync(ruff.file, unpatchRuff(ruffText, ruff.table));
-		say(`✔ ${path.basename(ruff.file)} without the ruff rules lint-kit added (ruff itself stays installed)`);
-	}
-	const lefthook = lefthookFile(pythonDir);
-	if (lefthook) {
-		const before = fs.readFileSync(lefthook.file, 'utf8');
-		const after = unpatchLefthook(before);
-		if (after !== before) {
-			fs.writeFileSync(lefthook.file, after);
-			say(`✔ ${path.basename(lefthook.file)} without the FAP and ruff steps`);
-		}
-	}
-}
-
-/** The lint-kit Python package (FAP and lint-kit-structure), from git at the chosen ref. */
-const pythonSpec = (args) => `lint-kit-fastapi @ git+https://github.com/${REPO}@${args.ref}#subdirectory=python`;
-
-function gitRoot(cwd) {
-	for (let dir = cwd; ; dir = path.dirname(dir)) {
-		if (fs.existsSync(path.join(dir, '.git'))) return dir;
-		if (path.dirname(dir) === dir) return null;
-	}
-}
-
-function writePython(pythonDir, args) {
-	const pyproject = path.join(pythonDir, 'pyproject.toml');
-	if (!fs.existsSync(pyproject)) throw new Error(`no pyproject.toml in ${pythonDir}; pass --python <dir>`);
-	const app = findApp(pythonDir);
-	if (args.install) {
-		const spec = pythonSpec(args);
-		const ruff = /["']ruff\b/.test(fs.readFileSync(pyproject, 'utf8')) ? [] : ['ruff'];
-		if (fs.existsSync(path.join(pythonDir, 'uv.lock'))) run('uv', ['add', '--dev', spec, ...ruff], pythonDir);
-		else say(`→ install it: pip install "${spec}"${ruff.map((r) => ` ${r}`).join('')}`);
-	}
-	fs.writeFileSync(pyproject, patchPyproject(fs.readFileSync(pyproject, 'utf8'), app));
-	say(`✔ pyproject.toml [tool.lint-kit-fastapi] app = "${app}"`);
-	const flake8 = path.join(pythonDir, '.flake8');
-	fs.writeFileSync(flake8, patchFlake8(read(flake8)));
-	say('✔ .flake8 selects FAP');
-	const repo = gitRoot(pythonDir);
-	const ruff = findRuffConfig(pythonDir, repo);
+function writeFastapi(repo, py, args) {
+	const app = findApp(py.dir);
+	const tools = rel(py.dir, path.join(repo, 'tools', 'python'));
+	const check = `uv run python ${tools}/fastapi_rules.py check-deps`;
+	if (args.install) addPython(py, ['flake8', 'ruff']);
+	const pyproject = path.join(py.dir, 'pyproject.toml');
+	write(pyproject, patchPyproject(read(pyproject), app, check));
+	py.text = read(pyproject);
+	const flake8 = path.join(py.dir, '.flake8');
+	write(flake8, patchFlake8(read(flake8), tools));
+	const ruff = findRuffConfig(py.dir, repo);
 	const ruffText = read(ruff.file) ?? '';
-	if (patchRuff(ruffText, ruff.table) !== ruffText) {
-		fs.writeFileSync(ruff.file, patchRuff(ruffText, ruff.table));
-		say(`✔ ${path.relative(pythonDir, ruff.file)} turns on ruff's ${RUFF_RULES.join(' and ')} rules`);
-	}
-	const lefthook = lefthookFile(pythonDir);
-	if (lefthook) {
-		const rel = path.relative(lefthook.repo, pythonDir);
-		fs.writeFileSync(lefthook.file, patchLefthook(fs.readFileSync(lefthook.file, 'utf8'), rel, app));
-		say(`✔ ${path.basename(lefthook.file)} runs FAP, check-deps and ruff before each commit`);
+	if (patchRuff(ruffText, ruff.table) !== ruffText) write(ruff.file, patchRuff(ruffText, ruff.table));
+	if (ruff.file === pyproject) py.text = read(pyproject);
+	say(`✔ ${where(py)}: [tool.fastapi-rules] app = "${app}", FAP in .flake8, ruff's FAST and ASYNC`);
+	return { py, app, check };
+}
+
+/** pre-commit steps: FAP on staged app files, check-deps when pyproject.toml changes, and ruff. */
+function stepsFastapi(doc, wired) {
+	const names = stepNames('fastapi-rules', wired.map((w) => w.py));
+	for (const { py, app, check } of wired) {
+		const root = lefthookRoot(py.rel);
+		const at = root ? { root } : {};
+		const name = names.get(py);
+		const only = wired.length === 1;
+		const flake8 = { glob: everywhere(doc, `${root}${app}/`, '*.py'), ...at, run: 'uv run flake8 {staged_files}' };
+		addStep(doc, 'pre-commit', name, flake8, /\bflake8\b/, only);
+		const deps = { glob: `${root}pyproject.toml`, ...at, run: check };
+		addStep(doc, 'pre-commit', name.replace('fastapi-rules', 'fastapi-deps'), deps, /\bcheck-deps\b/, only);
+		const ruff = { glob: everywhere(doc, root, '*.py'), ...at, run: 'uv run ruff check {staged_files}' };
+		addStep(doc, 'pre-commit', name.replace('fastapi-rules', 'ruff'), ruff, /\bruff\b/, only);
 	}
 }
 
 // ── typecheck ───────────────────────────────────────────────────────────────────
 
-const TYPECHECK_STEPS = ['lint-kit-svelte-check', 'lint-kit-pyright'];
 /** svelte-check's --tsgo runs TypeScript 7 (Go) beside the TypeScript 6 it loads Svelte with. */
 const TSGO = ['@typescript/native', '@typescript/native-preview'];
 
-/**
- * lefthook pre-push steps: svelte-check over the frontend and pyright over the backend, each when
- * the push touches its files. `frontend` / `backend` are { root, exec } or null.
- */
-export function patchLefthookTypecheck(text, frontend, backend) {
-	const doc = parseDocument(text);
-	const step = (name, value) => addPushStep(doc, name, value);
-	if (frontend) {
-		const dir = lefthookRoot(frontend.root);
-		const sync = frontend.kit ? `${frontend.exec} svelte-kit sync && ` : '';
-		step('lint-kit-svelte-check', {
-			glob: everywhere(doc, dir, '*.{svelte,ts,js}'),
-			...(dir ? { root: dir } : {}),
-			run: `${sync}${frontend.exec} svelte-check --tsgo`,
-		});
+function writeTypecheck(projects, doc, args) {
+	const svelte = projects.js.filter((p) => 'svelte' in p.deps);
+	const svelteNames = stepNames('svelte-check', svelte);
+	for (const p of svelte) {
+		if (args.install) addJs(p, ['svelte-check', ...(TSGO.some((t) => t in p.deps) ? [] : ['@typescript/native@npm:typescript@7'])]);
+		const dir = lefthookRoot(p.rel);
+		const sync = '@sveltejs/kit' in p.deps ? `${p.exec} svelte-kit sync && ` : '';
+		const step = { glob: everywhere(doc, dir, '*.{svelte,ts,js}'), ...(dir ? { root: dir } : {}), run: `${sync}${p.exec} svelte-check --tsgo` };
+		addStep(doc, 'pre-push', svelteNames.get(p), step, /\bsvelte-check\b/, svelte.length === 1);
 	}
-	if (backend) {
-		const dir = lefthookRoot(backend.root);
-		step('lint-kit-pyright', { glob: everywhere(doc, dir, '*.py'), ...(dir ? { root: dir } : {}), run: 'uv run pyright' });
+	const pyNames = stepNames('pyright', projects.py);
+	for (const py of projects.py) {
+		if (args.install) addPython(py, ['pyright']);
+		const dir = lefthookRoot(py.rel);
+		const step = { glob: everywhere(doc, dir, '*.py'), ...(dir ? { root: dir } : {}), run: 'uv run pyright' };
+		addStep(doc, 'pre-push', pyNames.get(py), step, /\bpyright\b/, projects.py.length === 1);
 	}
-	// a side that is gone (Svelte or the backend removed) loses its step
-	const gone = [!frontend && 'lint-kit-svelte-check', !backend && 'lint-kit-pyright'].filter(Boolean);
-	return unpatchLefthook(doc.toString(AS_WRITTEN), gone);
-}
-
-/**
- * Add a pre-push step unless one of that name is there (a re-run keeps the user's edits), or
- * another step already runs the same tool (`runs`).
- */
-function addPushStep(doc, name, value, runs) {
-	if (!doc.hasIn(['pre-push', 'commands'])) doc.setIn(['pre-push', 'commands'], doc.createNode({}));
-	const steps = doc.getIn(['pre-push', 'commands']).toJSON() ?? {};
-	if (name in steps) return;
-	if (runs && Object.values(steps).some((step) => runs.test(step?.run ?? ''))) return;
-	doc.setIn(['pre-push', 'commands', name], doc.createNode(value));
-}
-
-function writeTypecheck(cwd, pythonDir, args) {
-	const lefthook = lefthookFile(cwd);
-	if (!lefthook) return say('→ typecheck runs as lefthook pre-push steps, and this repository has no lefthook.yml');
-	const pkg = JSON.parse(read(path.join(cwd, 'package.json')) ?? '{}');
-	const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-	const pyproject = read(path.join(pythonDir, 'pyproject.toml'));
-	const pm = packageManager(cwd);
-	const frontend =
-		'svelte' in deps ? { root: path.relative(lefthook.repo, cwd), exec: EXEC[pm], kit: '@sveltejs/kit' in deps } : null;
-	const backend = pyproject !== null ? { root: path.relative(lefthook.repo, pythonDir) } : null;
-	if (args.install && frontend) {
-		const missing = [
-			...('svelte-check' in deps ? [] : ['svelte-check']),
-			...(TSGO.some((p) => p in deps) ? [] : ['@typescript/native@npm:typescript@7']),
-		];
-		if (missing.length) run(pm, [...(pm === 'npm' ? ['install', '--save-dev'] : ['add', '-D']), ...missing], cwd);
-	}
-	if (args.install && backend && !/["']pyright\b/.test(pyproject)) {
-		if (fs.existsSync(path.join(pythonDir, 'uv.lock'))) run('uv', ['add', '--dev', 'pyright'], pythonDir);
-		else say('→ install pyright: pip install pyright');
-	}
-	const before = fs.readFileSync(lefthook.file, 'utf8');
-	const after = patchLefthookTypecheck(before, frontend, backend);
-	if (after !== before) fs.writeFileSync(lefthook.file, after);
-	const which = [frontend && 'svelte-check --tsgo', backend && 'pyright'].filter(Boolean);
-	say(`✔ ${path.basename(lefthook.file)} runs ${which.join(' and ') || 'nothing (no Svelte or Python here)'} before each push`);
-}
-
-function removeTypecheck(cwd) {
-	const lefthook = lefthookFile(cwd);
-	if (!lefthook) return;
-	const before = fs.readFileSync(lefthook.file, 'utf8');
-	const after = unpatchLefthook(before, TYPECHECK_STEPS);
-	if (after === before) return;
-	fs.writeFileSync(lefthook.file, after);
-	say(`✔ ${path.basename(lefthook.file)} without the typecheck steps (svelte-check and pyright stay installed)`);
+	return [...svelte, ...projects.py].map(where);
 }
 
 // ── structure ───────────────────────────────────────────────────────────────────
 
-const STRUCTURE_STEPS = ['lint-kit-fallow', 'lint-kit-python-structure'];
 /**
  * fallow audit checks the base out in a temporary worktree, and fallow 3.31 cannot create one
  * where worktree.useRelativePaths is on (a bare repository with worktrees beside it). Turning it
@@ -642,7 +603,7 @@ const RELATIVE_WORKTREES_OFF = {
 const BRIEF_SCRIPT = 'structure:brief';
 
 /**
- * The branch this project's branches merge into, as a remote ref: --base, the base a structure
+ * The branch this repository's branches merge into, as a remote ref: --base, the base a structure
  * step already names, the origin/<branch> lefthook's pre-push `files` diffs against, origin/HEAD,
  * else origin/main. Never "main" by assumption when the project says otherwise: a branch off dev
  * compared with main would own every commit dev has that main does not.
@@ -650,8 +611,8 @@ const BRIEF_SCRIPT = 'structure:brief';
 export function findBase(args, lefthookText, repo) {
 	if (args.base) return args.base.includes('/') ? args.base : `origin/${args.base}`;
 	const push = parseDocument(lefthookText).toJSON()?.['pre-push'] ?? {};
-	for (const name of STRUCTURE_STEPS) {
-		const written = /--base (\S+)/.exec(push.commands?.[name]?.run ?? '');
+	for (const step of Object.values(push.commands ?? {})) {
+		const written = /(?:structure_check\.py|fallow audit) --base (origin\/\S+)/.exec(step?.run ?? '');
 		if (written) return written[1];
 	}
 	const files = /\b(origin\/[\w./-]+?)\.\.\.?HEAD\b/.exec(push.files ?? '');
@@ -666,41 +627,15 @@ export function findBase(args, lefthookText, repo) {
 }
 
 /**
- * lefthook pre-push steps: fallow audit over the JS / TS project and lint-kit-structure over the
- * Python one, each comparing with `base`. `frontend` is { root, exec } or null, `backend`
- * { root, scope } or null.
- */
-export function patchLefthookStructure(text, frontend, backend, base) {
-	const doc = parseDocument(text);
-	if (frontend) {
-		const dir = lefthookRoot(frontend.root);
-		const glob = [everywhere(doc, dir, '*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}'), `${dir}package.json`, `${dir}.fallowrc.json`];
-		const step = { glob, ...(dir ? { root: dir } : {}), env: RELATIVE_WORKTREES_OFF, run: `${frontend.exec} fallow audit --base ${base}` };
-		addPushStep(doc, 'lint-kit-fallow', step, /\bfallow audit\b/);
-	}
-	if (backend) {
-		const dir = lefthookRoot(backend.root);
-		addPushStep(doc, 'lint-kit-python-structure', {
-			glob: everywhere(doc, dir, '*.py'),
-			...(dir ? { root: dir } : {}),
-			run: `uv run lint-kit-structure --base ${base} ${backend.scope}`,
-		});
-	}
-	const gone = [!frontend && 'lint-kit-fallow', !backend && 'lint-kit-python-structure'].filter(Boolean);
-	return unpatchLefthook(doc.toString(AS_WRITTEN), gone);
-}
-
-/**
- * A .fallowrc.json for a project without one. The rules are JewelryX's, where fallow gates every
- * push; what only JewelryX needs (its entry files, ignored folders and exports) stays there.
+ * A .fallowrc.json for a project without one. The rules are the ones JewelryX gates every push
+ * with; what only JewelryX needs (its entry files, ignored folders and exports) stays there.
  */
 export function fallowConfig(ignores) {
 	const list = ignores.map((p) => `"${p}"`).join(', ');
 	return `{
 	"$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
-	// Written by \`lint-kit init\` (the structure set) where there was no fallow config. Yours to
-	// edit: init does not rewrite it. \`fallow audit\` fails a push on an "error" finding the
-	// branch introduced; "warn" findings are reported, and what the base had never fails.
+	// \`fallow audit\` fails a push on an "error" finding the branch introduced; "warn" findings
+	// are reported, and what the base had never fails.
 	"ignorePatterns": [${list}],
 	"rules": {
 		// Dead code a branch leaves behind fails the push.
@@ -727,87 +662,71 @@ export function fallowConfig(ignores) {
 `;
 }
 
-/** What lint-kit-structure checks: the app package when there is one, else the whole folder. */
-function pythonScope(pythonDir) {
-	const app = findApp(pythonDir);
-	return fs.existsSync(path.join(pythonDir, app)) ? app : '.';
+/** What structure_check.py checks: the app package when there is one, else the whole folder. */
+function pythonScope(py) {
+	const app = findApp(py.dir);
+	return fs.existsSync(path.join(py.dir, app)) ? app : '.';
 }
 
 /** package.json with `scripts[name]` set, in the file's own indentation. */
 function withScript(text, name, command) {
 	const pkg = JSON.parse(text);
-	if (command === null) delete pkg.scripts?.[name];
-	else pkg.scripts = { ...pkg.scripts, [name]: command };
-	if (pkg.scripts && !Object.keys(pkg.scripts).length) delete pkg.scripts;
+	pkg.scripts = { ...pkg.scripts, [name]: command };
 	return `${JSON.stringify(pkg, null, /\n([ \t]+)"/.exec(text)?.[1] ?? '\t')}\n`;
 }
 
-function writeStructure(cwd, pythonDir, args) {
-	const lefthook = lefthookFile(cwd);
-	if (!lefthook) return say('→ structure runs as lefthook pre-push steps, and this repository has no lefthook.yml');
-	const pkgFile = path.join(cwd, 'package.json');
-	const pkg = JSON.parse(read(pkgFile) ?? 'null');
-	const deps = { ...pkg?.dependencies, ...pkg?.devDependencies };
-	const pyproject = read(path.join(pythonDir, 'pyproject.toml'));
-	const pm = packageManager(cwd);
-	const before = fs.readFileSync(lefthook.file, 'utf8');
-	const base = findBase(args, before, lefthook.repo);
-	const frontend = pkg ? { root: path.relative(lefthook.repo, cwd), exec: EXEC[pm] } : null;
-	const backend =
-		pyproject !== null ? { root: path.relative(lefthook.repo, pythonDir), scope: pythonScope(pythonDir) } : null;
-	if (args.install) {
-		// jscpd finds Python duplication; lint-kit-structure looks for it in node_modules/.bin from
-		// the Python folder up to the repository root
-		const missing = [
-			...(frontend && !('fallow' in deps) ? ['fallow'] : []),
-			...(backend && pkg && !('jscpd' in deps) ? ['jscpd'] : []),
-		];
-		if (missing.length) run(pm, [...(pm === 'npm' ? ['install', '--save-dev'] : ['add', '-D']), ...missing], cwd);
-		if (backend && !/["']lint-kit-fastapi\b/.test(pyproject)) {
-			if (fs.existsSync(path.join(pythonDir, 'uv.lock'))) run('uv', ['add', '--dev', pythonSpec(args)], pythonDir);
-			else say(`→ install it: pip install "${pythonSpec(args)}"`);
-		}
-	}
-	if (backend && (!pkg || path.relative(cwd, pythonDir).startsWith('..')))
-		say(`→ lint-kit-structure needs jscpd in a node_modules/.bin at or above ${path.relative(lefthook.repo, pythonDir) || '.'}, or on PATH`);
-	if (frontend) {
-		const fallowrc = path.join(cwd, '.fallowrc.json');
-		if (!['.fallowrc.json', '.fallowrc.jsonc', 'fallow.toml', '.fallow.toml'].some((f) => fs.existsSync(path.join(cwd, f)))) {
-			const inside = path.relative(cwd, pythonDir).replace(/\\/g, '/');
-			const ignores = [
-				...(backend && inside && !inside.startsWith('..') ? [`${inside}/**`] : []),
-				...('@inlang/paraglide-js' in deps ? ['**/paraglide/**'] : []),
-				...('svelte' in deps ? ['**/.svelte-check/**'] : []),
-			];
-			fs.writeFileSync(fallowrc, fallowConfig(ignores));
-			say('✔ .fallowrc.json (new: the rules fallow audit gates a push on)');
-		}
-		const text = fs.readFileSync(pkgFile, 'utf8');
-		if (!JSON.parse(text).scripts?.[BRIEF_SCRIPT]) {
-			fs.writeFileSync(pkgFile, withScript(text, BRIEF_SCRIPT, `fallow review --brief --base ${base}`));
-			say(`✔ package.json script ${BRIEF_SCRIPT}: where a reviewer should look (always exits 0)`);
-		}
-	}
-	const after = patchLefthookStructure(before, frontend, backend, base);
-	if (after !== before) fs.writeFileSync(lefthook.file, after);
-	const which = [frontend && 'fallow audit', backend && 'lint-kit-structure'].filter(Boolean);
-	say(`✔ ${path.basename(lefthook.file)} runs ${which.join(' and ') || 'nothing (no package.json or pyproject.toml here)'} before each push, against ${base}`);
-}
+/** The nearest JS project at or above `dir`: where jscpd goes for a Python project there. */
+const jsAbove = (projects, dir) =>
+	projects.js
+		.filter((p) => !path.relative(p.dir, dir).startsWith('..'))
+		.sort((a, b) => b.dir.length - a.dir.length)[0];
 
-function removeStructure(cwd) {
-	const lefthook = lefthookFile(cwd);
-	if (lefthook) {
-		const before = fs.readFileSync(lefthook.file, 'utf8');
-		const after = unpatchLefthook(before, STRUCTURE_STEPS);
-		if (after !== before) {
-			fs.writeFileSync(lefthook.file, after);
-			say(`✔ ${path.basename(lefthook.file)} without the structure steps (fallow, jscpd and .fallowrc.json stay)`);
+function writeStructure(repo, projects, doc, base, args) {
+	const roots = fallowRoots(projects);
+	const fallowNames = stepNames('fallow', roots);
+	for (const p of roots) {
+		if (args.install) addJs(p, ['fallow']);
+		const inside = (d) => !path.relative(p.dir, d).startsWith('..');
+		const members = projects.js.filter((j) => inside(j.dir));
+		const has = (dep) => members.some((j) => dep in j.deps);
+		if (!['.fallowrc.json', '.fallowrc.jsonc', 'fallow.toml', '.fallow.toml'].some((f) => fs.existsSync(path.join(p.dir, f)))) {
+			const ignores = [
+				...projects.py.filter((py) => inside(py.dir) && py.dir !== p.dir).map((py) => `${rel(p.dir, py.dir)}/**`),
+				...(p.dir === repo ? ['tools/**'] : []),
+				...(has('@inlang/paraglide-js') ? ['**/paraglide/**'] : []),
+				...(has('svelte') ? ['**/.svelte-check/**'] : []),
+			];
+			write(path.join(p.dir, '.fallowrc.json'), fallowConfig(ignores));
+			say(`✔ ${where(p)}: .fallowrc.json (new: the rules fallow audit gates a push on)`);
 		}
+		const pkgFile = path.join(p.dir, 'package.json');
+		const text = read(pkgFile);
+		if (!JSON.parse(text).scripts?.[BRIEF_SCRIPT]) {
+			write(pkgFile, withScript(text, BRIEF_SCRIPT, `fallow review --brief --base ${base}`));
+			say(`✔ ${where(p)}: package.json script ${BRIEF_SCRIPT}, where a reviewer should look (always exits 0)`);
+		}
+		const dir = lefthookRoot(p.rel);
+		const glob = [everywhere(doc, dir, '*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}'), `${dir}package.json`, `${dir}.fallowrc.json`];
+		const step = { glob, ...(dir ? { root: dir } : {}), env: RELATIVE_WORKTREES_OFF, run: `${p.exec} fallow audit --base ${base}` };
+		addStep(doc, 'pre-push', fallowNames.get(p), step, /\bfallow audit\b/, roots.length === 1);
 	}
-	const pkgFile = path.join(cwd, 'package.json');
-	const text = read(pkgFile);
-	if (text !== null && JSON.parse(text).scripts?.[BRIEF_SCRIPT]?.startsWith('fallow review --brief'))
-		fs.writeFileSync(pkgFile, withScript(text, BRIEF_SCRIPT, null));
+	const pyNames = stepNames('python-structure', projects.py);
+	for (const py of projects.py) {
+		const js = jsAbove(projects, py.dir);
+		if (args.install) {
+			if (js) addJs(js, ['jscpd']);
+			if (!/["'](flake8|mccabe)\b/.test(py.text)) addPython(py, ['mccabe']);
+		}
+		if (!js) say(`→ ${where(py)}: structure_check.py needs jscpd in a node_modules/.bin at or above it, or on PATH`);
+		const dir = lefthookRoot(py.rel);
+		const tools = rel(py.dir, path.join(repo, 'tools', 'python'));
+		addStep(doc, 'pre-push', pyNames.get(py), {
+			glob: everywhere(doc, dir, '*.py'),
+			...(dir ? { root: dir } : {}),
+			run: `uv run python ${tools}/structure_check.py --base ${base} ${pythonScope(py)}`,
+		});
+	}
+	return [...roots.map((p) => `fallow (${where(p)})`), ...projects.py.map((py) => `structure_check.py (${where(py)})`)];
 }
 
 // ── main ────────────────────────────────────────────────────────────────────────
@@ -815,38 +734,49 @@ function removeStructure(cwd) {
 export async function main(argv = process.argv.slice(2)) {
 	const args = parseArgs(argv);
 	if (args.command !== 'init') {
-		say('usage: lint-kit init [--sets a,b] [--yes] [--no-install] [--ref <git ref>] [--python <dir>] [--base <branch>]');
+		say('usage: lint-kit init [--sets a,b] [--yes] [--no-install] [--base <branch>] [--cwd <dir>]');
 		say(`sets: ${Object.keys(SETS).join(', ')}`);
 		return args.command ? 2 : 0;
 	}
 	const cwd = path.resolve(args.cwd ?? '.');
-	const pythonDir = path.resolve(cwd, args.python ?? '.');
-	const sets = await choose(args, detect(cwd, pythonDir));
-	const hadEslint = fs.existsSync(path.join(cwd, 'eslint.lint-kit.js'));
-	const hadPython = FASTAPI_TABLE.test(read(path.join(pythonDir, 'pyproject.toml')) ?? '');
-	const hooks = read(lefthookFile(cwd)?.file) ?? '';
-	const hadTypecheck = TYPECHECK_STEPS.some((s) => hooks.includes(s));
-	const hadStructure = STRUCTURE_STEPS.some((s) => hooks.includes(s));
-	if (!sets.length && !hadEslint && !hadPython && !hadTypecheck && !hadStructure) return say('nothing chosen'), 0;
-	say(`rule sets: ${sets.join(', ') || 'none'}`);
+	const repo = gitRoot(cwd) ?? cwd;
+	const projects = findProjects(repo);
+	const sets = await choose(args, detect(repo, projects));
+	if (!sets.length) return say('nothing chosen'), 0;
+	say(`sets: ${sets.join(', ')}`);
+	say(`projects: ${[...projects.js, ...projects.py].map(where).join(', ') || 'none'}`);
 
-	if (sets.some((s) => SETS[s].kind === 'eslint')) {
-		if (args.install) {
-			const pm = packageManager(cwd);
-			const pkg = JSON.parse(read(path.join(cwd, 'package.json')) ?? '{}');
-			const has = { ...pkg.dependencies, ...pkg.devDependencies };
-			const missing = ESLINT_PEERS.filter((p) => !(p in has));
-			const add = pm === 'npm' ? ['install', '--save-dev'] : ['add', '-D'];
-			run(pm, [...add, `github:${REPO}#${args.ref}`, ...missing], cwd);
+	// the files tools/ gets, from what each set is wired into
+	const linted = eslintProjects(projects)
+		.map((p) => ({ p, wanted: eslintSetsFor(p, sets) }))
+		.filter(({ wanted }) => wanted.length);
+	const eslintSets = Object.keys(ESLINT_FOR).filter((s) => linted.some(({ wanted }) => wanted.includes(s)));
+	const fastapi = sets.includes('fastapi') ? projects.py.filter(isFastapi) : [];
+	const structure = sets.includes('structure');
+	copyTools(repo, [
+		...eslintSets.flatMap((s) => [`eslint/${s}.mjs`, `eslint/${s}.md`]),
+		...(fastapi.length ? ['python/fastapi_rules.py'] : []),
+		...(structure && projects.py.length ? ['python/structure_check.py'] : []),
+	]);
+
+	for (const { p, wanted } of linted) writeEslint(repo, p, wanted, args);
+	const wired = fastapi.map((py) => writeFastapi(repo, py, args));
+	const hooked = editLefthook(repo, (doc) => {
+		const eslintNames = stepNames('eslint', linted.map(({ p }) => p));
+		for (const { p } of linted) {
+			const dir = lefthookRoot(p.rel);
+			const step = { glob: everywhere(doc, `${dir}src/`, '*.{js,ts,svelte}'), ...(dir ? { root: dir } : {}), run: `${p.exec} eslint {staged_files}` };
+			addStep(doc, 'pre-commit', eslintNames.get(p), step, /\beslint\b/, linted.length === 1);
 		}
-		writeEslint(cwd, sets);
-	} else if (hadEslint) writeEslint(cwd, sets); // every ESLint set turned off: an empty list
-	if (sets.includes('fastapi')) writePython(pythonDir, args);
-	else removePython(pythonDir, args, sets.includes('structure'));
-	if (sets.includes('typecheck')) writeTypecheck(cwd, pythonDir, args);
-	else removeTypecheck(cwd);
-	if (sets.includes('structure')) writeStructure(cwd, pythonDir, args);
-	else removeStructure(cwd);
+		stepsFastapi(doc, wired);
+		if (sets.includes('typecheck')) say(`✔ lefthook.yml: typecheck before each push in ${writeTypecheck(projects, doc, args).join(', ') || 'no project'}`);
+		if (structure) {
+			const base = findBase(args, doc.toString(AS_WRITTEN), repo);
+			say(`✔ lefthook.yml: ${writeStructure(repo, projects, doc, base, args).join(', ') || 'nothing'} before each push, against ${base}`);
+		}
+	});
+	if (!hooked && (sets.includes('typecheck') || structure))
+		say('→ typecheck and structure run as lefthook pre-push steps, and this repository has no lefthook.yml');
 	say('done');
 	return 0;
 }

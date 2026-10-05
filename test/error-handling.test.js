@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { config, noDefaultPromiseCatch, noStringifiedError, noSwallowedCatch } from '../src/error-handling.js';
+import { config, noDefaultPromiseCatch, noStringifiedError, noSwallowedCatch } from '../tools/eslint/error-handling.mjs';
 import { lint, svelteTester, tsTester } from './helpers.js';
 
 tsTester.run('no-swallowed-catch', noSwallowedCatch, {

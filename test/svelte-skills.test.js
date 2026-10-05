@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import svelteSkills, { config, rules } from '../src/svelte-skills.js';
+import svelteSkills, { config, rules } from '../tools/eslint/svelte-skills.mjs';
 import { lint, svelteTester, tsTester } from './helpers.js';
 
 const S = 'src/routes/x.svelte';

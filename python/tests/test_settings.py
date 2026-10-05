@@ -1,14 +1,12 @@
-"""[tool.lint-kit-fastapi]: the app package's location, and the dependency classification."""
+"""[tool.fastapi-rules]: the app package's location, and the dependency classification."""
 
 from __future__ import annotations
 
 import pathlib
 import textwrap
 
+from fastapi_rules import load_settings, main, unclassified
 from test_rules import codes
-
-from lint_kit_fastapi import load_settings, unclassified
-from lint_kit_fastapi.cli import main
 
 BLOCKING_HELPER = {
     "src/shop/helpers.py": """
@@ -25,7 +23,7 @@ BLOCKING_HELPER = {
 
 
 def test_app_package_elsewhere_resolves_imports_across_modules(tmp_path):
-    pyproject = '[tool.lint-kit-fastapi]\napp = "src/shop"\n'
+    pyproject = '[tool.fastapi-rules]\napp = "src/shop"\n'
     assert codes(tmp_path, BLOCKING_HELPER, "src/shop/routes.py", pyproject) == ["FAP001"]
 
 
@@ -44,7 +42,7 @@ def test_a_project_classifies_its_own_blocking_library(tmp_path):
     }
     # settings are read once per project directory per process, so two projects
     assert codes(tmp_path / "plain", src) == []
-    pyproject = '[tool.lint-kit-fastapi.dependencies]\nmylib = ["mylib.render_"]\n'
+    pyproject = '[tool.fastapi-rules.dependencies]\nmylib = ["mylib.render_"]\n'
     assert codes(tmp_path / "classified", src, pyproject=pyproject) == ["FAP001"]
 
 
@@ -65,7 +63,7 @@ def test_check_deps_names_unclassified_and_stale(tmp_path):
             "weasyprint>=60",
             "inhouse @ git+https://example.com/inhouse.git",
         ]
-        [tool.lint-kit-fastapi.dependencies]
+        [tool.fastapi-rules.dependencies]
         inhouse = "async only"
         gone = ["gone.call"]
         """,
@@ -91,9 +89,9 @@ def test_settings_default_and_override(tmp_path):
     path = _pyproject(
         tmp_path,
         """
-        [tool.lint-kit-fastapi]
+        [tool.fastapi-rules]
         app = "backend"
-        [tool.lint-kit-fastapi.dependencies]
+        [tool.fastapi-rules.dependencies]
         Pillow = "only used offline"
         """,
     )

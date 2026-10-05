@@ -60,7 +60,7 @@ export const rule = {
 		type: 'problem',
 		docs: {
 			description: 'Text the user reads must come from the message catalogue.',
-			url: 'https://github.com/shayshahal/lint-kit/blob/main/docs/untranslated-text.md#no-untranslated-text',
+			url: new URL('./untranslated-text.md#no-untranslated-text', import.meta.url).href,
 		},
 		schema: [
 			{
