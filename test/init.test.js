@@ -255,8 +255,10 @@ test('typecheck: svelte-check --tsgo and pyright before each push, and off again
 	const args = ['--no-install', '--cwd', path.join(dir, 'web'), '--python', '../api'];
 	// on by default: the repository has lefthook and a Svelte app
 	await quiet(['init', '--yes', ...args]);
-	const hooks = parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'));
-	assert.deepEqual(hooks['pre-push'].commands, {
+	const { 'lint-kit-svelte-check': svelteCheck, 'lint-kit-pyright': pyright } = parse(
+		fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'),
+	)['pre-push'].commands;
+	assert.deepEqual({ 'lint-kit-svelte-check': svelteCheck, 'lint-kit-pyright': pyright }, {
 		'lint-kit-svelte-check': {
 			glob: 'web/*.{svelte,ts,js}',
 			root: 'web/',
@@ -270,6 +272,113 @@ test('typecheck: svelte-check --tsgo and pyright before each push, and off again
 	// off: the pre-push section goes with its steps
 	await quiet(['init', '--sets', '', ...args]);
 	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), files['lefthook.yml']);
+});
+
+test('structure: fallow and lint-kit-structure before each push, against the branch lefthook diffs with', async () => {
+	const files = {
+		'.git/HEAD': 'ref: refs/heads/dev\n',
+		'lefthook.yml': 'pre-push:\n  files: git diff --name-only origin/dev...HEAD\n  commands:\n    test:\n      run: pnpm test\n',
+		'pnpm-lock.yaml': '',
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5', '@inlang/paraglide-js': '^2' } }),
+		'backend/pyproject.toml': '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+		'backend/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+	};
+	const dir = project('structure', files);
+	const args = ['--no-install', '--cwd', dir, '--python', 'backend'];
+	await quiet(['init', '--sets', 'structure', ...args]);
+	const hooks = parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'))['pre-push'];
+	assert.deepEqual(hooks.commands['lint-kit-fallow'], {
+		glob: ['*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}', 'package.json', '.fallowrc.json'],
+		env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'worktree.useRelativePaths', GIT_CONFIG_VALUE_0: 'false' },
+		run: 'pnpm exec fallow audit --base origin/dev',
+	});
+	assert.deepEqual(hooks.commands['lint-kit-python-structure'], {
+		glob: 'backend/*.py',
+		root: 'backend/',
+		run: 'uv run lint-kit-structure --base origin/dev app',
+	});
+	const fallowrc = fs.readFileSync(path.join(dir, '.fallowrc.json'), 'utf8');
+	assert.match(fallowrc, /"ignorePatterns": \["backend\/\*\*", "\*\*\/paraglide\/\*\*", "\*\*\/\.svelte-check\/\*\*"\]/);
+	assert.match(fallowrc, /"maxCrap": 100000/);
+	const pkg = () => JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+	assert.equal(pkg().scripts['structure:brief'], 'fallow review --brief --base origin/dev');
+	// a re-run changes nothing
+	const once = fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8');
+	await quiet(['init', '--sets', 'structure', ...args]);
+	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), once);
+	// off: the steps and the script go; the fallow config is the project's now
+	await quiet(['init', '--sets', '', ...args]);
+	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), files['lefthook.yml']);
+	assert.equal(pkg().scripts, undefined);
+	assert.equal(fs.readFileSync(path.join(dir, '.fallowrc.json'), 'utf8'), fallowrc);
+});
+
+test('structure: --base names the branch, and a fallow config the project has is kept', async () => {
+	const own = '{ "rules": { "unused-files": "warn" } }\n';
+	const dir = project('structure-base', {
+		'.git/HEAD': 'ref: refs/heads/main\n',
+		'lefthook.yml': 'pre-commit:\n  commands:\n    format:\n      run: pnpm format\n',
+		'package.json': '{\n  "name": "web",\n  "devDependencies": { "typescript": "^5" }\n}\n',
+		'package-lock.json': '',
+		'.fallowrc.json': own,
+	});
+	await quiet(['init', '--yes', '--no-install', '--cwd', dir, '--base', 'qa']);
+	const hooks = parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'))['pre-push'];
+	assert.equal(hooks.commands['lint-kit-fallow'].run, 'npx fallow audit --base origin/qa');
+	assert.equal(hooks.commands['lint-kit-python-structure'], undefined); // no Python here
+	assert.equal(fs.readFileSync(path.join(dir, '.fallowrc.json'), 'utf8'), own);
+	// the script is added in the file's own indentation
+	assert.match(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'), /^ {2}"scripts": \{\n {4}"structure:brief": "fallow review --brief --base origin\/qa"/m);
+});
+
+test('structure: doublestar globs, a fallow step the project has, and long lines left as written', async () => {
+	const long = `      run: ${'echo checking every file the branch touched && '.repeat(3)}true\n`;
+	const lefthook =
+		'glob_matcher: doublestar\npre-push:\n  commands:\n    fallow-audit:\n      run: pnpm exec fallow audit --base origin/dev\n    long:\n' +
+		long;
+	const dir = project('structure-doublestar', {
+		'.git/HEAD': 'ref: refs/heads/main\n',
+		'lefthook.yml': lefthook,
+		'package.json': JSON.stringify({ devDependencies: { typescript: '^5' } }),
+		'pnpm-lock.yaml': '',
+		'api/pyproject.toml': '[project]\nname = "api"\n',
+	});
+	const args = ['--no-install', '--cwd', dir, '--python', 'api', '--base', 'dev'];
+	await quiet(['init', '--sets', 'structure', ...args]);
+	const text = fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8');
+	const steps = parse(text)['pre-push'].commands;
+	assert.equal(steps['lint-kit-fallow'], undefined); // fallow-audit already runs it
+	assert.equal(steps['lint-kit-python-structure'].glob, 'api/**/*.py');
+	assert.ok(text.includes(long), 'the long run line is not folded');
+	await quiet(['init', '--sets', '', ...args]);
+	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), lefthook);
+});
+
+test('under glob_matcher: doublestar every lint-kit step globs with **, which also matches no folder', async () => {
+	const dir = project('doublestar', {
+		'.git/HEAD': 'ref: refs/heads/main\n',
+		'lefthook.yml': 'glob_matcher: doublestar\n',
+		'web/pnpm-lock.yaml': '',
+		'web/package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
+		'api/pyproject.toml': '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+		'api/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+	});
+	const sets = 'svelte-skills,fastapi,typecheck,structure';
+	await quiet(['init', '--sets', sets, '--no-install', '--cwd', path.join(dir, 'web'), '--python', '../api', '--base', 'dev']);
+	const hooks = parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'));
+	const globs = (hook) => Object.fromEntries(Object.entries(hooks[hook].commands).map(([k, v]) => [k, v.glob]));
+	assert.deepEqual(globs('pre-commit'), {
+		'lint-kit-eslint': 'web/src/**/*.{js,ts,svelte}',
+		'lint-kit-fastapi': 'api/app/**/*.py',
+		'lint-kit-fastapi-deps': 'api/pyproject.toml',
+		'lint-kit-ruff': 'api/**/*.py',
+	});
+	assert.deepEqual(globs('pre-push'), {
+		'lint-kit-svelte-check': 'web/**/*.{svelte,ts,js}',
+		'lint-kit-pyright': 'api/**/*.py',
+		'lint-kit-fallow': ['web/**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}', 'web/package.json', 'web/.fallowrc.json'],
+		'lint-kit-python-structure': 'api/**/*.py',
+	});
 });
 
 test('a step that already runs ESLint is left alone', async () => {

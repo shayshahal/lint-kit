@@ -1,0 +1,154 @@
+"""lint-kit-structure fails on what a branch made worse, never on what its base already had."""
+
+from __future__ import annotations
+
+import os
+import pathlib
+import subprocess
+
+import pytest
+
+from lint_kit_structure import main
+
+BIN = pathlib.Path(__file__).resolve().parents[2] / "node_modules" / ".bin"
+
+
+def branchy(name: str, branches: int) -> str:
+    """A function of complexity branches + 1."""
+    ifs = "".join(f"    if x == {i}:\n        return {i}\n" for i in range(branches))
+    return f"def {name}(x):\n{ifs}    return -1\n\n\n"
+
+
+def summed(name: str) -> str:
+    """A block jscpd reports when it appears twice."""
+    steps = "".join(f"    v{i} = compute(a, b, {i})\n    total += v{i} * {i}\n" for i in range(5))
+    return f"def {name}(a, b):\n    total = 0\n{steps}    return total\n\n\n"
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch):
+    """A git repository whose main branch holds `base`; the test edits files on a branch."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", f"{BIN}{os.pathsep}{os.environ['PATH']}")
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.test")
+    git("config", "user.name", "t")
+    git("config", "core.autocrlf", "false")
+
+    def setup(base: dict[str, str]) -> None:
+        for rel, text in base.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text)
+        git("add", ".")
+        git("commit", "-qm", "base")
+        git("checkout", "-qb", "feature")
+
+    def commit(files: dict[str, str]) -> None:
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text)
+        git("add", ".")
+        git("commit", "-qm", "change")
+
+    return setup, commit
+
+
+def run(capsys, *paths: str) -> tuple[int, str]:
+    code = main(["--base", "main", *paths])
+    return code, capsys.readouterr().out
+
+
+def test_a_branch_that_adds_a_complex_function_fails(repo, capsys):
+    setup, commit = repo
+    setup({"app/orders.py": branchy("simple", 2)})
+    commit({"app/orders.py": branchy("simple", 2) + branchy("price", 12)})
+    code, out = run(capsys)
+    assert code == 1
+    assert "app/orders.py:9 price: complexity 13, new (max 10)" in out
+
+
+def test_touching_a_file_whose_functions_were_already_complex_passes(repo, capsys):
+    setup, commit = repo
+    legacy = branchy("legacy", 15) + summed("left") + summed("right")
+    setup({"app/legacy.py": legacy})
+    commit({"app/legacy.py": legacy + "def helper():\n    return 1\n"})
+    assert run(capsys) == (
+        0,
+        "lint-kit-structure: 1 changed .py file(s), no new complexity or duplication\n",
+    )
+
+
+def test_a_function_that_crosses_the_limit_or_grows_past_it_fails(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": branchy("near", 8) + branchy("over", 12)})
+    commit({"app/a.py": branchy("near", 10) + branchy("over", 13)})
+    code, out = run(capsys)
+    assert code == 1
+    assert "near: complexity 9 → 11, over the max of 10" in out
+    assert "over: complexity 13 → 14, already over 10 and grew" in out
+
+
+def test_the_limit_comes_from_pyproject(repo, capsys):
+    setup, commit = repo
+    setup({"pyproject.toml": "[tool.lint-kit-structure]\nmax-complexity = 20\n", "app/a.py": ""})
+    commit({"app/a.py": branchy("price", 12)})
+    assert run(capsys)[0] == 0
+
+
+def test_new_duplication_fails(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": summed("total"), "app/b.py": "x = 1\n"})
+    commit({"app/b.py": "x = 1\n\n\n" + summed("again")})
+    code, out = run(capsys)
+    assert code == 1
+    assert "duplicates" in out and "new" in out
+
+
+def test_a_third_copy_of_an_existing_clone_fails(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": summed("left") + summed("right")})
+    commit({"app/b.py": summed("third")})
+    code, out = run(capsys)
+    assert code == 1
+    assert "app/b.py" in out
+
+
+def test_editing_both_copies_of_an_existing_clone_passes(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": summed("left") + summed("right")})
+    edited = (summed("left") + summed("right")).replace("total = 0", "total = 1")
+    commit({"app/a.py": edited})
+    assert run(capsys)[0] == 0
+
+
+def test_moving_duplicated_code_passes(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": summed("left") + summed("right")})
+    commit({"app/a.py": "", "app/b.py": summed("left") + summed("right")})
+    assert run(capsys)[0] == 0
+
+
+def test_a_branch_with_no_python_changes_is_skipped(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": branchy("legacy", 15), "README.md": "x\n"})
+    commit({"README.md": "y\n"})
+    assert run(capsys) == (0, "lint-kit-structure: no Python changes since main, skipped\n")
+
+
+def test_an_unknown_base_cannot_run(repo, capsys):
+    setup, _ = repo
+    setup({"app/a.py": ""})
+    assert main(["--base", "origin/nowhere"]) == 2
+
+
+def test_a_folder_that_is_new_on_the_branch_is_checked(repo, capsys):
+    setup, commit = repo
+    setup({"README.md": "x\n"})
+    commit({"api/a.py": summed("left") + summed("right")})
+    code, out = run(capsys, "api")
+    assert code == 1
+    assert "api/a.py" in out
