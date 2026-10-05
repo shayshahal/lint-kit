@@ -1,17 +1,18 @@
 [project]
 name = "lint-kit-fastapi"
 version = "0.3.0"
-description = "FastAPI rules ruff does not have, as a flake8 plugin (FAP001-017)."
+description = "FastAPI rules ruff does not have, as a flake8 plugin (FAP001-017), and lint-kit-structure, which fails a branch that makes its Python more complex or more duplicated."
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["flake8>=7", "fastapi>=0.100"]
+dependencies = ["flake8>=7", "fastapi>=0.100", "mccabe>=0.7"]
 
 [project.entry-points."flake8.extension"]
 FAP = "lint_kit_fastapi:Plugin"
 
 [project.scripts]
 lint-kit-fastapi = "lint_kit_fastapi.cli:main"
+lint-kit-structure = "lint_kit_structure:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]
@@ -19,6 +20,9 @@ dev = ["pytest>=8", "ruff>=0.6"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lint_kit_fastapi", "src/lint_kit_structure"]
 
 [tool.ruff]
 line-length = 100

@@ -1,8 +1,9 @@
 # lint-kit
 
 Lint rules for **Svelte 5 / SvelteKit**, **i18n**, **Tailwind / shadcn**, **error handling** and
-**FastAPI**, with an `init` command that installs only the sets a project picks. Each message says
-what to write instead.
+**FastAPI**, and pre-push checks that a branch leaves the code's structure no worse than its base,
+with an `init` command that installs only the sets a project picks. Each message says what to
+write instead.
 
 | Set | Linter | What it checks |
 | --- | --- | --- |
@@ -12,9 +13,11 @@ what to write instead.
 | `error-handling` | ESLint | catch blocks (and promise `.catch()`) that drop the error, only log it, return a fixed default, or turn it into a string |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for the Svelte app, `pyright` for the backend |
+| `structure` | fallow, lint-kit-structure | lefthook pre-push steps that fail when a branch adds complexity, duplication or dead code its base did not have, and never on what was already there: `fallow audit` for JS / TS, `lint-kit-structure` (mccabe and jscpd) for Python ([docs](docs/structure.md)) |
 
 Each ESLint rule links to its section in [`docs/`](docs) (editors show the link with the
-message); the FAP rules are listed in the module docstring (below).
+message); the FAP rules are listed in the module docstring (below); the structure set is in
+[`docs/structure.md`](docs/structure.md).
 
 ## Install
 
@@ -43,15 +46,26 @@ your package manager (and `uv` for the Python plugin), and writes the config:
   `@typescript/native@npm:typescript@7` if they are missing, and `pyright` to the backend. Like
   svelte-check's `--incremental`, `--tsgo` skips `.svelte` files outside the tsconfig's root
   folder. On by default when the repository has a `lefthook.yml`.
+- **structure:** pre-push steps in `lefthook.yml` that compare the branch with its base:
+  `fallow audit --base origin/<base>` when the push touches the JS / TS project, and
+  `uv run lint-kit-structure --base origin/<base> <app>` when it touches the backend. The base
+  comes from `--base`, else the `origin/<branch>...HEAD` lefthook's pre-push `files` diffs
+  against, else `origin/HEAD`. `init` adds `fallow` and `jscpd` as dev dependencies and the
+  Python package to the backend. A project without a fallow config gets a `.fallowrc.json` (yours
+  from then on). `package.json` gets a `structure:brief` script: `fallow review --brief`, a "where
+  to look" brief for a reviewer that always exits 0. On by default when the repository has a
+  `lefthook.yml`.
 
 Re-run `init` to add or remove sets. Sets it installed before default to yes; turning fastapi off
 removes the dev dependency, the settings table, the FAP selection, the ruff rules it added and the
 lefthook steps (ruff itself stays installed). Turning every ESLint set off removes the ESLint step;
-turning typecheck off removes the pre-push steps (svelte-check and pyright stay installed).
+turning typecheck off removes the pre-push steps (svelte-check and pyright stay installed);
+turning structure off removes its steps and the `structure:brief` script (fallow, jscpd,
+`.fallowrc.json` and the Python package stay).
 
 Options: `--sets svelte-skills,fastapi` and `--yes` skip the questions, `--no-install` writes
 config only, `--ref <tag or sha>` pins another version, `--python <dir>` points at the backend
-in a monorepo.
+in a monorepo, `--base <branch>` names the branch structure compares with.
 
 By hand:
 
@@ -132,7 +146,7 @@ The rule list is in the module docstring: `python/src/lint_kit_fastapi/__init__.
 ```sh
 pnpm install && (cd python && uv sync)
 pnpm test                      # RuleTester for every ESLint rule, and init end to end
-(cd python && uv run pytest)   # every FAP rule
+(cd python && uv run pytest)   # every FAP rule, and lint-kit-structure (uses jscpd from pnpm install)
 ```
 
 To release, bump the version in `package.json`, `python/pyproject.toml`, the `Plugin` class in
