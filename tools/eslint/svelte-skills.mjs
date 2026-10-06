@@ -699,7 +699,7 @@ function classExpression(sourceCode, attribute) {
 }
 
 for (const [name, rule] of Object.entries(rules))
-	rule.meta.docs.url = `https://github.com/shayshahal/lint-kit/blob/main/docs/svelte-skills.md#${name}`;
+	rule.meta.docs.url = new URL(`./svelte-skills.md#${name}`, import.meta.url).href;
 
 export const plugin = { meta: { name: 'svelte-skills' }, rules };
 

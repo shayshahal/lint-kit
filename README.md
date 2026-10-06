@@ -1,93 +1,103 @@
 # lint-kit
 
-Lint rules for **Svelte 5 / SvelteKit**, **i18n**, **Tailwind / shadcn**, **error handling** and
-**FastAPI**, and pre-push checks that a branch leaves the code's structure no worse than its base,
-with an `init` command that installs only the sets a project picks. Each message says what to
-write instead.
+An installer for the deterministic tools a repository uses: lint rules for **Svelte 5 /
+SvelteKit**, **i18n**, **Tailwind / shadcn**, **error handling** and **FastAPI**, the type
+checkers, and pre-push checks that a branch leaves the code's structure no worse than its base.
+Each message says what to write instead.
 
-| Set | Linter | What it checks |
+`init` copies the rules into the repository's `tools/` folder and writes the tools' own config.
+Nothing it leaves behind is named after it, and nothing depends on this repository afterwards:
+the repository owns the copies, and only whoever runs `init` needs access here.
+
+| Set | Tool | What it checks |
 | --- | --- | --- |
 | `svelte-skills` | ESLint | 22 rules: runes instead of Svelte 4 syntax, remote functions, throw-less `error()` / `redirect()`, `$state` written in `$effect` / `$derived`, `{@const}`, index and volatile `{#each}` keys… |
 | `untranslated-text` | ESLint | text users read comes from the message catalogue (Paraglide `m.key()`) |
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
 | `error-handling` | ESLint | catch blocks (and promise `.catch()`) that drop the error, only log it, return a fixed default, or turn it into a string |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
-| `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for the Svelte app, `pyright` for the backend |
-| `structure` | fallow, lint-kit-structure | lefthook pre-push steps that fail when a branch adds complexity, duplication or dead code its base did not have, and never on what was already there: `fallow audit` for JS / TS, `lint-kit-structure` (mccabe and jscpd) for Python ([docs](docs/structure.md)) |
+| `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
+| `structure` | fallow, `structure_check.py` | lefthook pre-push steps that fail when a branch adds complexity, duplication or dead code its base did not have, and never on what was already there ([docs](docs/structure.md)) |
 
-Each ESLint rule links to its section in [`docs/`](docs) (editors show the link with the
-message); the FAP rules are listed in the module docstring (below); the structure set is in
-[`docs/structure.md`](docs/structure.md).
+Each ESLint rule links to its section in the `.md` copied beside it in `tools/eslint/` (editors
+show the link with the message); the FAP rules are listed in `tools/python/fastapi_rules.py`'s
+docstring.
 
-## Install
+## Run it
 
 ```sh
-npx github:shayshahal/lint-kit init
+npx github:shayshahal/lint-kit init          # or pin a release: github:shayshahal/lint-kit#v0.3.0
 ```
 
-It asks which sets you want (defaults come from your dependencies), installs them from git with
-your package manager (and `uv` for the Python plugin), and writes the config:
+With this repository private, use a URL your git can clone it with, e.g.
+`npx git+ssh://git@github.com/shayshahal/lint-kit.git init`.
 
-- **ESLint sets:** `eslint.lint-kit.js` holds lint-kit's entries; your ESLint config
-  (`eslint.config.js`, or `.mjs` / `.cjs` / `.ts` / `.mts` / `.cts`) spreads it last. Without
-  one, you get an `eslint.config.js` with the Svelte / TypeScript parser setup.
-- **fastapi:** `[tool.lint-kit-fastapi]` in `pyproject.toml`, `FAP` in `.flake8`, and ruff's
-  `FAST` and `ASYNC` rules in the ruff config ruff reads for the backend (`ruff.toml`, or
-  `[tool.ruff.lint]`), added to `extend-select` with a comment naming what was added. FAP holds
-  only what those rules miss, so the set expects both. `ruff` becomes a dev dependency if it
-  isn't one.
-- **lefthook:** when the repository has a `lefthook.yml`, pre-commit steps run ESLint on staged
+It finds the repository's projects, asks which sets you want (defaults come from their
+dependencies), installs the third-party tools with each project's package manager (and `uv` for
+Python), copies the rules and writes the config.
+
+**Projects.** In a monorepo, the JS projects are the workspace members (`pnpm-workspace.yaml`, or
+`"workspaces"` in the root `package.json`), so a stray `package.json` in a scratch folder is not
+one; without a workspace, every `package.json`. Python projects are every `pyproject.toml` with a
+`[project]` table. Folders starting with `.`, `node_modules`, `dist` and `build` are skipped.
+Each set goes into each project it fits, and with several projects a step's name ends in the
+project's folder (`eslint-admin`, `svelte-check-shop`).
+
+- **ESLint sets**, in each project that has an ESLint config or depends on Svelte, for the sets
+  its dependencies call for (`svelte-skills`: svelte; `untranslated-text`: Paraglide;
+  `tailwind-patterns`: tailwindcss; `error-handling`: svelte or typescript). The rules go to
+  `tools/eslint/<set>.mjs`; the project's `eslint.rules.js` imports them with their options, and
+  its ESLint config (`eslint.config.js`, or `.mjs` / `.cjs` / `.ts` / `.mts` / `.cts`) spreads it
+  last. Without a config, the project gets an `eslint.config.js` with the Svelte / TypeScript
+  parser setup.
+- **fastapi**, in each Python project that depends on FastAPI: `tools/python/fastapi_rules.py`,
+  loaded by flake8 as a local plugin (`[flake8:local-plugins]` in `.flake8`, which also selects
+  `FAP`); `[tool.fastapi-rules]` in `pyproject.toml`; and ruff's `FAST` and `ASYNC` rules in the
+  ruff config ruff reads for the project (`ruff.toml`, or `[tool.ruff.lint]`). FAP holds only
+  what those rules miss, so the set expects both. `flake8` and `ruff` become dev dependencies.
+- **lefthook**: when the repository has a `lefthook.yml`, pre-commit steps run ESLint on staged
   `src/` files, flake8 (FAP) on the app package, `check-deps` when `pyproject.toml` changes, and
-  `ruff check`. The ESLint and ruff steps are skipped when a step already runs that tool.
-- **typecheck:** pre-push steps in `lefthook.yml`, since a type checker needs the whole project,
-  not the staged files: `svelte-kit sync && svelte-check --tsgo` when the push touches the Svelte
-  app, `uv run pyright` when it touches the backend. `--tsgo` needs TypeScript 7 next to the 6
-  svelte-check loads Svelte with, so `init` adds `svelte-check` and
-  `@typescript/native@npm:typescript@7` if they are missing, and `pyright` to the backend. Like
+  `ruff check`. The ESLint and ruff steps are skipped when a step already runs that tool for the
+  project. Globs follow `glob_matcher`: under `doublestar` they are `dir/**/*.py`.
+- **typecheck**: pre-push steps, since a type checker needs the whole project, not the staged
+  files: `svelte-kit sync && svelte-check --tsgo` for each Svelte project, `uv run pyright` for
+  each Python one. `--tsgo` needs TypeScript 7 next to the 6 svelte-check loads Svelte with, so
+  `init` adds `svelte-check` and `@typescript/native@npm:typescript@7` if they are missing. Like
   svelte-check's `--incremental`, `--tsgo` skips `.svelte` files outside the tsconfig's root
   folder. On by default when the repository has a `lefthook.yml`.
-- **structure:** pre-push steps in `lefthook.yml` that compare the branch with its base:
-  `fallow audit --base origin/<base>` when the push touches the JS / TS project, and
-  `uv run lint-kit-structure --base origin/<base> <app>` when it touches the backend. The base
-  comes from `--base`, else the `origin/<branch>...HEAD` lefthook's pre-push `files` diffs
-  against, else `origin/HEAD`. `init` adds `fallow` and `jscpd` as dev dependencies and the
-  Python package to the backend. A project without a fallow config gets a `.fallowrc.json` (yours
-  from then on). `package.json` gets a `structure:brief` script: `fallow review --brief`, a "where
-  to look" brief for a reviewer that always exits 0. On by default when the repository has a
-  `lefthook.yml`.
+- **structure**: pre-push steps that compare the branch with its base. `fallow audit` runs at the
+  workspace root (or in each JS project without a workspace), `tools/python/structure_check.py`
+  in each Python project. The base comes from `--base`, else the `origin/<branch>...HEAD`
+  lefthook's pre-push `files` diffs against, else `origin/HEAD`. `init` adds `fallow` and `jscpd`
+  as dev dependencies, and `mccabe` to a Python project without flake8. A fallow root without a
+  fallow config gets a `.fallowrc.json`, and `package.json` gets a `structure:brief` script:
+  `fallow review --brief`, a "where to look" brief for a reviewer that always exits 0. On by
+  default when the repository has a `lefthook.yml`. See [docs/structure.md](docs/structure.md).
 
-Re-run `init` to add or remove sets. Sets it installed before default to yes; turning fastapi off
-removes the dev dependency, the settings table, the FAP selection, the ruff rules it added and the
-lefthook steps (ruff itself stays installed). Turning every ESLint set off removes the ESLint step;
-turning typecheck off removes the pre-push steps (svelte-check and pyright stay installed);
-turning structure off removes its steps and the `structure:brief` script (fallow, jscpd,
-`.fallowrc.json` and the Python package stay).
+**Re-running** copies `tools/` again (the copies are the installer's: edit the options in
+`eslint.rules.js` and the config files, not the copies) and adds what is missing: a set, a
+project, a step. It never removes anything; sets already there default to yes and stay in
+`eslint.rules.js`. To drop a set, delete its config and steps by hand. Config files you edited
+are left as they are; `eslint.rules.js` is rewritten when a set is added, and the previous one
+kept as `eslint.rules.js.bak`.
 
 Options: `--sets svelte-skills,fastapi` and `--yes` skip the questions, `--no-install` writes
-config only, `--ref <tag or sha>` pins another version, `--python <dir>` points at the backend
-in a monorepo, `--base <branch>` names the branch structure compares with.
-
-By hand:
-
-```sh
-pnpm add -D github:shayshahal/lint-kit#v0.3.0
-uv add --dev "lint-kit-fastapi @ git+https://github.com/shayshahal/lint-kit@v0.3.0#subdirectory=python"
-```
+files only, `--base <branch>` names the branch structure compares with, `--cwd <dir>` runs it on
+another repository.
 
 ## ESLint sets
 
 All four expect the Svelte and TypeScript parsers to be set up (eslint-plugin-svelte's
 recommended config, `@typescript-eslint/parser`), and default to `src/**` with tests, specs and
-stories left out.
+stories left out. The options, in `eslint.rules.js`:
 
 ```js
-import svelteSkills from 'lint-kit/svelte-skills';
-import untranslatedText from 'lint-kit/untranslated-text';
-import tailwindPatterns, { classRule } from 'lint-kit/tailwind-patterns';
-import errorHandling from 'lint-kit/error-handling';
+import svelteSkills from './tools/eslint/svelte-skills.mjs';
+import untranslatedText from './tools/eslint/untranslated-text.mjs';
+import tailwindPatterns, { classRule } from './tools/eslint/tailwind-patterns.mjs';
+import errorHandling from './tools/eslint/error-handling.mjs';
 
 export default [
-	// …parsers
 	...svelteSkills.config({ ignores: ['src/legacy/**'] }),
 	...untranslatedText.config({
 		allow: ['Acme( Inc)?'], // regex sources of strings that are not text
@@ -120,10 +130,10 @@ warnings, `require-each-key` and `prefer-style-directive`. The plugins are expor
 ## fastapi
 
 ```toml
-[tool.lint-kit-fastapi]
+[tool.fastapi-rules]
 app = "app"   # the application package, relative to pyproject.toml
 
-[tool.lint-kit-fastapi.dependencies]
+[tool.fastapi-rules.dependencies]
 weasyprint = ["weasyprint.HTML"]   # calls into it that block the event loop
 inhouse-sdk = "async client only"  # or why it is safe in async code
 ```
@@ -132,24 +142,29 @@ inhouse-sdk = "async client only"  # or why it is safe in async code
 # .flake8
 [flake8]
 select = FAP
+
+[flake8:local-plugins]
+extension =
+    FAP = fastapi_rules:Plugin
+paths =
+    ../tools/python
 ```
 
 FAP001 follows calls through your own sync helpers across modules, so it indexes the app package
 once per run. Common libraries (bcrypt, boto3, pandas, openpyxl, reportlab, requests, Pillow,
-sync redis / pymongo…) come classified; `lint-kit-fastapi check-deps` fails while a
-`[project.dependencies]` entry is classified nowhere, so adding a library means deciding.
-
-The rule list is in the module docstring: `python/src/lint_kit_fastapi/__init__.py`.
+sync redis / pymongo…) come classified; `python tools/python/fastapi_rules.py check-deps` fails
+while a `[project.dependencies]` entry is classified nowhere, so adding a library means deciding.
 
 ## Develop
+
+`tools/` holds exactly what `init` copies; `python/` is the dev environment for `tools/python`.
 
 ```sh
 pnpm install && (cd python && uv sync)
 pnpm test                      # RuleTester for every ESLint rule, and init end to end
-(cd python && uv run pytest)   # every FAP rule, and lint-kit-structure (uses jscpd from pnpm install)
+(cd python && uv run pytest)   # every FAP rule, and structure_check.py (uses jscpd from pnpm install)
 ```
 
-To release, bump the version in `package.json`, `python/pyproject.toml`, the `Plugin` class in
-`python/src/lint_kit_fastapi/__init__.py`, `python/uv.lock` and the install commands above
+To release, bump the version in `package.json` and the pinned command above
 (`test/version.test.js` fails until they agree). Once CI passes on `main`, the Release workflow
 tags `v<version>` and publishes a GitHub release.

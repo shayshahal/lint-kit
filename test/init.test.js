@@ -6,7 +6,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import { parse } from 'yaml';
-import { main, patchEslintConfig, patchRuff, shellArgs, unpatchRuff } from '../bin/lint-kit.js';
+import { main, patchEslintConfig, patchFlake8, patchRuff, shellArgs } from '../bin/lint-kit.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Inside the repo, so the generated configs resolve eslint and its plugins from its node_modules.
@@ -14,15 +14,13 @@ const TMP = path.join(ROOT, 'test', '.tmp');
 fs.rmSync(TMP, { recursive: true, force: true });
 after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
+/** A repository (it has a .git) made of `files`. */
 function project(name, files) {
 	const dir = path.join(TMP, name);
-	for (const [rel, text] of Object.entries(files)) {
+	for (const [rel, text] of Object.entries({ '.git/HEAD': 'ref: refs/heads/main\n', ...files })) {
 		fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
 		fs.writeFileSync(path.join(dir, rel), text);
 	}
-	// what `pnpm add github:shayshahal/lint-kit` would put there
-	fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true });
-	fs.symlinkSync(ROOT, path.join(dir, 'node_modules', 'lint-kit'), 'junction');
 	return dir;
 }
 
@@ -35,6 +33,9 @@ const quiet = async (argv) => {
 		console.log = log;
 	}
 };
+const init = (dir, ...args) => quiet(['init', '--no-install', '--cwd', dir, ...args]);
+const text = (dir, file) => fs.readFileSync(path.join(dir, file), 'utf8');
+const hooks = (dir) => parse(text(dir, 'lefthook.yml'));
 
 async function ruleIds(dir, file) {
 	const [result] = await new ESLint({ cwd: dir }).lintFiles([path.join(dir, file)]);
@@ -42,78 +43,65 @@ async function ruleIds(dir, file) {
 	return result.messages.map((m) => m.ruleId).sort();
 }
 
-test('a Svelte project without an ESLint config gets one, from what it depends on', async () => {
+/** Every file under `dir` but .git, relative. */
+function files(dir, base = dir) {
+	return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+		e.isDirectory() ? (e.name === '.git' ? [] : files(path.join(dir, e.name), base)) : [path.relative(base, path.join(dir, e.name))],
+	);
+}
+
+test('a Svelte project without an ESLint config gets one, and the rules copied into tools/eslint', async () => {
 	const dir = project('svelte-new', {
 		'package.json': JSON.stringify({ devDependencies: { svelte: '^5', tailwindcss: '^4' } }),
 		'src/routes/+page.svelte':
 			"<script lang=\"ts\">import { writable } from 'svelte/store';</script>\n<div class=\"h-screen\">Hello</div>\n",
 	});
-	assert.equal(await quiet(['init', '--yes', '--no-install', '--cwd', dir]), 0);
-	const own = fs.readFileSync(path.join(dir, 'eslint.lint-kit.js'), 'utf8');
-	assert.match(own, /svelteSkills\.config\(\)/);
+	assert.equal(await init(dir, '--yes'), 0);
+	const own = text(dir, 'eslint.rules.js');
+	assert.match(own, /import svelteSkills from '\.\/tools\/eslint\/svelte-skills\.mjs';/);
 	assert.match(own, /tailwindPatterns\.config/);
-	// no paraglide dependency, so not chosen by default
+	// no paraglide dependency, so not chosen by default, and not copied
 	assert.doesNotMatch(own, /untranslatedText/);
+	assert.ok(fs.existsSync(path.join(dir, 'tools/eslint/svelte-skills.md')));
+	assert.equal(fs.existsSync(path.join(dir, 'tools/eslint/untranslated-text.mjs')), false);
 	assert.deepEqual(await ruleIds(dir, 'src/routes/+page.svelte'), [
 		'svelte-skills/no-legacy-syntax',
 		'tailwind-patterns/viewport-vh',
 	]);
 });
 
-test('an existing config keeps its entries, spreads lint-kit last, and a re-run changes nothing', async () => {
+test('an existing config spreads the rules last, a re-run changes nothing, and sets are only added', async () => {
 	const config = "export default [{ rules: { 'no-var': 'error' } }];\n";
 	const dir = project('svelte-existing', {
-		'package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5', '@inlang/paraglide-js': '^2' } }),
 		'eslint.config.js': `import svelte from 'eslint-plugin-svelte';\nimport tsParser from '@typescript-eslint/parser';\n\nexport default [\n\t...svelte.configs.recommended,\n\t{ files: ['**/*.svelte'], languageOptions: { parserOptions: { parser: tsParser } } },\n\t{ files: ['**/*.ts'], languageOptions: { parser: tsParser } },\n\t{ rules: { 'no-var': 'error' } },\n];\n`,
 		'src/lib/x.ts': "var a = 1;\nimport { page } from '$app/stores';\n",
 	});
-	await quiet(['init', '--sets', 'svelte-skills', '--no-install', '--cwd', dir]);
-	const once = fs.readFileSync(path.join(dir, 'eslint.config.js'), 'utf8');
+	await init(dir, '--sets', 'svelte-skills');
+	const once = text(dir, 'eslint.config.js');
 	assert.deepEqual(await ruleIds(dir, 'src/lib/x.ts'), ['no-var', 'svelte-skills/no-legacy-syntax']);
-	await quiet(['init', '--sets', 'svelte-skills', '--no-install', '--cwd', dir]);
-	assert.equal(fs.readFileSync(path.join(dir, 'eslint.config.js'), 'utf8'), once);
-	assert.equal(fs.existsSync(path.join(dir, 'eslint.lint-kit.js.bak')), false);
-	// choosing another set rewrites lint-kit's file and keeps the old one
-	await quiet(['init', '--sets', 'svelte-skills,untranslated-text', '--no-install', '--cwd', dir]);
-	assert.ok(fs.existsSync(path.join(dir, 'eslint.lint-kit.js.bak')));
-	assert.equal(patchEslintConfig(config).match(/lintKit/g).length, 2);
-	// every set turned off: lint-kit's list is empty and the config still loads
-	await quiet(['init', '--sets', '', '--no-install', '--cwd', dir]);
-	assert.doesNotMatch(fs.readFileSync(path.join(dir, 'eslint.lint-kit.js'), 'utf8'), /import/);
-	// (a fresh process: this one has the previous eslint.lint-kit.js in its module cache)
-	const eslint = path.join(ROOT, 'node_modules', 'eslint', 'bin', 'eslint.js');
-	let report;
-	try {
-		report = execFileSync(process.execPath, [eslint, '--format', 'json', 'src/lib/x.ts'], { cwd: dir, encoding: 'utf8' });
-	} catch (e) {
-		report = e.stdout;
-	}
-	assert.deepEqual(JSON.parse(report)[0].messages.map((m) => m.ruleId), ['no-var']);
+	await init(dir, '--sets', 'svelte-skills');
+	assert.equal(text(dir, 'eslint.config.js'), once);
+	assert.equal(fs.existsSync(path.join(dir, 'eslint.rules.js.bak')), false);
+	// another set: eslint.rules.js is rewritten and the old one kept
+	await init(dir, '--sets', 'untranslated-text');
+	assert.ok(fs.existsSync(path.join(dir, 'eslint.rules.js.bak')));
+	assert.match(text(dir, 'eslint.rules.js'), /svelteSkills[\s\S]*untranslatedText/);
+	assert.equal(patchEslintConfig(config).match(/toolRules/g).length, 2);
 });
 
-test('a set lint-kit installed stays on by default, so --yes does not drop it', async () => {
-	const dir = project('installed', {
-		'package.json': '{}',
-		'eslint.lint-kit.js': "import tailwindPatterns from 'lint-kit/tailwind-patterns';\n",
-		'pyproject.toml': '[project]\nname = "a"\n\n[tool.lint-kit-fastapi]\napp = "a"\n',
-	});
-	await quiet(['init', '--yes', '--no-install', '--cwd', dir]);
-	assert.match(fs.readFileSync(path.join(dir, 'eslint.lint-kit.js'), 'utf8'), /tailwindPatterns\.config/);
-	assert.match(fs.readFileSync(path.join(dir, 'pyproject.toml'), 'utf8'), /\[tool\.lint-kit-fastapi\]/);
-});
-
-test('a CommonJS config is patched in place and ESLint loads lint-kit through it', async () => {
+test('a CommonJS config is patched in place and ESLint loads the rules through it', async () => {
 	const dir = project('svelte-cjs', {
 		'package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
 		'eslint.config.cjs': `const svelte = require('eslint-plugin-svelte');\nconst tsParser = require('@typescript-eslint/parser');\n\nmodule.exports = [\n\t...(svelte.default ?? svelte).configs.recommended,\n\t{ files: ['**/*.ts'], languageOptions: { parser: tsParser } },\n\t{ rules: { 'no-var': 'error' } },\n];\n`,
 		'src/lib/x.ts': "var a = 1;\nimport { page } from '$app/stores';\n",
 	});
-	await quiet(['init', '--sets', 'svelte-skills', '--no-install', '--cwd', dir]);
+	await init(dir, '--sets', 'svelte-skills');
 	assert.equal(fs.existsSync(path.join(dir, 'eslint.config.js')), false);
 	assert.deepEqual(await ruleIds(dir, 'src/lib/x.ts'), ['no-var', 'svelte-skills/no-legacy-syntax']);
-	const once = fs.readFileSync(path.join(dir, 'eslint.config.cjs'), 'utf8');
-	await quiet(['init', '--sets', 'svelte-skills', '--no-install', '--cwd', dir]);
-	assert.equal(fs.readFileSync(path.join(dir, 'eslint.config.cjs'), 'utf8'), once);
+	const once = text(dir, 'eslint.config.cjs');
+	await init(dir, '--sets', 'svelte-skills');
+	assert.equal(text(dir, 'eslint.config.cjs'), once);
 });
 
 test('a TypeScript config is patched in place, not shadowed by a new eslint.config.js', async () => {
@@ -121,62 +109,46 @@ test('a TypeScript config is patched in place, not shadowed by a new eslint.conf
 		'package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
 		'eslint.config.ts': "import { defineConfig } from 'eslint/config';\n\nexport default defineConfig([{ rules: { 'no-var': 'error' } }]);\n",
 	});
-	await quiet(['init', '--sets', 'svelte-skills', '--no-install', '--cwd', dir]);
+	await init(dir, '--sets', 'svelte-skills');
 	assert.equal(fs.existsSync(path.join(dir, 'eslint.config.js')), false);
 	assert.equal(
-		fs.readFileSync(path.join(dir, 'eslint.config.ts'), 'utf8'),
-		"import lintKit from './eslint.lint-kit.js';\nimport { defineConfig } from 'eslint/config';\n\nconst config = defineConfig([{ rules: { 'no-var': 'error' } }]);\n\nexport default [...[config].flat(), ...lintKit];\n",
+		text(dir, 'eslint.config.ts'),
+		"import toolRules from './eslint.rules.js';\nimport { defineConfig } from 'eslint/config';\n\nconst config = defineConfig([{ rules: { 'no-var': 'error' } }]);\n\nexport default [...[config].flat(), ...toolRules];\n",
 	);
 });
 
-test('a FastAPI backend in a subfolder: settings, .flake8, lefthook steps, and flake8 finds FAP', async () => {
+test('a FastAPI backend in a subfolder: FAP as a flake8 local plugin, lefthook steps, and the real tools', async () => {
 	const files = {
-		'.git/HEAD': 'ref: refs/heads/main\n',
 		'lefthook.yml': '# hooks\npre-commit:\n  parallel: true\n  commands:\n    ruff:\n      run: ruff check\n',
-		'backend/pyproject.toml':
-			'[project]\nname = "api"\ndependencies = ["fastapi>=0.115", "weasyprint"]\n',
+		'backend/pyproject.toml': '[project]\nname = "api"\ndependencies = ["fastapi>=0.115", "weasyprint"]\n',
 		'backend/api/main.py':
 			'import time\nfrom fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.get("/")\nasync def home() -> dict:\n    time.sleep(1)\n    return {}\n',
 	};
-	const dir = project('repo', files);
+	const dir = project('fastapi', files);
 	const backend = path.join(dir, 'backend');
-	await quiet(['init', '--sets', 'fastapi', '--no-install', '--cwd', dir, '--python', 'backend']);
-	const pyproject = fs.readFileSync(path.join(backend, 'pyproject.toml'), 'utf8');
-	assert.match(pyproject, /\[tool\.lint-kit-fastapi\]\napp = "api"/);
-	assert.match(fs.readFileSync(path.join(backend, '.flake8'), 'utf8'), /select = FAP/);
-	const hooks = parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'));
-	assert.deepEqual(Object.keys(hooks['pre-commit'].commands), [
-		'ruff',
-		'lint-kit-fastapi',
-		'lint-kit-fastapi-deps',
-	]); // ruff already runs, so no lint-kit-ruff step
-	assert.match(pyproject, /\[tool\.ruff\.lint\]\n# lint-kit-fastapi added FAST, ASYNC\nextend-select = \["FAST", "ASYNC"\]\n$/);
-	// lefthook's `*` crosses folders: api/main.py and api/routes/x.py both match
-	assert.equal(hooks['pre-commit'].commands['lint-kit-fastapi'].glob, 'backend/api/*.py');
-	assert.equal(hooks['pre-commit'].commands['lint-kit-fastapi'].root, 'backend/');
-	assert.match(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), /^# hooks/);
+	await init(dir, '--sets', 'fastapi');
+	const pyproject = text(backend, 'pyproject.toml');
+	assert.match(pyproject, /\[tool\.fastapi-rules\]\napp = "api"/);
+	assert.match(pyproject, /lists what is missing:\n# {3}uv run python \.\.\/tools\/python\/fastapi_rules\.py check-deps\n/);
+	assert.match(pyproject, /\[tool\.ruff\.lint\]\n# FAST, ASYNC: .*\nextend-select = \["FAST", "ASYNC"\]\n$/);
+	assert.equal(
+		text(backend, '.flake8'),
+		'[flake8]\nselect = FAP\nmax-line-length = 100\n\n[flake8:local-plugins]\nextension =\n    FAP = fastapi_rules:Plugin\npaths =\n    ../tools/python\n',
+	);
+	assert.ok(fs.existsSync(path.join(dir, 'tools/python/fastapi_rules.py')));
+	const steps = hooks(dir)['pre-commit'].commands;
+	// ruff already runs, so there is no ruff step
+	assert.deepEqual(Object.keys(steps), ['ruff', 'fastapi-rules', 'fastapi-deps']);
+	assert.deepEqual(steps['fastapi-rules'], { glob: 'backend/api/*.py', root: 'backend/', run: 'uv run flake8 {staged_files}' });
+	assert.equal(steps['fastapi-deps'].run, 'uv run python ../tools/python/fastapi_rules.py check-deps');
+	assert.match(text(dir, 'lefthook.yml'), /^# hooks/);
 
 	// idempotent
-	const snapshot = ['backend/pyproject.toml', 'backend/.flake8', 'lefthook.yml'].map((f) =>
-		fs.readFileSync(path.join(dir, f), 'utf8'),
-	);
-	await quiet(['init', '--sets', 'fastapi', '--no-install', '--cwd', dir, '--python', 'backend']);
-	assert.deepEqual(
-		['backend/pyproject.toml', 'backend/.flake8', 'lefthook.yml'].map((f) =>
-			fs.readFileSync(path.join(dir, f), 'utf8'),
-		),
-		snapshot,
-	);
+	const snapshot = ['backend/pyproject.toml', 'backend/.flake8', 'lefthook.yml'].map((f) => text(dir, f));
+	await init(dir, '--sets', 'fastapi');
+	assert.deepEqual(['backend/pyproject.toml', 'backend/.flake8', 'lefthook.yml'].map((f) => text(dir, f)), snapshot);
 
-	// turned off: back to what the repository had
-	const original = (f) => files[f];
-	await quiet(['init', '--sets', '', '--no-install', '--cwd', dir, '--python', 'backend']);
-	assert.equal(fs.readFileSync(path.join(backend, 'pyproject.toml'), 'utf8'), original('backend/pyproject.toml'));
-	assert.equal(fs.existsSync(path.join(backend, '.flake8')), false);
-	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), original('lefthook.yml'));
-	await quiet(['init', '--sets', 'fastapi', '--no-install', '--cwd', dir, '--python', 'backend']);
-
-	// the real tools, from the python package's dev environment
+	// the real tools, from the python dev environment
 	const bin = path.join(ROOT, 'python', '.venv', process.platform === 'win32' ? 'Scripts' : 'bin');
 	if (!fs.existsSync(bin)) return; // `uv sync` in python/ first
 	const out = (cmd, args) => {
@@ -187,213 +159,215 @@ test('a FastAPI backend in a subfolder: settings, .flake8, lefthook steps, and f
 		}
 	};
 	assert.match(out('flake8', ['api']), /FAP001 `time\.sleep\(\)` blocks the event loop/);
-	assert.match(out('lint-kit-fastapi', ['check-deps']), /classify weasyprint/);
+	assert.match(out('python', ['../tools/python/fastapi_rules.py', 'check-deps']), /classify weasyprint/);
 	assert.match(out('ruff', ['check', '--no-cache', 'api']), /ASYNC251/);
 });
 
-test('ruff rules join the config ruff reads, and come out again', () => {
+test('.flake8 with its own local plugins gets FAP added to each list', () => {
+	const own = '[flake8]\nselect = E,X\n\n[flake8:local-plugins]\nextension =\n    X = mine:Plugin\npaths =\n    ./lint\n';
+	assert.equal(
+		patchFlake8(own, '../tools/python'),
+		'[flake8]\nextend-select = FAP\nselect = E,X\n\n[flake8:local-plugins]\nextension =\n    FAP = fastapi_rules:Plugin\n    X = mine:Plugin\npaths =\n    ../tools/python\n    ./lint\n',
+	);
+	assert.equal(patchFlake8(patchFlake8(own, 't'), 't'), patchFlake8(own, 't'));
+});
+
+test('ruff rules join the config ruff reads, only what is missing', () => {
 	const own = '[tool.ruff.lint]\nselect = ["E", "F"]\nextend-select = [\n  "B",\n  "ASYNC",\n]\n\n[tool.other]\nx = 1\n';
 	const patched = patchRuff(own, 'tool.ruff.lint');
-	// only what is missing, and the comment says what that was
-	assert.equal(
-		patched,
-		'[tool.ruff.lint]\nselect = ["E", "F"]\n# lint-kit-fastapi added FAST\nextend-select = [\n  "B",\n  "ASYNC", "FAST",\n]\n\n[tool.other]\nx = 1\n',
-	);
+	assert.match(patched, /# FAST, ASYNC: .*\nextend-select = \[\n {2}"B",\n {2}"ASYNC", "FAST",\n\]/);
 	assert.equal(patchRuff(patched, 'tool.ruff.lint'), patched);
-	assert.equal(unpatchRuff(patched, 'tool.ruff.lint'), own);
-	// a table without extend-select, and a ruff.toml's [lint]
 	const table = '[lint]\nselect = ["E"]\n';
-	assert.equal(patchRuff(table, 'lint'), '[lint]\n# lint-kit-fastapi added FAST, ASYNC\nextend-select = ["FAST", "ASYNC"]\nselect = ["E"]\n');
-	assert.equal(unpatchRuff(patchRuff(table, 'lint'), 'lint'), table);
-	// everything already on: nothing to add or take out
+	assert.match(patchRuff(table, 'lint'), /^\[lint\]\n# FAST, ASYNC: .*\nextend-select = \["FAST", "ASYNC"\]\nselect = \["E"\]\n$/);
 	const all = '[lint]\nextend-select = ["FAST", "ASYNC"]\n';
 	assert.equal(patchRuff(all, 'lint'), all);
-	assert.equal(unpatchRuff(all, 'lint'), all);
+	// what select already has counts too
+	const selected = '[lint]\nselect = [\n  "E",\n  "FAST",  # FastAPI\n  "ASYNC",\n]\n';
+	assert.equal(patchRuff(selected, 'lint'), selected);
+	assert.match(patchRuff('[lint]\nselect = ["FAST"]\n', 'lint'), /^extend-select = \["ASYNC"\]$/m);
+});
+
+test('files with CRLF line endings (a Windows checkout) keep them', async () => {
+	const crlf = (s) => s.replace(/\n/g, '\r\n');
+	const dir = project('crlf', {
+		'lefthook.yml': crlf('pre-commit:\n  commands:\n    format:\n      run: pnpm format\n'),
+		'backend/pyproject.toml': crlf('[project]\nname = "api"\ndependencies = ["fastapi"]\n\n[tool.ruff.lint]\nselect = ["E"]\n'),
+		'backend/.flake8': crlf('[flake8]\nmax-line-length = 100\n'),
+		'backend/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+	});
+	await init(dir, '--sets', 'fastapi');
+	for (const f of ['lefthook.yml', 'backend/pyproject.toml', 'backend/.flake8']) {
+		const raw = fs.readFileSync(path.join(dir, f), 'utf8');
+		assert.doesNotMatch(raw, /[^\r]\n/, `${f} has a bare LF`);
+	}
+	assert.match(text(dir, 'backend/pyproject.toml'), /^\[tool\.ruff\.lint\]\r\n# FAST, ASYNC: .*\r\nextend-select = \["FAST", "ASYNC"\]\r\nselect = \["E"\]/m);
 });
 
 test('a ruff.toml at the repository root gets the rules, not a pyproject.toml that would shadow it', async () => {
-	const files = {
-		'.git/HEAD': 'ref: refs/heads/main\n',
+	const dir = project('ruff-root', {
 		'ruff.toml': 'line-length = 100\n\n[lint]\nselect = ["E"]\n',
 		'lefthook.yml': 'pre-commit:\n  commands:\n    types:\n      run: pnpm check\n',
 		'pnpm-lock.yaml': '',
 		'package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
 		'backend/pyproject.toml': '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
 		'backend/api/main.py': 'from fastapi import FastAPI\n\napp = FastAPI()\n',
-	};
-	const dir = project('ruff-root', files);
-	await quiet(['init', '--sets', 'svelte-skills,fastapi', '--no-install', '--cwd', dir, '--python', 'backend']);
-	assert.match(fs.readFileSync(path.join(dir, 'ruff.toml'), 'utf8'), /\[lint\]\n# lint-kit-fastapi added FAST, ASYNC\n/);
-	assert.doesNotMatch(fs.readFileSync(path.join(dir, 'backend/pyproject.toml'), 'utf8'), /tool\.ruff/);
-	const steps = parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'))['pre-commit'].commands;
-	assert.deepEqual(steps['lint-kit-eslint'], { glob: 'src/*.{js,ts,svelte}', run: 'pnpm exec eslint {staged_files}' });
-	assert.deepEqual(steps['lint-kit-ruff'], { glob: 'backend/*.py', root: 'backend/', run: 'uv run ruff check {staged_files}' });
-
-	// ESLint off: its step goes, the Python ones stay
-	await quiet(['init', '--sets', 'fastapi', '--no-install', '--cwd', dir, '--python', 'backend']);
-	assert.deepEqual(Object.keys(parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'))['pre-commit'].commands), [
-		'types',
-		'lint-kit-fastapi',
-		'lint-kit-fastapi-deps',
-		'lint-kit-ruff',
-	]);
-	// everything off: the files are what they were
-	await quiet(['init', '--sets', '', '--no-install', '--cwd', dir, '--python', 'backend']);
-	for (const f of ['ruff.toml', 'lefthook.yml', 'backend/pyproject.toml'])
-		assert.equal(fs.readFileSync(path.join(dir, f), 'utf8'), files[f], f);
+	});
+	await init(dir, '--sets', 'svelte-skills,fastapi');
+	assert.match(text(dir, 'ruff.toml'), /\[lint\]\n# FAST, ASYNC: /);
+	assert.doesNotMatch(text(dir, 'backend/pyproject.toml'), /tool\.ruff/);
+	const steps = hooks(dir)['pre-commit'].commands;
+	assert.deepEqual(steps.eslint, { glob: 'src/*.{js,ts,svelte}', run: 'pnpm exec eslint {staged_files}' });
+	assert.deepEqual(steps.ruff, { glob: 'backend/*.py', root: 'backend/', run: 'uv run ruff check {staged_files}' });
 });
 
-test('typecheck: svelte-check --tsgo and pyright before each push, and off again', async () => {
-	const files = {
-		'.git/HEAD': 'ref: refs/heads/main\n',
+test('typecheck: svelte-check --tsgo and pyright before each push', async () => {
+	const dir = project('typecheck', {
 		'lefthook.yml': 'pre-commit:\n  commands:\n    format:\n      run: pnpm format\n',
 		'web/pnpm-lock.yaml': '',
 		'web/package.json': JSON.stringify({ devDependencies: { svelte: '^5', '@sveltejs/kit': '^2' } }),
 		'api/pyproject.toml': '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
-	};
-	const dir = project('typecheck', files);
-	const args = ['--no-install', '--cwd', path.join(dir, 'web'), '--python', '../api'];
-	// on by default: the repository has lefthook and a Svelte app
-	await quiet(['init', '--yes', ...args]);
-	const { 'lint-kit-svelte-check': svelteCheck, 'lint-kit-pyright': pyright } = parse(
-		fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'),
-	)['pre-push'].commands;
-	assert.deepEqual({ 'lint-kit-svelte-check': svelteCheck, 'lint-kit-pyright': pyright }, {
-		'lint-kit-svelte-check': {
-			glob: 'web/*.{svelte,ts,js}',
-			root: 'web/',
-			run: 'pnpm exec svelte-kit sync && pnpm exec svelte-check --tsgo',
-		},
-		'lint-kit-pyright': { glob: 'api/*.py', root: 'api/', run: 'uv run pyright' },
 	});
-	const once = fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8');
-	await quiet(['init', '--yes', ...args]);
-	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), once);
-	// off: the pre-push section goes with its steps
-	await quiet(['init', '--sets', '', ...args]);
-	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), files['lefthook.yml']);
+	await init(dir, '--yes', '--base', 'dev'); // on by default: lefthook, a Svelte app
+	const { 'svelte-check': svelteCheck, pyright } = hooks(dir)['pre-push'].commands;
+	assert.deepEqual(svelteCheck, {
+		glob: 'web/*.{svelte,ts,js}',
+		root: 'web/',
+		run: 'pnpm exec svelte-kit sync && pnpm exec svelte-check --tsgo',
+	});
+	assert.deepEqual(pyright, { glob: 'api/*.py', root: 'api/', run: 'uv run pyright' });
+	const once = text(dir, 'lefthook.yml');
+	await init(dir, '--yes', '--base', 'dev');
+	assert.equal(text(dir, 'lefthook.yml'), once);
 });
 
-test('structure: fallow and lint-kit-structure before each push, against the branch lefthook diffs with', async () => {
-	const files = {
-		'.git/HEAD': 'ref: refs/heads/dev\n',
+test('structure: fallow and structure_check.py before each push, against the branch lefthook diffs with', async () => {
+	const dir = project('structure', {
 		'lefthook.yml': 'pre-push:\n  files: git diff --name-only origin/dev...HEAD\n  commands:\n    test:\n      run: pnpm test\n',
 		'pnpm-lock.yaml': '',
 		'package.json': JSON.stringify({ devDependencies: { svelte: '^5', '@inlang/paraglide-js': '^2' } }),
 		'backend/pyproject.toml': '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
 		'backend/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
-	};
-	const dir = project('structure', files);
-	const args = ['--no-install', '--cwd', dir, '--python', 'backend'];
-	await quiet(['init', '--sets', 'structure', ...args]);
-	const hooks = parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'))['pre-push'];
-	assert.deepEqual(hooks.commands['lint-kit-fallow'], {
+	});
+	await init(dir, '--sets', 'structure');
+	const steps = hooks(dir)['pre-push'].commands;
+	assert.deepEqual(steps.fallow, {
 		glob: ['*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}', 'package.json', '.fallowrc.json'],
 		env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'worktree.useRelativePaths', GIT_CONFIG_VALUE_0: 'false' },
 		run: 'pnpm exec fallow audit --base origin/dev',
 	});
-	assert.deepEqual(hooks.commands['lint-kit-python-structure'], {
+	assert.deepEqual(steps['python-structure'], {
 		glob: 'backend/*.py',
 		root: 'backend/',
-		run: 'uv run lint-kit-structure --base origin/dev app',
+		run: 'uv run python ../tools/python/structure_check.py --base origin/dev app',
 	});
-	const fallowrc = fs.readFileSync(path.join(dir, '.fallowrc.json'), 'utf8');
-	assert.match(fallowrc, /"ignorePatterns": \["backend\/\*\*", "\*\*\/paraglide\/\*\*", "\*\*\/\.svelte-check\/\*\*"\]/);
+	assert.ok(fs.existsSync(path.join(dir, 'tools/python/structure_check.py')));
+	const fallowrc = text(dir, '.fallowrc.json');
+	assert.match(fallowrc, /"ignorePatterns": \["backend\/\*\*", "tools\/\*\*", "\*\*\/paraglide\/\*\*", "\*\*\/\.svelte-check\/\*\*"\]/);
 	assert.match(fallowrc, /"maxCrap": 100000/);
-	const pkg = () => JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
-	assert.equal(pkg().scripts['structure:brief'], 'fallow review --brief --base origin/dev');
-	// a re-run changes nothing
-	const once = fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8');
-	await quiet(['init', '--sets', 'structure', ...args]);
-	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), once);
-	// off: the steps and the script go; the fallow config is the project's now
-	await quiet(['init', '--sets', '', ...args]);
-	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), files['lefthook.yml']);
-	assert.equal(pkg().scripts, undefined);
-	assert.equal(fs.readFileSync(path.join(dir, '.fallowrc.json'), 'utf8'), fallowrc);
+	assert.equal(JSON.parse(text(dir, 'package.json')).scripts['structure:brief'], 'fallow review --brief --base origin/dev');
+	const once = text(dir, 'lefthook.yml');
+	await init(dir, '--sets', 'structure');
+	assert.equal(text(dir, 'lefthook.yml'), once);
+	assert.equal(text(dir, '.fallowrc.json'), fallowrc);
 });
 
 test('structure: --base names the branch, and a fallow config the project has is kept', async () => {
 	const own = '{ "rules": { "unused-files": "warn" } }\n';
 	const dir = project('structure-base', {
-		'.git/HEAD': 'ref: refs/heads/main\n',
 		'lefthook.yml': 'pre-commit:\n  commands:\n    format:\n      run: pnpm format\n',
 		'package.json': '{\n  "name": "web",\n  "devDependencies": { "typescript": "^5" }\n}\n',
 		'package-lock.json': '',
 		'.fallowrc.json': own,
 	});
-	await quiet(['init', '--yes', '--no-install', '--cwd', dir, '--base', 'qa']);
-	const hooks = parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'))['pre-push'];
-	assert.equal(hooks.commands['lint-kit-fallow'].run, 'npx fallow audit --base origin/qa');
-	assert.equal(hooks.commands['lint-kit-python-structure'], undefined); // no Python here
-	assert.equal(fs.readFileSync(path.join(dir, '.fallowrc.json'), 'utf8'), own);
-	// the script is added in the file's own indentation
-	assert.match(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'), /^ {2}"scripts": \{\n {4}"structure:brief": "fallow review --brief --base origin\/qa"/m);
+	await init(dir, '--sets', 'structure', '--base', 'qa');
+	const steps = hooks(dir)['pre-push'].commands;
+	assert.equal(steps.fallow.run, 'npx fallow audit --base origin/qa');
+	assert.equal(steps['python-structure'], undefined); // no Python here
+	assert.equal(text(dir, '.fallowrc.json'), own);
+	assert.match(text(dir, 'package.json'), /^ {2}"scripts": \{\n {4}"structure:brief": "fallow review --brief --base origin\/qa"/m);
 });
 
-test('structure: doublestar globs, a fallow step the project has, and long lines left as written', async () => {
+test('structure: a fallow step the project has, and long lines left as written', async () => {
 	const long = `      run: ${'echo checking every file the branch touched && '.repeat(3)}true\n`;
-	const lefthook =
-		'glob_matcher: doublestar\npre-push:\n  commands:\n    fallow-audit:\n      run: pnpm exec fallow audit --base origin/dev\n    long:\n' +
-		long;
-	const dir = project('structure-doublestar', {
-		'.git/HEAD': 'ref: refs/heads/main\n',
+	const lefthook = `pre-push:\n  commands:\n    fallow-audit:\n      run: pnpm exec fallow audit --base origin/dev\n    long:\n${long}`;
+	const dir = project('structure-own-fallow', {
 		'lefthook.yml': lefthook,
 		'package.json': JSON.stringify({ devDependencies: { typescript: '^5' } }),
 		'pnpm-lock.yaml': '',
-		'api/pyproject.toml': '[project]\nname = "api"\n',
 	});
-	const args = ['--no-install', '--cwd', dir, '--python', 'api', '--base', 'dev'];
-	await quiet(['init', '--sets', 'structure', ...args]);
-	const text = fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8');
-	const steps = parse(text)['pre-push'].commands;
-	assert.equal(steps['lint-kit-fallow'], undefined); // fallow-audit already runs it
-	assert.equal(steps['lint-kit-python-structure'].glob, 'api/**/*.py');
-	assert.ok(text.includes(long), 'the long run line is not folded');
-	await quiet(['init', '--sets', '', ...args]);
-	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), lefthook);
+	await init(dir, '--sets', 'structure', '--base', 'dev');
+	assert.equal(text(dir, 'lefthook.yml'), lefthook);
 });
 
-test('under glob_matcher: doublestar every lint-kit step globs with **, which also matches no folder', async () => {
-	const dir = project('doublestar', {
-		'.git/HEAD': 'ref: refs/heads/main\n',
+test('a monorepo: each workspace member and Python project gets its own steps, tools/ is shared', async () => {
+	const dir = project('monorepo', {
 		'lefthook.yml': 'glob_matcher: doublestar\n',
-		'web/pnpm-lock.yaml': '',
-		'web/package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
-		'api/pyproject.toml': '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
-		'api/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+		'pnpm-workspace.yaml': "packages:\n  - 'apps/*'\n  - 'services/api'\n",
+		'pnpm-lock.yaml': '',
+		'package.json': JSON.stringify({ devDependencies: { typescript: '^5' } }),
+		'apps/admin/package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
+		'apps/shop/package.json': JSON.stringify({ devDependencies: { svelte: '^5', tailwindcss: '^4' } }),
+		// not a workspace member: a scratch folder
+		'scratch/probe/package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
+		'services/api/pyproject.toml': '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+		'services/api/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
 	});
-	const sets = 'svelte-skills,fastapi,typecheck,structure';
-	await quiet(['init', '--sets', sets, '--no-install', '--cwd', path.join(dir, 'web'), '--python', '../api', '--base', 'dev']);
-	const hooks = parse(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'));
-	const globs = (hook) => Object.fromEntries(Object.entries(hooks[hook].commands).map(([k, v]) => [k, v.glob]));
-	assert.deepEqual(globs('pre-commit'), {
-		'lint-kit-eslint': 'web/src/**/*.{js,ts,svelte}',
-		'lint-kit-fastapi': 'api/app/**/*.py',
-		'lint-kit-fastapi-deps': 'api/pyproject.toml',
-		'lint-kit-ruff': 'api/**/*.py',
+	await init(dir, '--sets', 'svelte-skills,tailwind-patterns,fastapi,typecheck,structure', '--base', 'dev');
+	assert.match(text(dir, 'apps/admin/eslint.rules.js'), /from '\.\.\/\.\.\/tools\/eslint\/svelte-skills\.mjs'/);
+	assert.doesNotMatch(text(dir, 'apps/admin/eslint.rules.js'), /tailwind/);
+	assert.match(text(dir, 'apps/shop/eslint.rules.js'), /tailwind-patterns\.mjs/);
+	assert.equal(fs.existsSync(path.join(dir, 'scratch/probe/eslint.rules.js')), false);
+	assert.match(text(dir, 'services/api/.flake8'), /paths =\n {4}\.\.\/\.\.\/tools\/python\n/);
+	const { 'pre-commit': commit, 'pre-push': push } = hooks(dir);
+	const globs = (steps) => Object.fromEntries(Object.entries(steps.commands).map(([k, v]) => [k, v.glob]));
+	assert.deepEqual(globs(commit), {
+		'eslint-admin': 'apps/admin/src/**/*.{js,ts,svelte}',
+		'eslint-shop': 'apps/shop/src/**/*.{js,ts,svelte}',
+		'fastapi-rules': 'services/api/app/**/*.py',
+		'fastapi-deps': 'services/api/pyproject.toml',
+		ruff: 'services/api/**/*.py',
 	});
-	assert.deepEqual(globs('pre-push'), {
-		'lint-kit-svelte-check': 'web/**/*.{svelte,ts,js}',
-		'lint-kit-pyright': 'api/**/*.py',
-		'lint-kit-fallow': ['web/**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}', 'web/package.json', 'web/.fallowrc.json'],
-		'lint-kit-python-structure': 'api/**/*.py',
+	assert.deepEqual(globs(push), {
+		'svelte-check-admin': 'apps/admin/**/*.{svelte,ts,js}',
+		'svelte-check-shop': 'apps/shop/**/*.{svelte,ts,js}',
+		pyright: 'services/api/**/*.py',
+		fallow: ['**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}', 'package.json', '.fallowrc.json'],
+		'python-structure': 'services/api/**/*.py',
 	});
+	assert.equal(push.commands['python-structure'].run, 'uv run python ../../tools/python/structure_check.py --base origin/dev app');
+	assert.match(text(dir, '.fallowrc.json'), /"ignorePatterns": \["services\/api\/\*\*", "tools\/\*\*", "\*\*\/\.svelte-check\/\*\*"\]/);
+});
+
+test('after every set, nothing in the repository names the installer', async () => {
+	const dir = project('invisible', {
+		'lefthook.yml': 'pre-commit:\n  commands: {}\n',
+		'pnpm-lock.yaml': '',
+		'package.json': JSON.stringify({
+			devDependencies: { svelte: '^5', tailwindcss: '^4', '@inlang/paraglide-js': '^2', '@sveltejs/kit': '^2' },
+		}),
+		'backend/pyproject.toml': '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+		'backend/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+	});
+	await init(dir, '--yes', '--base', 'dev');
+	const written = files(dir);
+	assert.ok(written.length > 15, written.join(', '));
+	for (const file of written) assert.doesNotMatch(text(dir, file), /lint-kit|lint_kit|lintkit/i, file);
+	// `commands: {}` becomes a block mapping, not one line of flow style
+	assert.match(text(dir, 'lefthook.yml'), /^pre-commit:\n {2}commands:\n {4}eslint:\n/);
 });
 
 test('a step that already runs ESLint is left alone', async () => {
 	const lefthook = 'pre-commit:\n  commands:\n    lint:\n      run: npx eslint --fix {staged_files}\n';
 	const dir = project('eslint-hooked', {
-		'.git/HEAD': 'ref: refs/heads/main\n',
 		'lefthook.yml': lefthook,
 		'package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
 	});
-	await quiet(['init', '--sets', 'svelte-skills', '--no-install', '--cwd', dir]);
-	assert.equal(fs.readFileSync(path.join(dir, 'lefthook.yml'), 'utf8'), lefthook);
+	await init(dir, '--sets', 'svelte-skills');
+	assert.equal(text(dir, 'lefthook.yml'), lefthook);
 });
 
 test('arguments with spaces survive the Windows shell', () => {
-	const spec = 'lint-kit-fastapi @ git+https://github.com/x/y@v1#subdirectory=python';
+	const spec = 'some-package @ git+https://github.com/x/y@v1#subdirectory=python';
 	assert.deepEqual(shellArgs(['add', '--dev', spec], true), ['add', '--dev', `"${spec}"`]);
 	assert.deepEqual(shellArgs(['add', spec], false), ['add', spec]);
 	// whitespace and cmd's metacharacters are quoted, plain flags and names are not

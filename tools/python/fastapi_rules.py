@@ -1,20 +1,31 @@
 """FastAPI rules ruff does not have, as a flake8 plugin (codes FAP0xx).
 
 Sources: the FastAPI 0.135.1 docs and the skill FastAPI ships in the package
-(`fastapi/.agents/skills/fastapi`). Rules ruff already has stay in ruff: `lint-kit init` adds
-FAST and ASYNC to the ruff config's extend-select. This file holds only what ruff cannot express.
+(`fastapi/.agents/skills/fastapi`). Rules ruff already has stay in ruff (FAST and ASYNC in the
+ruff config's extend-select); this file holds only what ruff cannot express.
 
-Run: `flake8 <app>` (select FAP in .flake8). Settings, in pyproject.toml:
+Run: `flake8 <app>`, with this file a local plugin in .flake8:
 
-    [tool.lint-kit-fastapi]
+    [flake8]
+    select = FAP
+
+    [flake8:local-plugins]
+    extension =
+        FAP = fastapi_rules:Plugin
+    paths =
+        <the folder holding this file>
+
+Settings, in pyproject.toml:
+
+    [tool.fastapi-rules]
     app = "app"          # the application package, relative to pyproject.toml
 
-    [tool.lint-kit-fastapi.dependencies]   # FAP001's classification of your dependencies
+    [tool.fastapi-rules.dependencies]   # FAP001's classification of your dependencies
     mylib = ["mylib.render", "mylib.Client."]   # calls into it that block the event loop
     otherlib = "async client only"              # or why it is safe in async code
 
-Common libraries come classified (KNOWN_DEPENDENCIES); `lint-kit-fastapi check-deps` fails
-while a [project.dependencies] entry is classified nowhere.
+Common libraries come classified (KNOWN_DEPENDENCIES); `python fastapi_rules.py check-deps`
+fails while a [project.dependencies] entry is classified nowhere.
 Suppress one line with `# noqa: FAP0xx — <reason>`; the reason is the review record.
 
   FAP001  blocking work (bcrypt, openpyxl, reportlab, pandas reads, boto3, sleep, subprocess…)
@@ -49,6 +60,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+import sys
 import tomllib
 from collections import Counter
 from collections.abc import Iterator
@@ -65,7 +77,7 @@ PYDANTIC_OR_PARAM = PARAM_FUNCTIONS | {"Field"}
 
 # Libraries classified for FAP001, by distribution name: either the calls into it that block the
 # event loop (prefixes of the fully qualified name a call resolves to), or why it is safe to call
-# from async code. A project adds or overrides entries in [tool.lint-kit-fastapi.dependencies].
+# from async code. A project adds or overrides entries in [tool.fastapi-rules.dependencies].
 KNOWN_DEPENDENCIES: dict[str, tuple[str, ...] | str] = {
     "bcrypt": ("bcrypt.hashpw", "bcrypt.checkpw", "bcrypt.kdf"),  # ~160 ms of CPU per hash
     "passlib": ("passlib.",),  # password hashing: CPU-bound by design
@@ -131,9 +143,9 @@ def _normalise(name: str) -> str:
 
 
 def load_settings(pyproject: pathlib.Path) -> Settings:
-    """[tool.lint-kit-fastapi] from a pyproject.toml; defaults when it is absent."""
+    """[tool.fastapi-rules] from a pyproject.toml; defaults when it is absent."""
     data = tomllib.loads(pyproject.read_text(encoding="utf-8")) if pyproject.is_file() else {}
-    table = data.get("tool", {}).get("lint-kit-fastapi", {})
+    table = data.get("tool", {}).get("fastapi-rules", {})
     deps = tuple(
         (_normalise(k), tuple(v) if isinstance(v, list) else str(v))
         for k, v in table.get("dependencies", {}).items()
@@ -142,7 +154,7 @@ def load_settings(pyproject: pathlib.Path) -> Settings:
 
 
 def unclassified(pyproject: pathlib.Path) -> tuple[list[str], list[str]]:
-    """([project.dependencies] classified nowhere, [tool.lint-kit-fastapi.dependencies] entries
+    """([project.dependencies] classified nowhere, [tool.fastapi-rules.dependencies] entries
     that are no longer a dependency)."""
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     declared = {
@@ -583,9 +595,6 @@ def _find_root(directory: pathlib.Path) -> tuple[pathlib.Path, Settings] | None:
 
 
 class Plugin:
-    name = "lint-kit-fastapi"
-    version = "0.3.0"
-
     def __init__(self, tree: ast.Module, filename: str) -> None:
         self.tree = tree
         self.filename = filename
@@ -963,3 +972,31 @@ class Plugin:
                     f"FAP017 use status.{name} (from fastapi import status) instead of "
                     f"{value.value}",
                 )
+
+
+# ── check-deps ───────────────────────────────────────────────────────────────────
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`python fastapi_rules.py check-deps [pyproject.toml]`: each runtime dependency is classified
+    for FAP001: the calls that block the event loop, or why it is safe in async code. Exits 1
+    while something is unclassified, or classified but no longer a dependency."""
+    args = sys.argv[1:] if argv is None else argv
+    if not args or args[0] != "check-deps":
+        print("usage: python fastapi_rules.py check-deps [path/to/pyproject.toml]", file=sys.stderr)
+        return 2
+    pyproject = pathlib.Path(args[1] if len(args) > 1 else "pyproject.toml")
+    missing, stale = unclassified(pyproject)
+    for name in missing:
+        print(
+            f"{pyproject}: classify {name} in [tool.fastapi-rules.dependencies]: the calls into "
+            'it that block the event loop (["pkg.func", "pkg.Class."]), or why it is safe in async '
+            "code (a string)"
+        )
+    for name in stale:
+        print(f"{pyproject}: {name} is classified but no longer a dependency; remove it")
+    return 1 if missing or stale else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

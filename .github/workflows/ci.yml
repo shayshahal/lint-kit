@@ -18,10 +18,11 @@ jobs:
           cache: pnpm
       - uses: astral-sh/setup-uv@v6
       - run: pnpm install --frozen-lockfile
-      # before the JS tests: init.test.js runs the real flake8 from python/.venv
+      # before the JS tests: init.test.js runs the real flake8 and ruff from python/.venv
       - run: uv sync --frozen
         working-directory: python
-      - run: uv run ruff check . && uv run ruff format --check .
+      # tools/python is what init copies; python/ is its dev environment and holds the ruff config
+      - run: uv run ruff check --config pyproject.toml . ../tools/python && uv run ruff format --check --config pyproject.toml . ../tools/python
         working-directory: python
       - run: uv run pytest -q
         working-directory: python

@@ -6,7 +6,7 @@ import ast
 import pathlib
 import textwrap
 
-from lint_kit_fastapi import Plugin
+from fastapi_rules import Plugin
 
 
 def codes(

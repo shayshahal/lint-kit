@@ -15,7 +15,7 @@
 export const DEFAULT_FILES = ['src/**/*.svelte', 'src/**/*.ts', 'src/**/*.js'];
 export const DEFAULT_IGNORES = ['src/tests/**', '**/*.test.ts', '**/*.spec.ts', '**/*.stories.*'];
 
-const DOCS = 'https://github.com/shayshahal/lint-kit/blob/main/docs/error-handling.md';
+const DOCS = new URL('./error-handling.md', import.meta.url).href;
 
 /**
  * Flat-config entries with the three rules at error.

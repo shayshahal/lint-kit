@@ -1,6 +1,6 @@
 name: Release
 # After CI passes on main: tag v<package.json version> and publish a GitHub release, unless that
-# tag exists. `lint-kit init` installs that tag, so a version bump is usable once this has run.
+# tag exists. `npx github:shayshahal/lint-kit#v<version> init` runs that tag once this has run.
 on:
   workflow_run:
     workflows: [CI]

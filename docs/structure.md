@@ -12,8 +12,8 @@ help: the complexity numbers alone didn't predict later failures, and agents lea
 Comparing with the base and gating only the difference is HumanLayer's "dampener"
 (design-control-loop): each change has to leave the structure no worse than it found it.
 
-`lint-kit init` adds two lefthook pre-push steps, one per language, and both compare with the same
-base.
+`init` adds lefthook pre-push steps, fallow for JS / TS and `tools/python/structure_check.py` for
+Python, and they all compare with the same base.
 
 ## The base
 
@@ -33,7 +33,7 @@ fallow compares it with its own upstream and finds almost nothing.
 ## JS / TS: fallow audit
 
 ```yaml
-lint-kit-fallow:
+fallow:
   glob: ['*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}', package.json, .fallowrc.json]
   env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: worktree.useRelativePaths, GIT_CONFIG_VALUE_0: 'false' }
   run: pnpm exec fallow audit --base origin/dev
@@ -60,19 +60,19 @@ worktree for base ref"). In an ordinary clone they do nothing.
 prints it as a "where to look" brief for a reviewer: risky files, contracts used outside the
 diff, suppressions the branch added. It always exits 0.
 
-## Python: lint-kit-structure
+## Python: structure_check.py
 
 ```yaml
-lint-kit-python-structure:
+python-structure:
   glob: 'backend/*.py'
   root: 'backend/'
-  run: uv run lint-kit-structure --base origin/dev app
+  run: uv run python ../tools/python/structure_check.py --base origin/dev app
 ```
 
 ```
 app/services/order_service.py:3583 trial_grade: complexity 15, new (max 10)
 app/services/order_service.py:3564-3580 duplicates app/services/order_service.py:100-116 (17 lines), new
-lint-kit-structure: 2 structure regression(s) since origin/dev (b170a4fca). Split the function or extract the shared code; what was already there does not count.
+structure-check: 2 structure regression(s) since origin/dev (b170a4fca). Split the function or extract the shared code; what was already there does not count.
 ```
 
 It checks the given folders (the FastAPI app package when `init` finds one) and does nothing when
@@ -82,7 +82,7 @@ the branch changed no `.py` file in them.
   mccabe (the measure ruff's C901 copies). It fails on a new function over the limit, a function
   that crossed it, and a function already over it that grew. A function already over the limit
   that stayed the same or got simpler passes. The limit is `max-complexity` in
-  `[tool.lint-kit-structure]` (default 10). It only applies to functions the branch changed, so
+  `[tool.structure-check]` (default 10). It only applies to functions the branch changed, so
   don't add C901 with a global `max-complexity` instead: that fails on everything already there.
 - **Duplication** with [jscpd](https://github.com/kucherenko/jscpd), over the folders as they are
   and as they were at base. A clone fails when it wasn't at base **and** most of one of its copies
@@ -93,18 +93,18 @@ the branch changed no `.py` file in them.
 jscpd and not pylint's duplicate-code: pylint only compares one file with another, so it misses a
 function copied within the same file. That's the most common kind: on JewelryX's backend, 69 of
 the 87 clones jscpd found were within one file. `init` adds jscpd as a dev dependency;
-lint-kit-structure looks for it in `node_modules/.bin` from the Python folder up to the
+structure_check.py looks for it in `node_modules/.bin` from the Python folder up to the
 repository root, then on PATH.
 
 ```toml
-[tool.lint-kit-structure]
+[tool.structure-check]
 max-complexity = 10
 ```
 
 ## Time
 
 Measured on a JewelryX branch (22 commits, 116 changed files, 249 backend files):
-- **lint-kit-structure:** about 0.9s.
+- **structure_check.py:** about 0.9s.
 - **fallow audit:** about 2.5s once warm. The first runs in a worktree took 8–12s, while fallow
   built its caches and the base worktree.
 - **fallow review --brief:** about 9s; it isn't a pre-push step.

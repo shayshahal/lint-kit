@@ -1,4 +1,4 @@
-"""lint-kit-structure fails on what a branch made worse, never on what its base already had."""
+"""structure_check fails on what a branch made worse, never on what its base already had."""
 
 from __future__ import annotations
 
@@ -7,8 +7,7 @@ import pathlib
 import subprocess
 
 import pytest
-
-from lint_kit_structure import main
+from structure_check import main
 
 BIN = pathlib.Path(__file__).resolve().parents[2] / "node_modules" / ".bin"
 
@@ -78,7 +77,7 @@ def test_touching_a_file_whose_functions_were_already_complex_passes(repo, capsy
     commit({"app/legacy.py": legacy + "def helper():\n    return 1\n"})
     assert run(capsys) == (
         0,
-        "lint-kit-structure: 1 changed .py file(s), no new complexity or duplication\n",
+        "structure-check: 1 changed .py file(s), no new complexity or duplication\n",
     )
 
 
@@ -94,7 +93,7 @@ def test_a_function_that_crosses_the_limit_or_grows_past_it_fails(repo, capsys):
 
 def test_the_limit_comes_from_pyproject(repo, capsys):
     setup, commit = repo
-    setup({"pyproject.toml": "[tool.lint-kit-structure]\nmax-complexity = 20\n", "app/a.py": ""})
+    setup({"pyproject.toml": "[tool.structure-check]\nmax-complexity = 20\n", "app/a.py": ""})
     commit({"app/a.py": branchy("price", 12)})
     assert run(capsys)[0] == 0
 
@@ -136,7 +135,7 @@ def test_a_branch_with_no_python_changes_is_skipped(repo, capsys):
     setup, commit = repo
     setup({"app/a.py": branchy("legacy", 15), "README.md": "x\n"})
     commit({"README.md": "y\n"})
-    assert run(capsys) == (0, "lint-kit-structure: no Python changes since main, skipped\n")
+    assert run(capsys) == (0, "structure-check: no Python changes since main, skipped\n")
 
 
 def test_an_unknown_base_cannot_run(repo, capsys):
