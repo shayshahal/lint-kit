@@ -410,6 +410,28 @@ test('an oxlint.config.ts is patched in place, and no .oxlintrc.json appears bes
 	assert.ok(after.startsWith('import { defineConfig } from "oxlint";\n'), 'the import is untouched');
 });
 
+test('a second run over a config that already has the plugin says so and adds nothing', async () => {
+	const dir = project('oxlint-again', {
+		'package.json': JSON.stringify({ devDependencies: { oxlint: '1.81.0' } }),
+		'.oxlintrc.json': '{\n\t"rules": {\n\t\t"no-console": "error"\n\t}\n}\n',
+	});
+	assert.equal(await init(dir, '--sets', 'slop-patterns'), 0);
+	const first = text(dir, '.oxlintrc.json');
+	const said = [];
+	const log = console.log;
+	console.log = (...args) => said.push(args.join(' '));
+	try {
+		assert.equal(await main(['init', '--no-install', '--sets', 'slop-patterns', '--cwd', dir]), 0);
+	} finally {
+		console.log = log;
+	}
+	assert.match(said.join('\n'), /already loads the slop-patterns plugin/);
+	// "was left alone. Add …" is for a config whose shape was not recognized, and saying it about
+	// a config that already has the plugin sends the reader looking for a problem that is not there
+	assert.doesNotMatch(said.join('\n'), /was left alone/);
+	assert.equal(text(dir, '.oxlintrc.json'), first, 'the config is untouched');
+});
+
 const TS_CONFIG = 'import { defineConfig } from "oxlint";\n\nexport default defineConfig({\n\trules: {\n\t\t"no-console": "error"\n\t}\n});\n';
 
 test('a TypeScript config with neither key gains both, inside defineConfig(', () => {

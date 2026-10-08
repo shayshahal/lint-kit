@@ -532,6 +532,10 @@ function configObjectStart(text, ts) {
 /** `key` as the config's syntax writes it: quoted in JSONC, bare for a TypeScript identifier. */
 const keyText = (key, ts) => (ts && /^[A-Za-z_$][\w$]*$/u.test(key) ? key : `"${key}"`);
 
+/** Whether a config already registers the plugin in `jsPlugins`, so a second run says so
+ * instead of falling through to the message for a config whose shape was not recognized. */
+const PLUGIN_REGISTERED = /["']?name["']?[ \t]*:[ \t]*["']slop-patterns["']/u;
+
 /** The `jsPlugins` entry for the set. */
 const pluginEntry = (specifier, ts) =>
 	ts
@@ -577,6 +581,10 @@ function writeOxlint(repo, project, wanted) {
 	}
 	const name = path.basename(file);
 	const before = read(file);
+	if (PLUGIN_REGISTERED.test(before)) {
+		say(`✔ ${where(project)}: ${name} already loads the slop-patterns plugin`);
+		return;
+	}
 	const after = patchOxlint(before, specifier, !OXLINT_JSONC.includes(name));
 	if (after !== before) {
 		write(file, after);
