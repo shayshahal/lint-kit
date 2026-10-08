@@ -1,9 +1,9 @@
 # lint-kit
 
 An installer for the deterministic tools a repository uses: lint rules for **Svelte 5 /
-SvelteKit**, **i18n**, **Tailwind / shadcn**, **error handling** and **FastAPI**, the type
-checkers, and pre-push checks that a branch leaves the code's structure no worse than its base.
-Each message says what to write instead.
+SvelteKit**, **i18n**, **Tailwind / shadcn**, **error handling**, **indirection that adds
+nothing** and **FastAPI**, the type checkers, and pre-push checks that a branch leaves the code's
+structure no worse than its base. Each message says what to write instead.
 
 `init` copies the rules into the repository's `tools/` folder and writes the tools' own config.
 Nothing it leaves behind is named after it, and nothing depends on this repository afterwards:
@@ -15,6 +15,7 @@ the repository owns the copies, and only whoever runs `init` needs access here.
 | `untranslated-text` | ESLint | text users read comes from the message catalogue (Paraglide `m.key()`) |
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
 | `error-handling` | ESLint | catch blocks (and promise `.catch()`) that drop the error, only log it, return a fixed default, or turn it into a string |
+| `slop-patterns` | oxlint | a named function whose whole body forwards its arguments to another function |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
 | `structure` | fallow, `structure_check.py` | lefthook pre-push steps that fail when a branch adds complexity, duplication or dead code its base did not have, and never on what was already there ([docs](docs/structure.md)) |
@@ -55,6 +56,13 @@ project's folder (`eslint-admin`, `svelte-check-shop`).
   `FAP`); `[tool.fastapi-rules]` in `pyproject.toml`; and ruff's `FAST` and `ASYNC` rules in the
   ruff config ruff reads for the project (`ruff.toml`, or `[tool.ruff.lint]`). FAP holds only
   what those rules miss, so the set expects both. `flake8` and `ruff` become dev dependencies.
+- **oxlint sets**, in each project that depends on oxlint or has an oxlint config, for the sets
+  its dependencies call for (`slop-patterns`: oxlint). The plugin goes to
+  `tools/oxlint/<set>/`, and the project's config gains its `jsPlugins` entry and its rule at
+  `warn`: `.oxlintrc.json` / `.jsonc` and `oxlint.config.ts` / `.mts` are both edited in place,
+  never rewritten, so the per-rule finding counts and comments these configs are hand-annotated
+  with stay where they are. Without a config, the project gets a `.oxlintrc.json`. There is no
+  lefthook step either: a repository that runs oxlint already has one.
 - **lefthook**: when the repository has a `lefthook.yml`, pre-commit steps run ESLint on staged
   `src/` files, flake8 (FAP) on the app package, `check-deps` when `pyproject.toml` changes, and
   `ruff check`. The ESLint and ruff steps are skipped when a step already runs that tool for the
@@ -126,6 +134,52 @@ warnings, `require-each-key` and `prefer-style-directive`. The plugins are expor
 `eslint --fix` rewrites what has one right answer: `class:` directives into the class attribute,
 `{@const}` into `$derived`, `throw error()` into `error()`, `$derived(() => …)` into
 `$derived.by`, and `h-screen` / `[90vh]` into `h-dvh` / `[90dvh]`.
+
+## oxlint sets
+
+```jsonc
+// .oxlintrc.json — added by init, and the project's from then on
+{
+	"jsPlugins": [{ "name": "slop-patterns", "specifier": "./tools/oxlint/slop-patterns/index.ts" }],
+	"rules": { "slop-patterns/no-trivial-wrapper": "warn" }
+}
+```
+
+`slop-patterns` holds the waste patterns a rule can name a replacement for. Two of the three
+SlopCodeBench measures are deliberately absent: a single-use function is mostly a route handler
+or a lifecycle hook a framework calls by name, and a single-method class is mostly a middleware
+or an exception. Over a 7,200-file SvelteKit monorepo those found 1,337 and 0 — see
+[tools/oxlint/slop-patterns/README.md](tools/oxlint/slop-patterns/README.md).
+
+Both oxlint config syntaxes are written into, because oxlint loads one config per directory and a
+`.oxlintrc.json` beside a `oxlint.config.ts` would leave neither working. A TypeScript config is
+found through its `defineConfig(` call, not the first `{` in the file — an
+`import { defineConfig } from 'oxlint'` has one of those first — and its keys are written bare:
+
+```ts
+// oxlint.config.ts — the same two entries, in its own syntax
+import { defineConfig } from 'oxlint';
+
+export default defineConfig({
+	jsPlugins: [{ name: 'slop-patterns', specifier: './tools/oxlint/slop-patterns/index.ts' }],
+	rules: {
+		'no-console': 'error', // an existing member keeps its comment, and gains its comma
+		'slop-patterns/no-trivial-wrapper': 'warn',
+	},
+});
+```
+
+A config in neither shape (no `export default` to insert into) is left alone, with the two lines
+to add printed instead.
+
+`no-trivial-wrapper` reports a named function whose whole body is one call passing its own
+arguments on unchanged. It passes a transformed, reordered or added argument, a default value,
+an anonymous callback, a body with more than one statement, and a callee that computes its own
+receiver (`new Intl.NumberFormat(…).format`). It leaves test files alone — a test double's `get`
+and `set` forward to a `Map` because they must mirror the real signature — and `src/params.ts`,
+where SvelteKit names the matchers and calls them from the router.
+
+The set lands at `warn`. Rules are checked with `node --test test/slop-patterns.test.js`.
 
 ## fastapi
 

@@ -6,7 +6,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import { parse } from 'yaml';
-import { main, patchEslintConfig, patchFlake8, patchRuff, shellArgs } from '../bin/lint-kit.js';
+import { main, patchEslintConfig, patchFlake8, patchOxlint, patchRuff, shellArgs } from '../bin/lint-kit.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Inside the repo, so the generated configs resolve eslint and its plugins from its node_modules.
@@ -364,6 +364,129 @@ test('a step that already runs ESLint is left alone', async () => {
 	});
 	await init(dir, '--sets', 'svelte-skills');
 	assert.equal(text(dir, 'lefthook.yml'), lefthook);
+});
+
+test('an oxlint project gets the plugin in tools/oxlint and its config patched in place', async () => {
+	const dir = project('oxlint', {
+		'package.json': JSON.stringify({ devDependencies: { oxlint: '1.81.0' } }),
+		'.oxlintrc.json': '{\n\t"rules": {\n\t\t"no-console": "error" // keep this note\n\t}\n}\n',
+	});
+	assert.equal(await init(dir, '--sets', 'slop-patterns'), 0);
+	assert.ok(fs.existsSync(path.join(dir, 'tools/oxlint/slop-patterns/index.ts')));
+	assert.ok(fs.existsSync(path.join(dir, 'tools/oxlint/slop-patterns/rules/no-trivial-wrapper.ts')));
+	assert.ok(!fs.existsSync(path.join(dir, 'tools/oxlint/slop-patterns/fixtures')), 'fixtures are not copied');
+	const config = text(dir, '.oxlintrc.json');
+	assert.match(config, /"jsPlugins": \[\{ "name": "slop-patterns", "specifier": "\.\/tools\/oxlint\/slop-patterns\/index\.ts" \}\]/);
+	assert.match(config, /"slop-patterns\/no-trivial-wrapper": "warn"/);
+	// the file is hand-annotated: the existing rule keeps its comment, and the comma the new
+	// entry needs goes before it rather than inside it
+	assert.match(config, /"no-console": "error", \/\/ keep this note/);
+});
+
+test('an oxlint.config.ts is patched in place, and no .oxlintrc.json appears beside it', async () => {
+	const ts = [
+		'import { defineConfig } from "oxlint";',
+		'',
+		'export default defineConfig({',
+		'  rules: {',
+		'    "no-console": "error", // keep this note',
+		'  },',
+		'});',
+		'',
+	].join('\n');
+	const dir = project('oxlint-ts', {
+		'package.json': JSON.stringify({ devDependencies: { oxlint: '1.81.0' } }),
+		'oxlint.config.ts': ts,
+	});
+	assert.equal(await init(dir, '--sets', 'slop-patterns'), 0);
+	// oxlint loads one config per directory, never a .oxlintrc.json beside a TypeScript one
+	assert.ok(!fs.existsSync(path.join(dir, '.oxlintrc.json')), 'a JSON config must not appear');
+	assert.ok(fs.existsSync(path.join(dir, 'tools/oxlint/slop-patterns/index.ts')), 'the plugin is still copied');
+	const after = text(dir, 'oxlint.config.ts');
+	assert.match(after, /jsPlugins: \[\{ name: "slop-patterns", specifier: "\.\/tools\/oxlint\/slop-patterns\/index\.ts" \}\]/);
+	assert.match(after, /"slop-patterns\/no-trivial-wrapper": "warn"/);
+	assert.match(after, /"no-console": "error", \/\/ keep this note/);
+	// the object is found through defineConfig(, not the brace in `import { … }`
+	assert.ok(after.startsWith('import { defineConfig } from "oxlint";\n'), 'the import is untouched');
+});
+
+const TS_CONFIG = 'import { defineConfig } from "oxlint";\n\nexport default defineConfig({\n\trules: {\n\t\t"no-console": "error"\n\t}\n});\n';
+
+test('a TypeScript config with neither key gains both, inside defineConfig(', () => {
+	const after = patchOxlint(TS_CONFIG, './tools/oxlint/slop-patterns/index.ts', true);
+	assert.deepEqual(after.split('\n'), [
+		'import { defineConfig } from "oxlint";',
+		'',
+		'export default defineConfig({',
+		'\tjsPlugins: [{ name: "slop-patterns", specifier: "./tools/oxlint/slop-patterns/index.ts" }],',
+		'\trules: {',
+		'\t\t"no-console": "error",',
+		'\t\t"slop-patterns/no-trivial-wrapper": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up',
+		'\t}',
+		'});',
+		'',
+	]);
+	assert.equal(patchOxlint(after, './tools/oxlint/slop-patterns/index.ts', true), after, 'a re-run changes nothing');
+});
+
+test('an entry inside a one-line object carries no comment that would swallow the closing brace', () => {
+	const after = patchOxlint('export default { rules: { "no-console": "error" } };\n', './x.ts', true);
+	assert.doesNotMatch(after, /\/\//, 'nothing after the inserted entry may become a comment');
+	assert.match(after, /"slop-patterns\/no-trivial-wrapper": "warn"\s*\}/);
+	assert.match(after, /jsPlugins: \[\{ name: "slop-patterns", specifier: "\.\/x\.ts" \}\]/);
+	assert.match(after, /"no-console": "error",/, 'the comma goes before the new entry, not after the old one');
+});
+
+test('an oxlint config that already lists plugins and rules gets one entry added to each', () => {
+	const before = [
+		'{',
+		'  "ignorePatterns": ["dist/"],',
+		'  "rules": {',
+		'    "a/b": "error",',
+		'    "c/d": "warn" // TODO(a): 65 findings',
+		'  },',
+		'  "jsPlugins": [',
+		'    {',
+		'      "name": "other",',
+		'      "specifier": "./tools/oxlint/other/index.ts"',
+		'    }',
+		'  ]',
+		'}',
+		'',
+	].join('\n');
+	const after = patchOxlint(before, './tools/oxlint/slop-patterns/index.ts');
+	assert.deepEqual(after.split('\n'), [
+		'{',
+		'  "ignorePatterns": ["dist/"],',
+		'  "rules": {',
+		'    "a/b": "error",',
+		'    "c/d": "warn", // TODO(a): 65 findings',
+		'    "slop-patterns/no-trivial-wrapper": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up',
+		'  },',
+		'  "jsPlugins": [',
+		'    {',
+		'      "name": "other",',
+		'      "specifier": "./tools/oxlint/other/index.ts"',
+		'    },',
+		'    { "name": "slop-patterns", "specifier": "./tools/oxlint/slop-patterns/index.ts" }',
+		'  ]',
+		'}',
+		'',
+	]);
+	// a re-run changes nothing
+	assert.equal(patchOxlint(after, './tools/oxlint/slop-patterns/index.ts'), after);
+});
+
+test('an oxlint config with no jsPlugins or rules gains both', () => {
+	const after = patchOxlint('{\n\t"ignorePatterns": ["dist/"]\n}\n', './tools/oxlint/slop-patterns/index.ts');
+	assert.deepEqual(after.split('\n'), [
+		'{',
+		'\t"rules": { "slop-patterns/no-trivial-wrapper": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up },',
+		'\t"jsPlugins": [{ "name": "slop-patterns", "specifier": "./tools/oxlint/slop-patterns/index.ts" }],',
+		'\t"ignorePatterns": ["dist/"]',
+		'}',
+		'',
+	]);
 });
 
 test('arguments with spaces survive the Windows shell', () => {
