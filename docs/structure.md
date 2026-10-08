@@ -111,7 +111,7 @@ app: verbosity 0.0140, erosion 0.6916, cognitive erosion 0.8647
   verbosity: 17 of 1215 SLOC flagged (clone 14, ast-grep 3, structural 0)
   erosion:   1914 of 2767 mass in 13 of 67 functions over complexity 10 (mass = cc x sqrt(sloc))
   cognitive: 3677 of 4252 mass in 19 of 67 functions
-    heaviest over complexity 10 by mass, mccabe (a nested function counts into its parent):
+    heaviest over complexity 10 by mass, mccabe (nested functions named as their own):
     app/services/order_service.py:3581 trial_grade  complexity 37, 112 sloc
     app/services/checkout_service.py:886 _call  complexity 16, 74 sloc
 ```
@@ -143,13 +143,21 @@ only place in the set that names it, and it is the same measure the gate uses, s
 
 Two things to know about reconciling the list with the line above it:
 
-- The counts differ by design. scb-check parses with tree-sitter and sees a nested function as
-  its own symbol; mccabe folds a nested function's decisions into the one that encloses it, the
-  way it treats a closure, so one entry in the list can stand for several of scb-check's
-  symbols. The list's partition is the unit you would actually split.
+- The complexity values are not the same measure. scb-check counts boolean operators and
+  `assert` statements as branches, and mccabe counts neither, so a function dense in `and`,
+  `or` or `assert` scores far higher there. Eleven `and`s in one expression is complexity 1 to
+  mccabe and 12 to scb-check; eleven `assert`s the same. That — and not how functions are
+  partitioned — is why the line above counts 179 functions over the threshold on JewelryX's
+  backend where this list has 81. What is listed here is the set the gate compares against,
+  which is the point of it.
 - The thresholds can differ. The gate's limit is `max-complexity` from `[tool.structure-check]`
   (default 10, and the list uses it too), while scb-check hardcodes 10. Set `max-complexity` to
   15 and the line above still counts functions over 10.
+
+One thing worth knowing if you run scb-check by hand rather than through `--score`: on Windows
+it decodes ast-grep's output with the locale codepage, so a source tree its ANSI codepage cannot
+decode (Hebrew and cp1255, say) makes it die with `'NoneType' object has no attribute
+'splitlines'`. `--score` sets `PYTHONUTF8=1` for it; do the same by hand.
 
 jscpd and not pylint's duplicate-code: pylint only compares one file with another, so it misses a
 function copied within the same file. That's the most common kind: on JewelryX's backend, 69 of

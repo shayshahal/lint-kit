@@ -8,7 +8,14 @@ import shutil
 import subprocess
 
 import pytest
-from structure_check import function_sloc, heavy_functions, main, score_lines
+from structure_check import (
+    complexities,
+    function_sloc,
+    heavy_functions,
+    main,
+    scb_check_report,
+    score_lines,
+)
 
 BIN = pathlib.Path(__file__).resolve().parents[2] / "node_modules" / ".bin"
 
@@ -247,6 +254,41 @@ def test_function_sloc_counts_code_lines_only():
     assert function_sloc(lines, 1, 4) == 2
 
 
+NESTED = """def outer(x):
+    if x == 1:
+        return 1
+
+    def inner(y):
+        if y == 1:
+            return 1
+        if y == 2:
+            return 2
+        return 0
+
+    return inner(x)
+
+
+class Holder:
+    def method(self, x):
+        def inside(y):
+            if y:
+                return 1
+            return 0
+
+        return inside(x)
+"""
+
+
+def test_a_nested_function_is_named_on_its_own():
+    """mccabe folds `inner` into `outer`; ruff's C901 reports both, and so does this. The
+    numbers are C901's: `outer` 5, `inner` 3, `method` 3, `inside` 2."""
+    found = complexities(NESTED)
+    assert found["outer"] == (1, 5)  # its own `if`, plus inner's two
+    assert found["outer.inner"] == (5, 3)
+    assert found["Holder.method"] == (16, 3)  # its own `if`, plus inside's
+    assert found["Holder.method.inside"] == (17, 2)
+
+
 def test_heavy_functions_keeps_only_what_is_over_the_limit(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "app").mkdir()
@@ -267,6 +309,24 @@ def test_heavy_functions_ranks_the_bigger_one_first(tmp_path, monkeypatch):
     )
     (tmp_path / "app" / "a.py").write_text(branchy("thin", 12) + "\n\n" + fat)
     assert [h.name for h in heavy_functions(["app"], 10)] == ["fat", "thin"]
+
+
+def test_scb_check_is_run_in_utf8_mode(monkeypatch):
+    """scb-check decodes ast-grep's JSON with the locale codepage, so on a Windows box whose ANSI
+    codepage cannot decode the source it dies on a None stdout. UTF-8 mode makes it work."""
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout='{"verbosity": 0.5}', stderr="")
+
+    monkeypatch.setattr(shutil, "which", lambda name: "uvx")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert scb_check_report("app") == {"verbosity": 0.5}
+    assert seen["env"]["PYTHONUTF8"] == "1"
+    assert seen["encoding"] == "utf-8"
+    # the environment is merged, not replaced: uvx needs PATH to be found at all
+    assert set(os.environ) <= set(seen["env"])
 
 
 @pytest.mark.skipif(shutil.which("uvx") is None, reason="uvx is not installed")

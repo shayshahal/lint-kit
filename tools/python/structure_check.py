@@ -7,7 +7,9 @@ Compares the working tree with the merge-base of HEAD and --base, and fails only
 branch introduced, never on what was already there:
 
 - complexity (mccabe, the measure ruff's C901 copies), in the .py files the branch changed: a
-  new function over the limit, one that crossed it, or one already over it that grew;
+  new function over the limit, one that crossed it, or one already over it that grew. A nested
+  function is named on its own (`outer.inner`), the way C901 names it, and its decisions also
+  count towards the function enclosing it;
 - duplication (jscpd, on the paths as they are and as they were at base): a clone that is not
   at base, and most of one of its copies is code the branch added. jscpd's own "new" alone
   would also count an old clone that grew by a token at its edge, as appending a function
@@ -36,6 +38,7 @@ import ast
 import io
 import json
 import math
+import os
 import pathlib
 import shutil
 import subprocess
@@ -103,15 +106,45 @@ def added_lines(merge_base: str, paths: list[str]) -> dict[str, set[int]]:
     return added
 
 
+def complexity_of(node: ast.AST) -> int:
+    """One function's complexity, graphing it on its own. A function nested inside it still
+    counts towards it, which is what ruff's C901 does too."""
+    visitor = mccabe.PathGraphingAstVisitor()
+    visitor.preorder(ast.Module(body=[node], type_ignores=[]), visitor)
+    return max((g.complexity() for g in visitor.graphs.values()), default=0)
+
+
 def complexities(source: str) -> dict[str, tuple[int, int]]:
-    """Function (Class.method) -> (line, complexity). Unparseable source has none."""
+    """Function (Class.method, outer.inner) -> (line, complexity), for every function in the
+    source, a nested one included. Unparseable source has none.
+
+    mccabe graphs a module, and folds a nested function's decisions into the function that
+    encloses it the way it treats a closure, so a nested function is never a key of its own and
+    the enclosing one is reported carrying both. Each function is graphed on its own here
+    instead, which reports the set ruff's C901 reports: the enclosing function still counts what
+    is nested in it, and the nested one is named as well. That matters for the message rather
+    than for the detection, since folding is additive and a nested function over the limit
+    always puts its enclosing function over the limit too.
+    """
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, ValueError):
         return {}
-    visitor = mccabe.PathGraphingAstVisitor()
-    visitor.preorder(tree, visitor)
-    return {g.entity: (g.lineno, g.complexity()) for g in visitor.graphs.values()}
+    found: dict[str, tuple[int, int]] = {}
+
+    def walk(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = f"{prefix}{child.name}"
+                found[name] = (child.lineno, complexity_of(child))
+                walk(child, f"{name}.")
+            elif isinstance(child, ast.ClassDef):
+                walk(child, f"{prefix}{child.name}.")
+            else:
+                walk(child, prefix)
+
+    walk(tree, "")
+    return found
 
 
 def complexity_regressions(
@@ -415,11 +448,11 @@ def heavy_functions(paths: list[str], limit: int) -> list[Heavy]:
     """The functions over `limit`, heaviest first, by `complexity * sqrt(sloc)` — the weighting
     scb-check's erosion uses to decide which functions carry the codebase's mass.
 
-    Measured with mccabe, the same measure the --base check gates on, so the two agree. mccabe
-    folds a nested function's decisions into the function that encloses it, the way it treats a
-    closure, so one entry here can stand for several of scb-check's symbols (which are
-    tree-sitter nodes, nested ones separate). The two counts therefore differ; this one is the
-    unit you would actually split.
+    Measured with mccabe, the same measure the --base check gates on, so the two agree, and
+    naming every function the way that check does. The numbers are not scb-check's own: it
+    counts boolean operators and `assert` statements as branches and mccabe counts neither, so
+    its own list of what exceeds the threshold is the longer one. What is listed here is the
+    set the gate compares against.
     """
     root = pathlib.Path.cwd()
     found: list[Heavy] = []
@@ -445,9 +478,15 @@ def heavy_functions(paths: list[str], limit: int) -> list[Heavy]:
 
 def scb_check_report(path: str) -> dict:
     """scb-check's JSON report for `path`.
+
     It exits 1 when it found anything, so the exit status is not read: the report is on stdout
     either way. `--report` and not the default human render: that one draws boxes a non-UTF-8
     console encoding cannot print, and it crashes there.
+
+    PYTHONUTF8: scb-check decodes ast-grep's JSON with the locale encoding, because it runs that
+    subprocess with `text=True` and no `encoding`. On a Windows machine whose ANSI codepage
+    cannot decode the source (cp1255 and Hebrew, say) the reader thread raises, `stdout` comes
+    back None, and scb-check dies on it. UTF-8 mode makes that decode correct.
     """
     uvx = shutil.which("uvx")
     if uvx is None:
@@ -458,13 +497,14 @@ def scb_check_report(path: str) -> dict:
         text=True,
         encoding="utf-8",
         errors="replace",
+        env={**os.environ, "PYTHONUTF8": "1"},
     )
     try:
         return json.loads(done.stdout)
     except ValueError:
-        lines = (done.stderr or done.stdout).strip().splitlines()
+        said = (done.stderr or done.stdout or "").strip().splitlines()
         raise StructureError(
-            f"scb-check gave no report: {lines[-1] if lines else 'no output'}"
+            f"scb-check gave no report: {said[-1].strip() if said else 'no output'}"
         ) from None
 
 
@@ -510,8 +550,8 @@ def score(paths: list[str]) -> int:
         heavy = heavy_functions([path], limit)
         if heavy:
             print(
-                f"    heaviest over complexity {limit} by mass,"
-                " mccabe (a nested function counts into its parent):"
+                f"    heaviest over complexity {limit} by mass, mccabe (nested functions named "
+                "as their own):"
             )
         for function in heavy[:HEAVY_SHOWN]:
             print(
