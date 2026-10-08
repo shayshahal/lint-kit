@@ -23,10 +23,12 @@
 		"yaml": "^2.9.1"
 	},
 	"devDependencies": {
+		"@oxlint/plugins": "1.81.0",
 		"@typescript-eslint/parser": "^8.71.0",
 		"eslint": "^10.11.0",
 		"eslint-plugin-svelte": "^3.23.0",
 		"jscpd": "^5.4.0",
+		"oxlint": "1.81.0",
 		"svelte": "^5.57.1",
 		"svelte-eslint-parser": "^1.8.1",
 		"typescript": "^5.9.3"

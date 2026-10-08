@@ -39,6 +39,7 @@ export const SETS = {
 	'untranslated-text': { kind: 'eslint', about: 'text users read comes from the message catalogue' },
 	'tailwind-patterns': { kind: 'eslint', about: 'Tailwind / shadcn class conventions (vh, transition-all, dark:, dialog titles)' },
 	'error-handling': { kind: 'eslint', about: 'catch blocks that drop, only log, or stringify the error' },
+	'slop-patterns': { kind: 'oxlint', about: 'a function that only forwards its arguments to another (oxlint)' },
 	fastapi: { kind: 'python', about: 'FastAPI rules ruff lacks, as a flake8 plugin (FAP001-017)' },
 	typecheck: { kind: 'typecheck', about: 'svelte-check --tsgo and pyright before each push (lefthook)' },
 	structure: {
@@ -54,6 +55,10 @@ const ESLINT_FOR = {
 	'error-handling': (deps) => 'svelte' in deps || 'typescript' in deps,
 };
 const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', '@typescript-eslint/parser'];
+/** The JS project dependency each oxlint set is for. */
+const OXLINT_FOR = {
+	'slop-patterns': (deps) => 'oxlint' in deps,
+};
 
 function parseArgs(argv) {
 	const args = { command: argv[0], yes: false, install: true };
@@ -183,6 +188,7 @@ function installed(repo, projects) {
 	const own = projects.js.map((p) => read(path.join(p.dir, ESLINT_RULES)) ?? '').join('\n');
 	return {
 		eslint: (set) => own.includes(`tools/eslint/${set}.mjs`),
+		oxlint: (set) => projects.js.some((p) => (read(oxlintConfig(p.dir)) ?? '').includes(set)),
 		fastapi: projects.py.some((p) => FASTAPI_TABLE.test(p.text)),
 		typecheck: /svelte-check --tsgo|uv run pyright/.test(hooks),
 		structure: /structure_check\.py --base|fallow audit --base/.test(hooks),
@@ -197,8 +203,12 @@ function detect(repo, projects) {
 	const eslint = Object.fromEntries(
 		Object.keys(ESLINT_FOR).map((s) => [s, had.eslint(s) || eslintProjects(projects).some((p) => ESLINT_FOR[s](p.deps))]),
 	);
+	const oxlint = Object.fromEntries(
+		Object.keys(OXLINT_FOR).map((s) => [s, had.oxlint(s) || oxlintProjects(projects).some((p) => OXLINT_FOR[s](p.deps))]),
+	);
 	return {
 		...eslint,
+		...oxlint,
 		fastapi: had.fastapi || fastapi,
 		typecheck: had.typecheck || (hooks && (anyDep('svelte') || fastapi)),
 		structure: had.structure || (hooks && (anyDep('svelte') || anyDep('typescript') || fastapi)),
@@ -267,11 +277,27 @@ function addPython(py, names) {
 // ── tools/ ──────────────────────────────────────────────────────────────────────
 
 /** Copy files from this installer's tools/ into the repository's; they are rewritten every run. */
+function copyDir(from, to) {
+	fs.mkdirSync(to, { recursive: true });
+	for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+		// A set's fixtures are the installer's, run against the checkout they came from:
+		// oxlint has to resolve @oxlint/plugins for them, which the installed repository
+		// cannot promise. The rule they cover is the copy that ships.
+		if (entry.name === 'fixtures') continue;
+		if (entry.isDirectory()) copyDir(path.join(from, entry.name), path.join(to, entry.name));
+		else fs.copyFileSync(path.join(from, entry.name), path.join(to, entry.name));
+	}
+}
+
 function copyTools(repo, files) {
 	for (const file of files) {
+		const from = path.join(SELF, 'tools', file);
 		const to = path.join(repo, 'tools', file);
-		fs.mkdirSync(path.dirname(to), { recursive: true });
-		fs.copyFileSync(path.join(SELF, 'tools', file), to);
+		if (fs.statSync(from).isDirectory()) copyDir(from, to);
+		else {
+			fs.mkdirSync(path.dirname(to), { recursive: true });
+			fs.copyFileSync(from, to);
+		}
 	}
 	if (files.length) say(`✔ tools/: ${files.join(', ')}`);
 }
@@ -394,6 +420,175 @@ function writeEslint(repo, project, wanted, args) {
 			say(`✔ ${where(project)}: ${existing} spreads ${ESLINT_RULES} last`);
 		}
 	}
+}
+
+// ── oxlint ──────────────────────────────────────────────────────────────────────
+
+const OXLINT_CONFIGS = ['.oxlintrc.json', '.oxlintrc.jsonc', 'oxlint.config.ts', 'oxlint.config.mts'];
+/** The ones this can insert into; the TypeScript configs are a different syntax. */
+const OXLINT_JSONC = ['.oxlintrc.json', '.oxlintrc.jsonc'];
+
+/** This project's oxlint config, if it has one. */
+function oxlintConfig(dir) {
+	return OXLINT_CONFIGS.map((f) => path.join(dir, f)).find((f) => fs.existsSync(f)) ?? null;
+}
+
+const oxlintProjects = (projects) =>
+	projects.js.filter((p) => 'oxlint' in p.deps || oxlintConfig(p.dir) !== null);
+
+/** The sets a project already names in its oxlint config, plus the ones its dependencies call for. */
+function oxlintSetsFor(project, sets) {
+	const config = read(oxlintConfig(project.dir)) ?? '';
+	return Object.keys(OXLINT_FOR).filter(
+		(s) => config.includes(s) || (sets.includes(s) && OXLINT_FOR[s](project.deps)),
+	);
+}
+
+/** The index of the quote closing the string that opens at `i`. */
+function skipString(text, i) {
+	for (let j = i + 1; j < text.length; j++) {
+		if (text[j] === '\\') j++;
+		else if (text[j] === '"') return j;
+	}
+	return text.length;
+}
+
+/** The span of the value of a top-level `key:` in an oxlint config, or null. In JSONC the key
+ * is quoted; in a TypeScript config it is usually bare, so the quotes are optional here. */
+function jsoncValue(text, key) {
+	const found = new RegExp(`^[ \\t]*"?${key}"?[ \\t]*:[ \\t]*`, 'm').exec(text);
+	if (!found) return null;
+	const start = found.index + found[0].length;
+	const open = text[start];
+	if (open !== '{' && open !== '[') return null;
+	const close = open === '{' ? '}' : ']';
+	let depth = 0;
+	for (let i = start; i < text.length; i++) {
+		const c = text[i];
+		if (c === '"') i = skipString(text, i);
+		else if (c === '/' && text[i + 1] === '/') i = text.indexOf('\n', i);
+		else if (c === '/' && text[i + 1] === '*') i = text.indexOf('*/', i + 1) + 1;
+		else if (c === open && ++depth === 1) continue;
+		else if (c === close && --depth === 0) return { start, end: i };
+		if (i < 0 || i >= text.length) break;
+	}
+	return null;
+}
+
+/**
+ * Add `entry` as the last member under the top-level `key`, leaving comments where they are.
+ * Null when the key is absent. The insertion stays line-based so a trailing `//` comment on the
+ * previous member keeps its place and the comma goes before it.
+ */
+function jsoncAppend(text, key, entry) {
+	const value = jsoncValue(text, key);
+	if (value === null) return null;
+	const inner = text.slice(value.start + 1, value.end);
+	if (!inner.includes('\n')) {
+		const sep = inner.trim() === '' || inner.trimEnd().endsWith(',') ? '' : ', ';
+		const before = text.slice(0, value.end).replace(/[ \t\r]+$/, '');
+		return `${before}${sep}${entry}${text.slice(value.end)}`;
+	}
+	const lineStart = text.lastIndexOf('\n', value.end) + 1;
+	let end = lineStart - 1;
+	while (end > value.start) {
+		const start = text.lastIndexOf('\n', end - 1) + 1;
+		if (start <= value.start) return null;
+		if (text.slice(start, end).trim() !== '') {
+			const line = text.slice(start, end);
+			const indent = /^[ \t]*/.exec(line)[0];
+			const comment = line.indexOf('//');
+			const head = (comment === -1 ? line : line.slice(0, comment)).replace(/[ \t\r]+$/, '');
+			const tail = comment === -1 ? '' : ` ${line.slice(comment)}`;
+			const sep = head.endsWith(',') ? '' : ',';
+			return `${text.slice(0, start)}${head}${sep}${tail}\n${indent}${entry}${text.slice(end)}`;
+		}
+		end = start - 1;
+	}
+	return null;
+}
+
+/** Add a whole top-level `key: value` to a config object that has no such key. */
+function jsoncAddKey(text, key, value, open, ts) {
+	if (jsoncValue(text, key) !== null || open < 0) return null;
+	const rest = text.slice(open + 1);
+	// Whatever followed the brace keeps its own line, so a key added to a one-line object is
+	// still found by the next `^key:` lookup rather than ending up after it on that line.
+	const tail = rest.startsWith('\n') ? rest : `\n\t${rest.replace(/^[ \t]+/, '')}`;
+	return `${text.slice(0, open + 1)}\n\t${keyText(key, ts)}: ${value},${tail}`;
+}
+
+/** Where the top-level config object opens. */
+function configObjectStart(text, ts) {
+	if (!ts) return text.indexOf('{');
+	// A TypeScript config wraps the object, and `import { defineConfig }` puts a brace before
+	// it, so the first `{` in the file is the wrong one.
+	const call = /\bdefineConfig\s*\(\s*\{/u.exec(text);
+	if (call) return call.index + call[0].lastIndexOf('{');
+	const exported = /^[ \t]*export default\s*\{/mu.exec(text);
+	return exported ? exported.index + exported[0].lastIndexOf('{') : -1;
+}
+
+/** `key` as the config's syntax writes it: quoted in JSONC, bare for a TypeScript identifier. */
+const keyText = (key, ts) => (ts && /^[A-Za-z_$][\w$]*$/u.test(key) ? key : `"${key}"`);
+
+/** The `jsPlugins` entry for the set. */
+const pluginEntry = (specifier, ts) =>
+	ts
+		? `{ name: "slop-patterns", specifier: ${JSON.stringify(specifier)} }`
+		: `{ "name": "slop-patterns", "specifier": ${JSON.stringify(specifier)} }`;
+
+/** The `rules` entry, annotated the way the configs in the wild are. */
+const ruleEntry = (comment) =>
+	`"slop-patterns/no-trivial-wrapper": "warn"${comment ? ' // TODO(slop-patterns-error): raise once the findings are cleaned up' : ''}`;
+
+/**
+ * Add the slop-patterns plugin to an oxlint config, in place. Rewriting the file would drop the
+ * comments and finding counts these configs are hand-annotated with, so this only inserts.
+ * `ts` is for `oxlint.config.ts` / `.mts`, whose keys are bare and whose object is wrapped.
+ */
+export function patchOxlint(text, specifier, ts = false) {
+	if (text.includes('slop-patterns')) return text;
+	const add = (body, key, entry, array) => {
+		const found = jsoncValue(body, key);
+		// An entry placed inside a one-line object must carry no `//` comment: everything after
+		// it on that line — including the closing brace — would become part of the comment.
+		const inline = found !== null && !body.slice(found.start + 1, found.end).includes('\n');
+		const value = typeof entry === 'function' ? entry(!inline) : entry;
+		return (
+			jsoncAppend(body, key, value) ??
+			jsoncAddKey(body, key, array ? `[${value}]` : `{ ${value} }`, configObjectStart(body, ts), ts)
+		);
+	};
+	const withPlugins = add(text, 'jsPlugins', pluginEntry(specifier, ts), true);
+	if (withPlugins === null) return text;
+	return add(withPlugins, 'rules', ruleEntry, false) ?? text;
+}
+
+/** Wire the oxlint sets into one project's config. */
+function writeOxlint(repo, project, wanted) {
+	const specifier = `./${rel(project.dir, path.join(repo, 'tools', 'oxlint', 'slop-patterns', 'index.ts'))}`;
+	const file = oxlintConfig(project.dir);
+	if (file === null) {
+		const fresh = `{\n\t"jsPlugins": [\n\t\t{ "name": "slop-patterns", "specifier": ${JSON.stringify(specifier)} }\n\t],\n\t"rules": {\n\t\t"slop-patterns/no-trivial-wrapper": "warn"\n\t}\n}\n`;
+		write(path.join(project.dir, '.oxlintrc.json'), fresh);
+		say(`✔ ${where(project)}: .oxlintrc.json (new, with the slop-patterns plugin)`);
+		return;
+	}
+	const name = path.basename(file);
+	const before = read(file);
+	const after = patchOxlint(before, specifier, !OXLINT_JSONC.includes(name));
+	if (after !== before) {
+		write(file, after);
+		say(`✔ ${where(project)}: ${name} loads the slop-patterns plugin`);
+		return;
+	}
+	// Recognized by name but not by shape (no `export default`, so no object to insert into).
+	say(
+		`→ ${where(project)}: ${name} was left alone. Add\n` +
+			`    jsPlugins: [{ name: 'slop-patterns', specifier: '${specifier}' }]\n` +
+			`    rules: { 'slop-patterns/no-trivial-wrapper': 'warn' }`,
+	);
 }
 
 // ── lefthook ────────────────────────────────────────────────────────────────────
@@ -751,15 +946,21 @@ export async function main(argv = process.argv.slice(2)) {
 		.map((p) => ({ p, wanted: eslintSetsFor(p, sets) }))
 		.filter(({ wanted }) => wanted.length);
 	const eslintSets = Object.keys(ESLINT_FOR).filter((s) => linted.some(({ wanted }) => wanted.includes(s)));
+	const oxlinted = oxlintProjects(projects)
+		.map((p) => ({ p, wanted: oxlintSetsFor(p, sets) }))
+		.filter(({ wanted }) => wanted.length);
+	const oxlintSets = Object.keys(OXLINT_FOR).filter((s) => oxlinted.some(({ wanted }) => wanted.includes(s)));
 	const fastapi = sets.includes('fastapi') ? projects.py.filter(isFastapi) : [];
 	const structure = sets.includes('structure');
 	copyTools(repo, [
 		...eslintSets.flatMap((s) => [`eslint/${s}.mjs`, `eslint/${s}.md`]),
+		...oxlintSets.map((s) => `oxlint/${s}`),
 		...(fastapi.length ? ['python/fastapi_rules.py'] : []),
 		...(structure && projects.py.length ? ['python/structure_check.py'] : []),
 	]);
 
 	for (const { p, wanted } of linted) writeEslint(repo, p, wanted, args);
+	for (const { p, wanted } of oxlinted) writeOxlint(repo, p, wanted);
 	const wired = fastapi.map((py) => writeFastapi(repo, py, args));
 	const hooked = editLefthook(repo, (doc) => {
 		const eslintNames = stepNames('eslint', linted.map(({ p }) => p));

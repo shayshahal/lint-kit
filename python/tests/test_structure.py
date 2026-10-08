@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import subprocess
 
 import pytest
-from structure_check import main
+from structure_check import function_sloc, heavy_functions, main, score_lines
 
 BIN = pathlib.Path(__file__).resolve().parents[2] / "node_modules" / ".bin"
 
@@ -77,7 +78,7 @@ def test_touching_a_file_whose_functions_were_already_complex_passes(repo, capsy
     commit({"app/legacy.py": legacy + "def helper():\n    return 1\n"})
     assert run(capsys) == (
         0,
-        "structure-check: 1 changed .py file(s), no new complexity or duplication\n",
+        "structure-check: 1 changed .py file(s), no new complexity, duplication or import cycles\n",
     )
 
 
@@ -151,3 +152,130 @@ def test_a_folder_that_is_new_on_the_branch_is_checked(repo, capsys):
     code, out = run(capsys, "api")
     assert code == 1
     assert "api/a.py" in out
+
+
+def test_a_new_import_cycle_fails(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": "from app.b import thing\n", "app/b.py": "thing = 1\n"})
+    commit({"app/b.py": "from app.a import x\nthing = 1\n"})
+    code, out = run(capsys)
+    assert code == 1
+    assert "app/b.py:1 import cycle app.b -> app.a (2 modules), new" in out
+
+
+def test_a_cycle_the_base_already_had_passes(repo, capsys):
+    setup, commit = repo
+    cycled = {
+        "app/a.py": "from app.b import thing\n",
+        "app/b.py": "from app.a import x\nthing = 1\n",
+    }
+    setup(cycled)
+    commit({**cycled, "app/c.py": "value = 1\n"})
+    assert run(capsys)[0] == 0
+
+
+def test_a_cycle_that_took_in_a_new_module_fails(repo, capsys):
+    setup, commit = repo
+    setup(
+        {
+            "app/a.py": "from app.b import thing\n",
+            "app/b.py": "from app.a import x\nthing = 1\n",
+        }
+    )
+    commit({"app/a.py": "from app.c import c\n", "app/c.py": "from app.b import thing\nc = 1\n"})
+    code, out = run(capsys)
+    assert code == 1
+    assert "import cycle" in out and "(3 modules), new" in out
+
+
+def test_an_import_inside_a_function_does_not_close_a_cycle(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": "from app.b import thing\n", "app/b.py": "thing = 1\n"})
+    commit({"app/b.py": "thing = 1\n\n\ndef late():\n    from app.a import x\n\n    return x\n"})
+    assert run(capsys)[0] == 0
+
+
+def test_a_type_checking_import_does_not_close_a_cycle(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": "from app.b import thing\n", "app/b.py": "thing = 1\n"})
+    commit(
+        {
+            "app/b.py": "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n"
+            "    from app.a import x\n\nthing = 1\n"
+        }
+    )
+    assert run(capsys)[0] == 0
+
+
+SCB_REPORT = {
+    "verbosity": 0.015315315315315315,
+    "erosion": 0.7215938484133675,
+    "cog_erosion": 0.8781633611092327,
+    "total_loc": 1110,
+    "verbosity_flagged_loc": 17,
+    "clone_loc": 14,
+    "ast_grep_flagged_loc": 3,
+    "structural_rule_loc": 0,
+    "high_cc_mass": 1913.5479897160726,
+    "total_mass": 2651.8352310285914,
+    "total_functions": 61,
+    "high_cc_functions": 13,
+    "high_cog_mass": 3622.231842279953,
+    "total_cog_mass": 4124.781336475495,
+    "high_cog_functions": 18,
+}
+
+
+def test_score_lines_reads_a_report():
+    assert score_lines("app", SCB_REPORT) == [
+        "app: verbosity 0.0153, erosion 0.7216, cognitive erosion 0.8782",
+        "  verbosity: 17 of 1110 SLOC flagged (clone 14, ast-grep 3, structural 0)",
+        "  erosion:   1914 of 2652 mass in 13 of 61 functions over complexity 10"
+        " (mass = cc x sqrt(sloc))",
+        "  cognitive: 3622 of 4125 mass in 18 of 61 functions",
+    ]
+
+
+def test_score_lines_survives_a_report_with_no_loc():
+    lines = score_lines("app", {})
+    assert "0 of 0 SLOC flagged" in lines[1]
+    assert "0 of 0 mass" in lines[2]
+
+
+def test_function_sloc_counts_code_lines_only():
+    lines = ["def f():", "    # a comment", "", "    return 1", "", "# not in the span"]
+    assert function_sloc(lines, 1, 4) == 2
+
+
+def test_heavy_functions_keeps_only_what_is_over_the_limit(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "a.py").write_text(branchy("calm", 3) + branchy("heavy", 12))
+    assert [(h.name, h.complexity, h.sloc) for h in heavy_functions(["app"], 10)] == [
+        ("heavy", 13, 26)
+    ]
+
+
+def test_heavy_functions_ranks_the_bigger_one_first(tmp_path, monkeypatch):
+    """Same complexity, more lines: mass is `complexity * sqrt(sloc)`, so the longer one leads."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "app").mkdir()
+    fat = (
+        "def fat(x):\n"
+        + "".join(f"    if x == {i}:\n        y = {i}\n        return y\n" for i in range(12))
+        + "    return -1\n"
+    )
+    (tmp_path / "app" / "a.py").write_text(branchy("thin", 12) + "\n\n" + fat)
+    assert [h.name for h in heavy_functions(["app"], 10)] == ["fat", "thin"]
+
+
+@pytest.mark.skipif(shutil.which("uvx") is None, reason="uvx is not installed")
+def test_score_reports_scb_check_and_never_fails(tmp_path, monkeypatch, capsys):
+    """scb-check exits 1 when it found anything, so `--score` must read stdout, not the status."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "a.py").write_text("def f(x):\n    if x:\n        return 1\n    return 0\n")
+    assert main(["--score", "app"]) == 0
+    out = capsys.readouterr().out
+    assert "scb-check==0.2.0" in out
+    assert "app: verbosity" in out and "erosion" in out
