@@ -1,6 +1,7 @@
 """Fail when a branch makes its Python worse than it was at its base.
 
     python structure_check.py --base origin/dev [path ...]
+    python structure_check.py --score [path ...]
 
 Compares the working tree with the merge-base of HEAD and --base, and fails only on what the
 branch introduced, never on what was already there:
@@ -12,8 +13,18 @@ branch introduced, never on what was already there:
   would also count an old clone that grew by a token at its edge, as appending a function
   after it does. (jscpd's --baseline-from-ref does the base scan itself, but reads the whole
   repository: 65s on JewelryX, against under a second for the paths alone.)
+- import cycles, over the modules the paths hold: a cycle none of the base's cycles contains.
+  Only the imports that run when a module is imported count, so an import inside a function
+  and one under `if TYPE_CHECKING:` are not edges — both are how a cycle is deliberately
+  broken, and reporting them would be advice to undo the fix.
 
-The paths (default: the current folder) limit both. The limit is `max-complexity` in
+--score is the other mode, and it never fails: it runs scb-check (uvx scb-check==0.2.0) and
+prints the two composites SlopCodeBench measures, verbosity and erosion, with what each is
+made of. A repo-wide score is not something one change should fail on, and it moves for
+reasons a diff cannot see, so it is there to compare two runs, not to gate one. It is not a
+pre-push step: the first uvx run downloads scb-check's dependencies.
+
+The paths (default: the current folder) limit all of them. The limit is `max-complexity` in
 [tool.structure-check] of ./pyproject.toml, 10 without one. Exits 0 when nothing new is
 worse (and when no .py file changed), 1 when something is, 2 when it cannot run.
 """
@@ -24,6 +35,7 @@ import argparse
 import ast
 import io
 import json
+import math
 import pathlib
 import shutil
 import subprocess
@@ -36,7 +48,13 @@ from dataclasses import dataclass
 import mccabe
 
 DEFAULT_MAX_COMPLEXITY = 10
+SKIP_FOLDERS = frozenset({"__pycache__", "node_modules", "venv", ".venv"})
 WINDOWS_LONG_PATH = "\\\\?\\"
+# scb-check owns the composite scores, and its rule set changes between releases, so an
+# unpinned run makes verbosity incomparable across runs (its own source says so).
+SCB_CHECK = "scb-check==0.2.0"
+# How many mass carriers `--score` names before it stops and counts the rest.
+HEAVY_SHOWN = 5
 
 
 class StructureError(Exception):
@@ -203,6 +221,308 @@ def duplication_regressions(merge_base: str, paths: list[str]) -> list[Regressio
     return found
 
 
+def module_of(rel: str) -> str:
+    """`app/services/order.py` -> `app.services.order`; a package's `__init__.py` -> the package."""
+    parts = rel[: -len(".py")].split("/")
+    if parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts)
+
+
+def imports_of(source: str) -> list[tuple[int, int, str, list[str]]]:
+    """(line, level, module, names) for the imports that run when this source is imported.
+
+    An import inside a function runs when that function is called, not when the module loads,
+    so it does not close a cycle at import time — it is the usual way to break one. The same
+    goes for `if TYPE_CHECKING:`.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+    found: list[tuple[int, int, str, list[str]]] = []
+
+    def type_only(test: ast.expr) -> bool:
+        return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+            isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+        )
+
+    def visit(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            if isinstance(child, ast.If) and type_only(child.test):
+                continue
+            if isinstance(child, ast.Import):
+                found.extend((child.lineno, 0, alias.name, []) for alias in child.names)
+            elif isinstance(child, ast.ImportFrom):
+                found.append(
+                    (
+                        child.lineno,
+                        child.level or 0,
+                        child.module or "",
+                        [a.name for a in child.names],
+                    )
+                )
+            else:
+                visit(child)
+
+    visit(tree)
+    return found
+
+
+def python_files(root: pathlib.Path, paths: list[str]) -> dict[str, str]:
+    """module -> its path relative to `root`, for every .py under the paths that is the
+    project's own code. A virtualenv or a cache inside one of them is not part of the graph,
+    and its thousands of files would be parsed for nothing."""
+    found: dict[str, str] = {}
+    for path in paths:
+        for file in sorted((root / path).rglob("*.py")):
+            rel = file.relative_to(root).as_posix()
+            folders = rel.split("/")[:-1]
+            if any(folder.startswith(".") or folder in SKIP_FOLDERS for folder in folders):
+                continue
+            found[module_of(rel)] = rel
+    return found
+
+
+def module_graph(files: dict[str, str], root: pathlib.Path) -> dict[str, dict[str, int]]:
+    """module -> the modules it imports when it is imported, and the line it imports each on."""
+    known = set(files)
+    edges: dict[str, dict[str, int]] = {}
+    for module, rel in files.items():
+        package = module if rel.endswith("/__init__.py") else module.rpartition(".")[0]
+        out: dict[str, int] = {}
+        for line, level, name, names in imports_of((root / rel).read_text(encoding="utf-8")):
+            if level:
+                parts = package.split(".") if package else []
+                if level > 1:
+                    parts = parts[: len(parts) - (level - 1)]
+                target = ".".join([*parts, *([name] if name else [])])
+            else:
+                target = name
+            if not target:
+                continue
+            # `from a.b import c, d` depends on a.b, and on a.b.c / a.b.d where those are modules.
+            for candidate in {target, *(f"{target}.{n}" for n in names)}:
+                if candidate in known and candidate != module:
+                    out.setdefault(candidate, line)
+        edges[module] = out
+    return edges
+
+
+def cycles_of(edges: dict[str, dict[str, int]]) -> list[frozenset[str]]:
+    """Tarjan's strongly connected components that are cycles: more than one module, or a
+    module importing itself. The recursion depth is the graph's depth, not its size."""
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    found: list[frozenset[str]] = []
+
+    def strong(node: str) -> None:
+        index[node] = low[node] = len(index)
+        stack.append(node)
+        on_stack.add(node)
+        for other in edges.get(node, ()):
+            if other not in index:
+                strong(other)
+                low[node] = min(low[node], low[other])
+            elif other in on_stack:
+                low[node] = min(low[node], index[other])
+        if low[node] != index[node]:
+            return
+        group: set[str] = set()
+        while (popped := stack.pop()) != node:
+            on_stack.discard(popped)
+            group.add(popped)
+        on_stack.discard(node)
+        group.add(node)
+        if len(group) > 1 or node in edges.get(node, ()):
+            found.append(frozenset(group))
+
+    for node in edges:
+        if node not in index:
+            strong(node)
+    return found
+
+
+def cycle_regressions(merge_base: str, paths: list[str]) -> list[Regression]:
+    """A cycle fails when no cycle at base contains all of its members, so a cycle the branch
+    grew counts but one it inherited, or left alone, does not. Like a clone, the regression is
+    reported at the branch's own import — the one that closes the loop."""
+    root = pathlib.Path.cwd()
+    files = python_files(root, paths)
+    edges = module_graph(files, root)
+    now = cycles_of(edges)
+    if not now:
+        return []
+    with tempfile.TemporaryDirectory() as tmp:
+        base = pathlib.Path(tmp)
+        checkout_base(merge_base, paths, base)
+        before_edges = module_graph(python_files(base, paths), base)
+        before = cycles_of(before_edges)
+    found = []
+    for group in now:
+        if any(group <= known for known in before):
+            continue
+        # The imports inside the loop that the branch added: the one to move into a function.
+        fresh = sorted(
+            (src, dst, edges[src][dst])
+            for src in group
+            for dst in edges[src]
+            if dst in group and dst not in before_edges.get(src, ())
+        )
+        closes = ", ".join(f"{src} -> {dst}" for src, dst, _ in fresh[:3])
+        if len(fresh) > 3:
+            closes += f" and {len(fresh) - 3} more"
+        # There is always a new import: without one the cycle was already at base.
+        source = fresh[0][0] if fresh else sorted(group)[0]
+        at = f":{fresh[0][2]}" if fresh else ""
+        found.append(
+            Regression(
+                f"{files[source]}{at} import cycle",
+                f"{closes or ' -> '.join(sorted(group))} ({len(group)} modules), new",
+            )
+        )
+    return found
+
+
+@dataclass(frozen=True)
+class Heavy:
+    """A function over the complexity limit, and how much of the score's mass it carries."""
+
+    path: str
+    line: int
+    name: str
+    complexity: int
+    sloc: int
+
+    @property
+    def mass(self) -> float:
+        return self.complexity * math.sqrt(self.sloc)
+
+
+def function_sloc(lines: list[str], start: int, end: int) -> int:
+    """Non-blank, non-comment lines in a function's span. An approximation of scb-check's sloc,
+    which counts logical lines from a tree-sitter parse."""
+    return sum(
+        1 for line in lines[start - 1 : end] if line.strip() and not line.lstrip().startswith("#")
+    )
+
+
+def heavy_functions(paths: list[str], limit: int) -> list[Heavy]:
+    """The functions over `limit`, heaviest first, by `complexity * sqrt(sloc)` — the weighting
+    scb-check's erosion uses to decide which functions carry the codebase's mass.
+
+    Measured with mccabe, the same measure the --base check gates on, so the two agree. mccabe
+    folds a nested function's decisions into the function that encloses it, the way it treats a
+    closure, so one entry here can stand for several of scb-check's symbols (which are
+    tree-sitter nodes, nested ones separate). The two counts therefore differ; this one is the
+    unit you would actually split.
+    """
+    root = pathlib.Path.cwd()
+    found: list[Heavy] = []
+    for rel in python_files(root, paths).values():
+        source = (root / rel).read_text(encoding="utf-8")
+        try:
+            spans = {
+                node.lineno: (node.name, node.end_lineno or node.lineno)
+                for node in ast.walk(ast.parse(source))
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+        except (SyntaxError, ValueError):
+            continue
+        lines = source.splitlines()
+        for line, complexity in complexities(source).values():
+            if complexity <= limit or line not in spans:
+                continue
+            name, end = spans[line]
+            found.append(Heavy(rel, line, name, complexity, function_sloc(lines, line, end)))
+    found.sort(key=lambda heavy: (-heavy.mass, heavy.path, heavy.line))
+    return found
+
+
+def scb_check_report(path: str) -> dict:
+    """scb-check's JSON report for `path`.
+    It exits 1 when it found anything, so the exit status is not read: the report is on stdout
+    either way. `--report` and not the default human render: that one draws boxes a non-UTF-8
+    console encoding cannot print, and it crashes there.
+    """
+    uvx = shutil.which("uvx")
+    if uvx is None:
+        raise StructureError("uvx not found: install uv (https://docs.astral.sh/uv/)")
+    done = subprocess.run(
+        [uvx, SCB_CHECK, "check", path, "--report"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        return json.loads(done.stdout)
+    except ValueError:
+        lines = (done.stderr or done.stdout).strip().splitlines()
+        raise StructureError(
+            f"scb-check gave no report: {lines[-1] if lines else 'no output'}"
+        ) from None
+
+
+def score_lines(path: str, report: dict) -> list[str]:
+    """The report as a brief: what the two SlopCodeBench composites measure, and what they are
+    made of, in ASCII, so an old console encoding can print it."""
+
+    def of_total(value: float, total: float) -> str:
+        return f"{round(value)} of {round(total)}" if total else "0 of 0"
+
+    functions = report.get("total_functions", 0)
+    flagged = report.get("verbosity_flagged_loc", 0)
+    parts = (
+        f"clone {report.get('clone_loc', 0)}, "
+        f"ast-grep {report.get('ast_grep_flagged_loc', 0)}, "
+        f"structural {report.get('structural_rule_loc', 0)}"
+    )
+    erosion = of_total(report.get("high_cc_mass", 0), report.get("total_mass", 0))
+    cognitive = of_total(report.get("high_cog_mass", 0), report.get("total_cog_mass", 0))
+    return [
+        f"{path}: verbosity {report.get('verbosity', 0):.4f}, "
+        f"erosion {report.get('erosion', 0):.4f}, "
+        f"cognitive erosion {report.get('cog_erosion', 0):.4f}",
+        f"  verbosity: {flagged} of {report.get('total_loc', 0)} SLOC flagged ({parts})",
+        f"  erosion:   {erosion} mass in {report.get('high_cc_functions', 0)} of "
+        f"{functions} functions over complexity 10 (mass = cc x sqrt(sloc))",
+        f"  cognitive: {cognitive} mass in "
+        f"{report.get('high_cog_functions', 0)} of {functions} functions",
+    ]
+
+
+def score(paths: list[str]) -> int:
+    """Print scb-check's composites for each path, and the functions carrying the erosion mass.
+    Never a gate: a repo-wide score is not something a single change should fail on, and the
+    numbers move for reasons a diff cannot see. Reported so two runs can be compared."""
+    print(f"structure-check: scb-check {SCB_CHECK} (report only, never fails a push)")
+    limit = max_complexity()
+    for path in paths:
+        for line in score_lines(path, scb_check_report(path)):
+            print(line)
+        # The dampener only ever looks at the files a branch changed, so it can never name a
+        # function that was already heavy. This is the only place that can.
+        heavy = heavy_functions([path], limit)
+        if heavy:
+            print(
+                f"    heaviest over complexity {limit} by mass,"
+                " mccabe (a nested function counts into its parent):"
+            )
+        for function in heavy[:HEAVY_SHOWN]:
+            print(
+                f"    {function.path}:{function.line} {function.name}"
+                f"  complexity {function.complexity}, {function.sloc} sloc"
+            )
+        if len(heavy) > HEAVY_SHOWN:
+            print(f"    ... and {len(heavy) - HEAVY_SHOWN} more over {limit}")
+    return 0
+
+
 def max_complexity() -> int:
     pyproject = pathlib.Path("pyproject.toml")
     if not pyproject.exists():
@@ -219,25 +539,37 @@ def check(base: str, paths: list[str]) -> int:
         return 0
     found = complexity_regressions(merge_base, files, max_complexity())
     found += duplication_regressions(merge_base, paths)
+    found += cycle_regressions(merge_base, paths)
     for regression in found:
         print(regression)
     if found:
         print(
             f"structure-check: {len(found)} structure regression(s) since {base} "
-            f"({merge_base[:9]}). Split the function or extract the shared code; "
-            "what was already there does not count."
+            f"({merge_base[:9]}). Split the function, extract the shared code, or move the "
+            "import into the function that needs it; what was already there does not count."
         )
         return 1
-    print(f"structure-check: {len(files)} changed .py file(s), no new complexity or duplication")
+    print(
+        f"structure-check: {len(files)} changed .py file(s), "
+        "no new complexity, duplication or import cycles"
+    )
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="structure_check.py", description=__doc__.split("\n")[0])
-    parser.add_argument("--base", default="origin/HEAD", help="the branch this one merges into")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--base", default="origin/HEAD", help="the branch this one merges into")
+    mode.add_argument(
+        "--score",
+        action="store_true",
+        help="report scb-check's verbosity and erosion for the paths, and exit 0",
+    )
     parser.add_argument("paths", nargs="*", default=["."], help="folders to check")
     args = parser.parse_args(argv)
     try:
+        if args.score:
+            return score(args.paths)
         return check(args.base, args.paths)
     except StructureError as error:
         print(f"structure-check: {error}", file=sys.stderr)

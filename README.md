@@ -18,7 +18,7 @@ the repository owns the copies, and only whoever runs `init` needs access here.
 | `slop-patterns` | oxlint | a named function whose whole body forwards its arguments to another function |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
-| `structure` | fallow, `structure_check.py` | lefthook pre-push steps that fail when a branch adds complexity, duplication or dead code its base did not have, and never on what was already there ([docs](docs/structure.md)) |
+| `structure` | fallow, `structure_check.py` | lefthook pre-push steps that fail when a branch adds complexity, duplication, an import cycle or dead code its base did not have, and never on what was already there ([docs](docs/structure.md)) |
 
 Each ESLint rule links to its section in the `.md` copied beside it in `tools/eslint/` (editors
 show the link with the message); the FAP rules are listed in `tools/python/fastapi_rules.py`'s
@@ -75,7 +75,9 @@ project's folder (`eslint-admin`, `svelte-check-shop`).
   folder. On by default when the repository has a `lefthook.yml`.
 - **structure**: pre-push steps that compare the branch with its base. `fallow audit` runs at the
   workspace root (or in each JS project without a workspace), `tools/python/structure_check.py`
-  in each Python project. The base comes from `--base`, else the `origin/<branch>...HEAD`
+  in each Python project, which fails on a new complex function, new duplication or an import
+  cycle the branch introduced. `--score` reports the verbosity and erosion composites
+  SlopCodeBench records its results with, and never fails. The base comes from `--base`, else the `origin/<branch>...HEAD`
   lefthook's pre-push `files` diffs against, else `origin/HEAD`. `init` adds `fallow` and `jscpd`
   as dev dependencies, and `mccabe` to a Python project without flake8. A fallow root without a
   fallow config gets a `.fallowrc.json`, and `package.json` gets a `structure:brief` script:

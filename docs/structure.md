@@ -2,8 +2,8 @@
 
 A dampener, not a threshold. Before each push it compares the branch with the code at its base and
 fails only on what the branch made worse: a new over-complex function, a function that got more
-complex, new duplication, new dead code. What the base already had never fails a push, however
-bad it is.
+complex, new duplication, a new import cycle, new dead code. What the base already had never
+fails a push, however bad it is.
 
 Why it works this way: agent-written code gets a little worse with each change while the tests
 stay green ([SlopCodeBench](https://arxiv.org/abs/2603.24755),
@@ -89,6 +89,67 @@ the branch changed no `.py` file in them.
   is code the branch added. Moving duplicated code to another file passes. So does an
   edit made to both copies of an existing clone, or an old clone that grew by a token at its edge
   (appending a function after it does that). A third copy of an existing clone fails.
+- **Import cycles**, over the modules the folders hold, at base and now. A cycle fails when no
+  cycle at base contains all of its members, so one the branch grew counts and one it inherited,
+  or left alone, does not. It is reported at the import that closed it, the way a clone is
+  reported at the branch's own copy.
+
+  Only the imports that run when a module is imported are edges. An import inside a function runs
+  when that function is called, and one under `if TYPE_CHECKING:` never runs, so neither closes a
+  cycle — both are how a cycle is deliberately broken, and counting them would be advice to undo
+  the fix. On JewelryX's 251-module backend that is the difference between 3 cycles and 0.
+
+  This is the Python half of what fallow reports as `circular-dependencies` for JS, which
+  `init`'s `.fallowrc.json` gates by default. Worth knowing: the base pass is skipped when the
+  branch's own tree has no cycle, so the usual cost is about 0.4s for 251 modules.
+
+### The scores, reported and never gated
+
+```
+structure-check: scb-check scb-check==0.2.0 (report only, never fails a push)
+app: verbosity 0.0140, erosion 0.6916, cognitive erosion 0.8647
+  verbosity: 17 of 1215 SLOC flagged (clone 14, ast-grep 3, structural 0)
+  erosion:   1914 of 2767 mass in 13 of 67 functions over complexity 10 (mass = cc x sqrt(sloc))
+  cognitive: 3677 of 4252 mass in 19 of 67 functions
+    heaviest over complexity 10 by mass, mccabe (a nested function counts into its parent):
+    app/services/order_service.py:3581 trial_grade  complexity 37, 112 sloc
+    app/services/checkout_service.py:886 _call  complexity 16, 74 sloc
+```
+
+`python tools/python/structure_check.py --score app` runs
+[scb-check](https://github.com/gabeorlanski/scb-check) and prints the composites SlopCodeBench
+records its own results with, so they are comparable with a published run. It pins the version
+because the tool's rule set changes between releases, and an unpinned run makes verbosity
+incomparable across runs. (scb-check's own source says exactly that.)
+
+- **verbosity** is flagged SLOC over total SLOC, where a line is flagged if clone detection,
+  an ast-grep slop rule, or a structural rule hit it. All 197 bundled ast-grep rules are
+  `language: python`, and scb-check's README says non-Python languages contribute clone lines
+  only, so on a JS/TS project this number is duplication and nothing else.
+- **erosion** is the share of function mass (`cc × √sloc`) sitting in functions over complexity
+  10; **cognitive erosion** is the same on cognitive complexity. Note that the ordinary
+  `--base` check already fails a *new* function over complexity 10 — erosion is the same
+  measurement as a repo-wide ratio rather than a per-function gate.
+
+`--score` never fails. It is not a pre-push step either: the first `uvx` run downloads
+scb-check's dependencies. It is the Python counterpart of `pnpm structure:brief`, and for the
+same reason — a repo-wide ratio moves for things a diff cannot see, so it is something to
+compare two runs with, not something to fail one on.
+
+The list underneath the numbers is the part that earns its place. The `--base` check only ever
+walks the files a branch changed, so it can never name a function that was already heavy — the
+inherited complexity is permanently outside what a dampener may say anything about. This is the
+only place in the set that names it, and it is the same measure the gate uses, so the two agree.
+
+Two things to know about reconciling the list with the line above it:
+
+- The counts differ by design. scb-check parses with tree-sitter and sees a nested function as
+  its own symbol; mccabe folds a nested function's decisions into the one that encloses it, the
+  way it treats a closure, so one entry in the list can stand for several of scb-check's
+  symbols. The list's partition is the unit you would actually split.
+- The thresholds can differ. The gate's limit is `max-complexity` from `[tool.structure-check]`
+  (default 10, and the list uses it too), while scb-check hardcodes 10. Set `max-complexity` to
+  15 and the line above still counts functions over 10.
 
 jscpd and not pylint's duplicate-code: pylint only compares one file with another, so it misses a
 function copied within the same file. That's the most common kind: on JewelryX's backend, 69 of
@@ -104,7 +165,7 @@ max-complexity = 10
 ## Time
 
 Measured on a JewelryX branch (22 commits, 116 changed files, 249 backend files):
-- **structure_check.py:** about 0.9s.
+- **structure_check.py:** about 0.9s, about 1.3s with the import-cycle pass.
 - **fallow audit:** about 2.5s once warm. The first runs in a worktree took 8–12s, while fallow
   built its caches and the base worktree.
 - **fallow review --brief:** about 9s; it isn't a pre-push step.
