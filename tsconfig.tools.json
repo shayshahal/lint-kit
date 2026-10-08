@@ -1,0 +1,22 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"lib": ["ES2022"],
+		"strict": true,
+		"noEmit": true,
+		"skipLibCheck": true,
+		"allowImportingTsExtensions": true
+	},
+	// The oxlint plugins under tools/ are shipped to other repositories, and node --test runs
+	// them the way oxlint does — as JavaScript, with the types erased. A type that does not exist
+	// in @oxlint/plugins therefore fails nothing until someone lints the vendored copy with
+	// typeAware on. `ESTree.FunctionDeclaration` did exactly that: an error type, so the union
+	// holding it was `any` and the rule's accesses were unchecked. tsc is the only thing here
+	// that reads the types, so it has to be run.
+	"include": ["tools/oxlint/**/*.ts"],
+	// Fixtures are inputs to be linted, not code to compile: they carry deliberate type errors
+	// and undeclared names on purpose, so they are exactly what tsc must not read.
+	"exclude": ["tools/oxlint/**/fixtures/**"]
+}

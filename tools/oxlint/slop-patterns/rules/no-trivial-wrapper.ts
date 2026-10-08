@@ -15,10 +15,12 @@ const SVELTEKIT_PARAM_MATCHERS = /(?:^|[/\\])src[/\\]params\.[cm]?[jt]s$/u;
  */
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$|[/\\](?:tests?|__tests__)[/\\]/u;
 
-type FunctionNode =
-	| ESTree.ArrowFunctionExpression
-	| ESTree.FunctionDeclaration
-	| ESTree.FunctionExpression;
+/**
+ * `ESTree.Function` covers `FunctionDeclaration` and `FunctionExpression`; there is no
+ * `ESTree.FunctionDeclaration` or `ESTree.FunctionExpression` to name, and referring to one is a
+ * TS2694 that makes the union `any`, taking the type safety of every access below with it.
+ */
+type FunctionNode = ESTree.ArrowFunctionExpression | ESTree.Function;
 
 type CallLike = ESTree.CallExpression | ESTree.NewExpression;
 

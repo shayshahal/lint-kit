@@ -18,6 +18,9 @@ jobs:
           cache: pnpm
       - uses: astral-sh/setup-uv@v6
       - run: pnpm install --frozen-lockfile
+      # the oxlint plugins under tools/ are shipped to other repositories, and only tsc reads their
+      # types: node --test runs them the way oxlint does, with the types erased
+      - run: pnpm typecheck
       # before the JS tests: init.test.js runs the real flake8 and ruff from python/.venv
       - run: uv sync --frozen
         working-directory: python
