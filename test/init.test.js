@@ -410,6 +410,37 @@ test('an oxlint.config.ts is patched in place, and no .oxlintrc.json appears bes
 	assert.ok(after.startsWith('import { defineConfig } from "oxlint";\n'), 'the import is untouched');
 });
 
+test('an oxlint.config.mjs is patched in place, and no .oxlintrc.json appears beside it', async () => {
+	const mjs = ['export default {', '  rules: {', '    "no-console": "error", // keep this note', '  },', '};', ''].join('\n');
+	const dir = project('oxlint-mjs', {
+		'package.json': JSON.stringify({ devDependencies: { oxlint: '1.81.0' } }),
+		'oxlint.config.mjs': mjs,
+	});
+	assert.equal(await init(dir, '--sets', 'slop-patterns'), 0);
+	// oxlint auto-discovers four names and this is not one of them, so a .oxlintrc.json written
+	// beside it would sit in the repository unread: `oxlint -c ./oxlint.config.mjs` never looks
+	// at it
+	assert.ok(!fs.existsSync(path.join(dir, '.oxlintrc.json')), 'a JSON config must not appear');
+	const after = text(dir, 'oxlint.config.mjs');
+	assert.match(after, /jsPlugins: \[\{ name: "slop-patterns", specifier: "\.\/tools\/oxlint\/slop-patterns\/index\.ts" \}\]/);
+	assert.match(after, /"slop-patterns\/no-trivial-wrapper": "warn"/);
+	assert.match(after, /"no-console": "error", \/\/ keep this note/);
+});
+
+test('a CommonJS config is inserted into after module.exports =', () => {
+	const before = ['module.exports = {', '\trules: {', '\t\t"no-console": "error"', '\t}', '};', ''].join('\n');
+	assert.deepEqual(patchOxlint(before, './x.cjs', true).split('\n'), [
+		'module.exports = {',
+		'\tjsPlugins: [{ name: "slop-patterns", specifier: "./x.cjs" }],',
+		'\trules: {',
+		'\t\t"no-console": "error",',
+		'\t\t"slop-patterns/no-trivial-wrapper": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up',
+		'\t}',
+		'};',
+		'',
+	]);
+});
+
 test('a second run over a config that already has the plugin says so and adds nothing', async () => {
 	const dir = project('oxlint-again', {
 		'package.json': JSON.stringify({ devDependencies: { oxlint: '1.81.0' } }),
