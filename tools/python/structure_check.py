@@ -10,6 +10,13 @@ branch introduced, never on what was already there:
   new function over the limit, one that crossed it, or one already over it that grew. A nested
   function is named on its own (`outer.inner`), the way C901 names it, and its decisions also
   count towards the function enclosing it;
+- cognitive complexity, the same way and against the same limit, because it is a different
+  measure rather than a stricter one: it charges for nesting rather than counting branches, so
+  a function can cross it while its complexity stays under. Five `if`s one inside the next is
+  complexity 6 and cognitive 15. The number is scb-check's, so the gate and --score agree on
+  it. Gated on new functions and ones that crossed the limit only, never on the one already
+  over it that grew: a codebase can hold far more functions over the cognitive limit than over
+  the cyclomatic one, so holding all of them still is a much bigger ask;
 - duplication (jscpd, on the paths as they are and as they were at base): a clone that is not
   at base, and most of one of its copies is code the branch added. jscpd's own "new" alone
   would also count an old clone that grew by a token at its edge, as appending a function
@@ -45,6 +52,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tokenize
 import tomllib
 from dataclasses import dataclass
 
@@ -565,12 +573,58 @@ class Heavy:
         return self.complexity * math.sqrt(self.sloc)
 
 
-def function_sloc(lines: list[str], start: int, end: int) -> int:
-    """Non-blank, non-comment lines in a function's span. An approximation of scb-check's sloc,
-    which counts logical lines from a tree-sitter parse."""
-    return sum(
-        1 for line in lines[start - 1 : end] if line.strip() and not line.lstrip().startswith("#")
-    )
+# scb-check counts a line as SLOC when it carries a token that is not one of these, so a line
+# inside a multi-line string is not code even when the string is not a docstring.
+IGNORED_SLOC_TOKENS = frozenset(
+    {
+        tokenize.COMMENT,
+        tokenize.DEDENT,
+        tokenize.ENDMARKER,
+        tokenize.INDENT,
+        tokenize.NEWLINE,
+        tokenize.NL,
+    }
+)
+
+
+def _string_statement_lines(source: str) -> set[int]:
+    """The lines a standalone string statement owns, which scb-check drops from SLOC — so a
+    docstring is not code. `b` and `f` strings are values rather than prose and stay in, so a
+    long f-string still counts."""
+    owned: set[int] = set()
+    lines = source.splitlines()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Constant):
+            continue
+        if not isinstance(node.value.value, str) or node.end_lineno is None:
+            continue
+        # Only whitespace before the literal on its first line and after it on its last makes
+        # it a statement of its own rather than part of an expression. The offsets are UTF-8
+        # byte offsets, so the lines are compared as bytes.
+        first = lines[node.lineno - 1].encode("utf-8")
+        last = lines[node.end_lineno - 1].encode("utf-8")
+        if first[: node.col_offset].strip() or last[node.end_col_offset or 0 :].strip():
+            continue
+        owned.update(range(node.lineno, node.end_lineno + 1))
+    return owned
+
+
+def sloc_lines(source: str) -> frozenset[int]:
+    """The lines scb-check counts as SLOC. Not simply "non-blank and not a comment": a line
+    inside a multi-line string carries no token, and a docstring's lines are dropped even though
+    they do. The difference matters — it was 9 of the 19 functions --score lists on
+    tools/python — and this is the only way the masses there agree with the line above them.
+
+    Which lines a multi-line f-string occupies is the tokenizer's answer and moves between
+    Python versions. scb-check tokenizes with the same one, so the two agree on any of them."""
+    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+    carried = {token.start[0] for token in tokens if token.type not in IGNORED_SLOC_TOKENS}
+    return frozenset(carried - _string_statement_lines(source))
+
+
+def function_sloc(code_lines: frozenset[int], start: int, end: int) -> int:
+    """How many of a file's code lines fall inside a function's span."""
+    return sum(1 for line in code_lines if start <= line <= end)
 
 
 def heavy_functions(paths: list[str], limit: int) -> list[Heavy]:
@@ -588,19 +642,20 @@ def heavy_functions(paths: list[str], limit: int) -> list[Heavy]:
     for rel in python_files(root, paths).values():
         source = (root / rel).read_text(encoding="utf-8")
         try:
-            spans = {
-                node.lineno: (node.name, node.end_lineno or node.lineno)
-                for node in ast.walk(ast.parse(source))
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            }
-        except (SyntaxError, ValueError):
+            tree = ast.parse(source)
+            code = sloc_lines(source)
+        except (SyntaxError, ValueError, tokenize.TokenError):
             continue
-        lines = source.splitlines()
+        spans = {
+            node.lineno: (node.name, node.end_lineno or node.lineno)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
         for line, complexity, _cognitive in complexities(source).values():
             if complexity <= limit or line not in spans:
                 continue
             name, end = spans[line]
-            found.append(Heavy(rel, line, name, complexity, function_sloc(lines, line, end)))
+            found.append(Heavy(rel, line, name, complexity, function_sloc(code, line, end)))
     found.sort(key=lambda heavy: (-heavy.mass, heavy.path, heavy.line))
     return found
 
