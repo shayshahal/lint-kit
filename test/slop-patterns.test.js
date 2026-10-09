@@ -161,3 +161,9 @@ test('a nested override is not the root rules, and empty containers still wire t
 	assert.ok(patchedFindings('empty', empty).length >= 1);
 	assert.equal(patchOxlint(empty, specifier), empty, 'a re-run changes nothing');
 });
+
+test('a config that already ignores the plugin folder gains no second entry (#30)', () => {
+	const before = '{\n\t"ignorePatterns": ["tools/oxlint/slop-patterns/**"],\n\t"rules": {}\n}\n';
+	const after = patchOxlint(before, './tools/oxlint/slop-patterns/index.ts');
+	assert.equal(after.match(/tools\/oxlint\/slop-patterns\/\*\*/g).length, 1);
+});
