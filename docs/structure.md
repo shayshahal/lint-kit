@@ -101,7 +101,9 @@ the branch changed no `.py` file in them.
   complexity 6 and cognitive 15. The number is
   [scb-check](https://github.com/gabeorlanski/scb-check)'s, not Sonar's, so the gate and `--score`
   agree on it — a boolean operator costs one each, eleven `and`s is 11 where Sonar counts the run
-  as one, and `elif` and `else` each cost one plus the depth inside the `if`.
+  as one, and `elif` and `else` each cost one plus the depth inside the `if`. The tie to the
+  pinned scorer is kept by a differential test that runs in CI; see
+  [docs/adr-0001-cognitive-measure.md](adr-0001-cognitive-measure.md).
 
   It is gated on **new functions and functions that crossed the limit only**. The "already over
   it and grew" case is left to cyclomatic, and the reason is arithmetic rather than taste: on

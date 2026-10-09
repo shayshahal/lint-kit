@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import math
 import os
 import pathlib
 import shutil
@@ -9,6 +11,7 @@ import subprocess
 
 import pytest
 from structure_check import (
+    cognitive_of,
     complexities,
     function_sloc,
     heavy_functions,
@@ -554,6 +557,30 @@ NESTED_FOR_ELSE = (
     "            return 1\n"
 )
 WHILE_BOOL = "def f(a, b):\n    while a and b:\n        pass\n"
+# The remaining constructs the differential fixtures cover (#29): exception handling and a
+# function nested inside another.
+TRY_EXCEPT = (
+    "def f(x):\n"
+    "    try:\n"
+    "        if x:\n"
+    "            return 1\n"
+    "    except ValueError:\n"
+    "        if x:\n"
+    "            return 2\n"
+    "    return 0\n"
+)
+NESTED_FUNCTION = (
+    "def outer(x):\n"
+    "    if x:\n"
+    "        def inner(y):\n"
+    "            if y:\n"
+    "                return 1\n"
+    "            if y == 2:\n"
+    "                return 2\n"
+    "            return 0\n"
+    "        return inner(x)\n"
+    "    return 0\n"
+)
 # `if TYPE_CHECKING:` body is type-only; its `else` runs at runtime, so an import there is an
 # edge. Neither the cycle tests' fixtures nor the docstrings should need the reader to guess that.
 TYPE_CHECKING_ELSE = """\
@@ -667,3 +694,57 @@ def test_score_reports_scb_check_and_never_fails(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "scb-check==0.2.0" in out
     assert "app: verbosity" in out and "erosion" in out
+
+
+def _scb_check_symbols(tree: ast.AST) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """The functions scb-check reports: methods and module/class-level functions, but not a
+    function nested inside another — it folds that one's decisions into the enclosing symbol."""
+    found: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+
+    def walk(node: ast.AST, in_function: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if not in_function:
+                    found.append(child)
+                walk(child, True)
+            else:
+                walk(child, in_function)
+
+    walk(tree, False)
+    return found
+
+
+def _local_cognitive_mass(source: str) -> float:
+    """The mass scb-check's `total_cog_mass` sums for the source: `cog x sqrt(sloc)` per
+    symbol. `sloc` is the same measure `--score` reports heavy functions with."""
+    tree = ast.parse(source)
+    code = sloc_lines(source)
+    return sum(
+        cognitive_of(node)
+        * math.sqrt(function_sloc(code, node.lineno, node.end_lineno or node.lineno))
+        for node in _scb_check_symbols(tree)
+    )
+
+
+DIFFERENTIAL = [
+    ("a loop else at the limit (#25)", FOR_ELSE_AT_LIMIT),
+    ("five nested ifs", nested_ifs(5)),
+    ("a boolean chain over the limit", and_chain(12)),
+    ("a boolean chain under the limit", and_chain(10)),
+    ("exception handling", TRY_EXCEPT),
+    ("a function nested in another", NESTED_FUNCTION),
+]
+
+
+@pytest.mark.skipif(shutil.which("uvx") is None, reason="uvx is not installed")
+@pytest.mark.parametrize("_label,source", DIFFERENTIAL, ids=[label for label, _ in DIFFERENTIAL])
+def test_cognitive_matches_the_pinned_scb_check(_label, source, tmp_path, monkeypatch):
+    """The measure is scb-check's, so the local walk and the pinned scorer must agree on the mass
+    of the same source. A drift in any construct below moves a number and fails here. CI installs
+    uvx, so this is a gate there, not an optional manual check (#29)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "f.py").write_text(source)
+    report = scb_check_report("app")
+    assert report["total_functions"] == len(_scb_check_symbols(ast.parse(source)))
+    assert report["total_cog_mass"] == pytest.approx(_local_cognitive_mass(source))
