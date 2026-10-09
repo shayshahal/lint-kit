@@ -1,6 +1,6 @@
 {
 	"name": "lint-kit",
-	"version": "0.3.0",
+	"version": "0.4.0",
 	"description": "An installer for the deterministic tools a repository uses: ESLint rules for Svelte 5 / SvelteKit, i18n, Tailwind and error handling, FastAPI rules for flake8, type checkers, and pre-push checks that a branch leaves the code no worse than its base.",
 	"license": "MIT",
 	"type": "module",

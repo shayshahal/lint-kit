@@ -28,7 +28,7 @@ docstring.
 ## Run it
 
 ```sh
-npx github:shayshahal/lint-kit init          # or pin a release: github:shayshahal/lint-kit#v0.3.0
+npx github:shayshahal/lint-kit init          # or pin a release: github:shayshahal/lint-kit#v0.4.0
 ```
 
 With this repository private, use a URL your git can clone it with, e.g.
