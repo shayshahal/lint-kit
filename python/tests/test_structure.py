@@ -12,10 +12,12 @@ from structure_check import (
     complexities,
     function_sloc,
     heavy_functions,
+    imports_of,
     main,
     scb_check_report,
     score_lines,
     sloc_lines,
+    unquote_git_path,
 )
 
 BIN = pathlib.Path(__file__).resolve().parents[2] / "node_modules" / ".bin"
@@ -168,6 +170,27 @@ def test_deepening_nesting_that_was_already_over_the_cognitive_limit_passes(repo
     )
 
 
+def test_a_new_loop_else_function_at_the_cognitive_limit_passes(repo, capsys):
+    """#25: the loop else body was counted twice alongside the generic child sweep, so this
+    function scored 15 and failed a push scb-check scores at 10."""
+    setup, commit = repo
+    setup({"app/a.py": ""})
+    commit({"app/a.py": FOR_ELSE_AT_LIMIT})
+    assert run(capsys) == (
+        0,
+        "structure-check: 1 changed .py file(s), no new complexity, duplication or import cycles\n",
+    )
+
+
+def test_a_new_loop_else_function_over_the_cognitive_limit_still_fails(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": ""})
+    commit({"app/a.py": FOR_ELSE_OVER_LIMIT})
+    code, out = run(capsys)
+    assert code == 1
+    assert "f: cognitive complexity 15, new (max 10)" in out
+
+
 def test_growing_a_function_already_over_the_complexity_limit_still_fails(repo, capsys):
     """The asymmetry is deliberate: cyclomatic keeps the case, because far fewer functions are
     over it to begin with."""
@@ -234,6 +257,47 @@ def test_a_folder_that_is_new_on_the_branch_is_checked(repo, capsys):
     assert "api/a.py" in out
 
 
+UNICODE_PATH = "app/caf\u00e9.py"
+
+
+def test_a_unicode_filename_with_a_complex_function_fails(repo, capsys):
+    """#22: with the default core.quotePath git writes a non-ASCII pathname as
+    `"caf\\303\\251.py"`, which does not end in `.py`, so the file was skipped whole."""
+    setup, commit = repo
+    setup({"app/keep.py": ""})
+    commit({UNICODE_PATH: branchy("price", 12)})
+    code, out = run(capsys)
+    assert code == 1
+    assert f"{UNICODE_PATH}:1 price: complexity 13, new (max 10)" in out
+
+
+def test_a_unicode_filename_is_checked_with_quoting_disabled(repo, capsys):
+    setup, commit = repo
+    setup({"app/keep.py": ""})
+    subprocess.run(["git", "config", "core.quotePath", "false"], check=True, capture_output=True)
+    commit({UNICODE_PATH: branchy("price", 12)})
+    assert run(capsys)[0] == 1
+
+
+def test_a_clone_in_a_unicode_filename_is_attributed(repo, capsys):
+    """The `+++` header of a patch is quoted the same way, so the added lines that decide
+    whether a clone is new must be keyed by the unquoted name or nothing is attributed."""
+    setup, commit = repo
+    setup({"app/original.py": summed("left"), "app/keep.py": "x = 1\n"})
+    commit({UNICODE_PATH: summed("again")})
+    code, out = run(capsys)
+    assert code == 1
+    assert UNICODE_PATH in out
+
+
+def test_unquote_git_path_returns_the_name_the_bytes_spell():
+    assert unquote_git_path('"app/caf\\303\\251.py"') == UNICODE_PATH
+    assert unquote_git_path('"a\\tb.py"') == "a\tb.py"
+    assert unquote_git_path('"a\\\\b.py"') == "a\\b.py"
+    assert unquote_git_path('"plain.py"') == "plain.py"
+    assert unquote_git_path("plain.py") == "plain.py"
+
+
 def test_a_new_import_cycle_fails(repo, capsys):
     setup, commit = repo
     setup({"app/a.py": "from app.b import thing\n", "app/b.py": "thing = 1\n"})
@@ -285,6 +349,46 @@ def test_a_type_checking_import_does_not_close_a_cycle(repo, capsys):
         }
     )
     assert run(capsys)[0] == 0
+
+
+def test_a_runtime_else_of_a_type_checking_branch_closes_a_cycle(repo, capsys):
+    """#23: `if TYPE_CHECKING:` was skipped whole, else branch included, so the runtime import
+    in the else never became an edge and the cycle the branch closed went unseen."""
+    setup, commit = repo
+    setup({"app/a.py": TYPE_CHECKING_ELSE, "app/b.py": "thing = 1\n"})
+    commit({"app/b.py": "import app.a\n\nthing = 1\n"})
+    code, out = run(capsys)
+    assert code == 1
+    assert "import cycle" in out
+
+
+def test_typing_TYPE_CHECKING_else_import_closes_a_cycle(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": TYPING_TYPE_CHECKING_ELSE, "app/b.py": "thing = 1\n"})
+    commit({"app/b.py": "import app.a\n\nthing = 1\n"})
+    assert run(capsys)[0] == 1
+
+
+def test_a_runtime_else_cycle_the_base_already_had_passes(repo, capsys):
+    setup, commit = repo
+    cycled = {
+        "app/a.py": TYPE_CHECKING_ELSE,
+        "app/b.py": "import app.a\n\nthing = 1\n",
+    }
+    setup(cycled)
+    commit({**cycled, "app/c.py": "value = 1\n"})
+    assert run(capsys)[0] == 0
+
+
+def test_imports_of_skips_the_type_checking_body_but_keeps_its_else():
+    source = (
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    import app.types\n"
+        "else:\n"
+        "    import app.runtime\n"
+    )
+    assert imports_of(source) == [(1, 0, "typing", ["TYPE_CHECKING"]), (5, 0, "app.runtime", [])]
 
 
 SCB_REPORT = {
@@ -415,6 +519,59 @@ IF_ELSE_IF = (
     "def f(a, b):\n    if a:\n        return 1\n    else:\n        if b:\n            return 2\n"
 )
 FOR_WHILE_BREAK = "def f(xs):\n    for x in xs:\n        while x:\n            break\n"
+# A loop's `else` is a clause of the loop, not a second body: it costs one plus the depth
+# outside the loop, and its statements sit one deeper than that. It used to be walked twice.
+FOR_ELSE_PASS = "def f(xs):\n    for x in xs:\n        pass\n    else:\n        pass\n"
+WHILE_ELSE_PASS = "def f(xs):\n    while xs:\n        pass\n    else:\n        pass\n"
+ASYNC_FOR_ELSE_PASS = (
+    "async def f(xs):\n    async for x in xs:\n        pass\n    else:\n        pass\n"
+)
+FOR_ELSE_AT_LIMIT = (
+    "def f(xs):\n"
+    "    for x in xs:\n"
+    "        pass\n"
+    "    else:\n"
+    "        if xs:\n"
+    "            if len(xs):\n"
+    "                return 1\n"
+)
+FOR_ELSE_OVER_LIMIT = (
+    "def f(xs):\n"
+    "    for x in xs:\n"
+    "        pass\n"
+    "    else:\n"
+    "        if xs:\n"
+    "            if len(xs):\n"
+    "                if xs:\n"
+    "                    return 1\n"
+)
+NESTED_FOR_ELSE = (
+    "def f(xs):\n"
+    "    for x in xs:\n"
+    "        for y in xs:\n"
+    "            pass\n"
+    "        else:\n"
+    "            return 1\n"
+)
+WHILE_BOOL = "def f(a, b):\n    while a and b:\n        pass\n"
+# `if TYPE_CHECKING:` body is type-only; its `else` runs at runtime, so an import there is an
+# edge. Neither the cycle tests' fixtures nor the docstrings should need the reader to guess that.
+TYPE_CHECKING_ELSE = """\
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
+else:
+    import app.b
+"""
+TYPING_TYPE_CHECKING_ELSE = """\
+import typing
+
+if typing.TYPE_CHECKING:
+    pass
+else:
+    import app.b
+"""
 
 COGNITIVE = [
     # a boolean operator is one each, not one per run: eleven `and`s is eleven
@@ -431,6 +588,17 @@ COGNITIVE = [
     (IF_ELSE_IF, 6),
     # a loop, a nested loop, and a `break` inside it
     (FOR_WHILE_BREAK, 4),
+    # a loop else is a clause too, and is walked once: 1 + (1 + 0).
+    (FOR_ELSE_PASS, 3),
+    (WHILE_ELSE_PASS, 3),
+    (ASYNC_FOR_ELSE_PASS, 3),
+    # a boolean operator in the loop condition still costs one
+    (WHILE_BOOL, 2),
+    # nesting through a loop else: the outer loop 1, then the inner loop 1 + 1, then the inner
+    # else 1 + (1 + 1)
+    (NESTED_FOR_ELSE, 6),
+    # the #25 reproducer: 1 + 2 + 3 + 4, which is scb-check's 10 and not the double-counted 15
+    (FOR_ELSE_AT_LIMIT, 10),
 ]
 
 

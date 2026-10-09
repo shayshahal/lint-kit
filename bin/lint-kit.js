@@ -82,6 +82,13 @@ function write(file, text) {
 	const crlf = fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes('\r\n');
 	fs.writeFileSync(file, crlf ? text.replace(/\n/g, '\r\n') : text);
 }
+
+/** Write a lefthook script body under `.lefthook/<hook>/`, where lefthook runs scripts from. */
+function writeHookScript(repo, hook, name, body) {
+	const file = path.join(repo, '.lefthook', hook, name);
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	write(file, body);
+}
 const say = (msg) => console.log(msg);
 const posix = (p) => p.replace(/\\/g, '/');
 /** `to` relative to `from`, with slashes; '.' for the same folder. */
@@ -182,6 +189,20 @@ function stepNames(base, list) {
 
 // ── choosing ────────────────────────────────────────────────────────────────────
 
+/** The text of every lefthook script under `.lefthook/`: the fallow body is no longer in
+ * `lefthook.yml`, so a re-run has to read it to know the set is already installed. */
+function hookScriptText(repo) {
+	const root = path.join(repo, '.lefthook');
+	if (!fs.existsSync(root)) return '';
+	const walk = (dir) =>
+		fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+			entry.isDirectory()
+				? walk(path.join(dir, entry.name))
+				: [read(path.join(dir, entry.name)) ?? ''],
+		);
+	return walk(root).join('\n');
+}
+
 /** What is there already, so a re-run keeps it on. */
 function installed(repo, projects) {
 	const hooks = read(lefthookFile(repo)?.file) ?? '';
@@ -191,7 +212,7 @@ function installed(repo, projects) {
 		oxlint: (set) => projects.js.some((p) => (read(oxlintConfig(p.dir)) ?? '').includes(set)),
 		fastapi: projects.py.some((p) => FASTAPI_TABLE.test(p.text)),
 		typecheck: /svelte-check --tsgo|uv run pyright/.test(hooks),
-		structure: /structure_check\.py --base|fallow audit --base/.test(hooks),
+		structure: /structure_check\.py --base|fallow audit --base/.test(`${hooks}\n${hookScriptText(repo)}`),
 	};
 }
 
@@ -460,47 +481,118 @@ function oxlintSetsFor(project, sets) {
 }
 
 /** The index of the quote closing the string that opens at `i`. */
-function skipString(text, i) {
+function skipString(text, i, quote = '"') {
 	for (let j = i + 1; j < text.length; j++) {
 		if (text[j] === '\\') j++;
-		else if (text[j] === '"') return j;
+		else if (text[j] === quote) return j;
 	}
 	return text.length;
 }
 
-/** The span of the value of a top-level `key:` in an oxlint config, or null. In JSONC the key
- * is quoted; in a TypeScript config it is usually bare, so the quotes are optional here. */
-function jsoncValue(text, key) {
-	const found = new RegExp(`^[ \\t]*"?${key}"?[ \\t]*:[ \\t]*`, 'm').exec(text);
-	if (!found) return null;
-	const start = found.index + found[0].length;
-	const open = text[start];
-	if (open !== '{' && open !== '[') return null;
+/** Skip spaces, tabs and the two JavaScript comment forms, and return where the next token is. */
+function skipTrivia(text, i) {
+	while (i < text.length) {
+		const c = text[i];
+		if (c === ' ' || c === '\t' || c === '\n' || c === '\r') i++;
+		else if (c === '/' && text[i + 1] === '/') {
+			const end = text.indexOf('\n', i);
+			if (end < 0) return text.length;
+			i = end;
+		} else if (c === '/' && text[i + 1] === '*') {
+			const end = text.indexOf('*/', i + 1);
+			if (end < 0) return text.length;
+			i = end + 2;
+		} else return i;
+	}
+	return i;
+}
+
+/** The index of the value's last character that starts at `i`: the closing quote of a string,
+ * the bracket that matches an object or array, or the last character of a primitive. */
+function skipValue(text, i) {
+	const open = text[i];
+	if (open === '"' || open === "'") return skipString(text, i, open);
+	if (open !== '{' && open !== '[') {
+		let j = i;
+		while (j < text.length && !',}]'.includes(text[j])) j++;
+		return j - 1;
+	}
 	const close = open === '{' ? '}' : ']';
 	let depth = 0;
-	for (let i = start; i < text.length; i++) {
+	for (; i < text.length; i++) {
 		const c = text[i];
-		if (c === '"') i = skipString(text, i);
-		else if (c === '/' && text[i + 1] === '/') i = text.indexOf('\n', i);
-		else if (c === '/' && text[i + 1] === '*') i = text.indexOf('*/', i + 1) + 1;
-		else if (c === open && ++depth === 1) continue;
-		else if (c === close && --depth === 0) return { start, end: i };
-		if (i < 0 || i >= text.length) break;
+		if (c === '"' || c === "'") i = skipString(text, i, c);
+		else if (c === '/' && text[i + 1] === '/') {
+			const end = text.indexOf('\n', i);
+			i = end < 0 ? text.length : end;
+		} else if (c === '/' && text[i + 1] === '*') {
+			const end = text.indexOf('*/', i + 1);
+			if (end < 0) return text.length - 1;
+			i = end + 1;
+		} else if (c === open) depth++;
+		else if (c === close && --depth === 0) return i;
+	}
+	return text.length - 1;
+}
+
+/** The indentation of the line `pos` sits on. */
+const lineIndent = (text, pos) => /^[ \t]*/.exec(text.slice(text.lastIndexOf('\n', pos) + 1))[0];
+
+/** The span of the value of a member `key` of the object that opens at `open`, or null.
+ *
+ * Only depth-1 members count: a `rules` inside an `overrides` entry is not the config's root
+ * `rules`, and a line-based match used to take the first one anywhere in the file. In JSONC the
+ * key is quoted; in a TypeScript config it is usually bare, so the quotes are optional. */
+function jsoncValue(text, key, open) {
+	if (open < 0 || text[open] !== '{') return null;
+	let i = open + 1;
+	while (i < text.length) {
+		i = skipTrivia(text, i);
+		if (text[i] === '}') return null;
+		let name;
+		if (text[i] === '"' || text[i] === "'") {
+			const end = skipString(text, i, text[i]);
+			name = text.slice(i + 1, end);
+			i = end + 1;
+		} else {
+			const bare = /^[A-Za-z_$][\w$]*/.exec(text.slice(i));
+			if (!bare) return null;
+			name = bare[0];
+			i += bare[0].length;
+		}
+		i = skipTrivia(text, i);
+		if (text[i] !== ':') return null;
+		const start = skipTrivia(text, i + 1);
+		const end = skipValue(text, start);
+		if (name === key) return { start, end };
+		i = skipTrivia(text, end + 1);
+		if (text[i] === ',') i++;
 	}
 	return null;
 }
 
 /**
  * Add `entry` as the last member under the top-level `key`, leaving comments where they are.
- * Null when the key is absent. The insertion stays line-based so a trailing `//` comment on the
- * previous member keeps its place and the comma goes before it.
+ * Null when the key is absent. Comment-only and blank lines are not members, so the comma goes
+ * after the last real one rather than in front of a comment; an empty container in either layout
+ * takes the entry directly. `open` is the object `jsoncValue` scans.
  */
-function jsoncAppend(text, key, entry) {
-	const value = jsoncValue(text, key);
+function jsoncAppend(text, key, entry, open) {
+	const value = jsoncValue(text, key, open);
 	if (value === null) return null;
 	const inner = text.slice(value.start + 1, value.end);
+	if (inner.trim() === '') {
+		if (!inner.includes('\n')) {
+			const before = text.slice(0, value.end).replace(/[ \t\r]+$/, '');
+			return `${before}${entry}${text.slice(value.end)}`;
+		}
+		// An empty multiline container: the entry sits one level in from the brackets, so the
+		// closing bracket keeps its own line.
+		const indent = lineIndent(text, value.start);
+		return `${text.slice(0, value.start + 1)}\n${indent}\t${entry}\n${indent}${text.slice(value.end)}`;
+	}
 	if (!inner.includes('\n')) {
-		const sep = inner.trim() === '' || inner.trimEnd().endsWith(',') ? '' : ', ';
+		const sep = inner.trimEnd().endsWith(',') ? '' : ', ';
 		const before = text.slice(0, value.end).replace(/[ \t\r]+$/, '');
 		return `${before}${sep}${entry}${text.slice(value.end)}`;
 	}
@@ -509,10 +601,12 @@ function jsoncAppend(text, key, entry) {
 	while (end > value.start) {
 		const start = text.lastIndexOf('\n', end - 1) + 1;
 		if (start <= value.start) return null;
-		if (text.slice(start, end).trim() !== '') {
-			const line = text.slice(start, end);
+		const line = text.slice(start, end);
+		const comment = line.indexOf('//');
+		// A comment-only line is not a member: inserting after it would put the comma in front of
+		// the comment, on a line of its own, and oxlint rejects that. Keep looking backwards.
+		if ((comment === -1 ? line : line.slice(0, comment)).trim() !== '') {
 			const indent = /^[ \t]*/.exec(line)[0];
-			const comment = line.indexOf('//');
 			const head = (comment === -1 ? line : line.slice(0, comment)).replace(/[ \t\r]+$/, '');
 			const tail = comment === -1 ? '' : ` ${line.slice(comment)}`;
 			const sep = head.endsWith(',') ? '' : ',';
@@ -525,17 +619,20 @@ function jsoncAppend(text, key, entry) {
 
 /** Add a whole top-level `key: value` to a config object that has no such key. */
 function jsoncAddKey(text, key, value, open, ts) {
-	if (jsoncValue(text, key) !== null || open < 0) return null;
+	if (jsoncValue(text, key, open) !== null || open < 0) return null;
 	const rest = text.slice(open + 1);
 	// Whatever followed the brace keeps its own line, so a key added to a one-line object is
-	// still found by the next `^key:` lookup rather than ending up after it on that line.
+	// still a depth-1 member for the next lookup rather than sitting after it on that line.
 	const tail = rest.startsWith('\n') ? rest : `\n\t${rest.replace(/^[ \t]+/, '')}`;
 	return `${text.slice(0, open + 1)}\n\t${keyText(key, ts)}: ${value},${tail}`;
 }
 
 /** Where the top-level config object opens. */
 function configObjectStart(text, ts) {
-	if (!ts) return text.indexOf('{');
+	if (!ts) {
+		const start = skipTrivia(text, 0);
+		return text[start] === '{' ? start : text.indexOf('{');
+	}
 	// A module config wraps the object, and `import { defineConfig }` puts a brace before it, so
 	// the first `{` in the file is the wrong one. `.js`, `.mjs` and `.cts` default-export it;
 	// `.cjs`, and a `.js` in a CommonJS package, assign it to `module.exports`.
@@ -588,14 +685,15 @@ const ignoreEntry = (specifier) => {
 export function patchOxlint(text, specifier, ts = false) {
 	if (text.includes('slop-patterns')) return text;
 	const add = (body, key, entry, array) => {
-		const found = jsoncValue(body, key);
-		// An entry placed inside a one-line object must carry no `//` comment: everything after
-		// it on that line — including the closing brace — would become part of the comment.
-		const inline = found !== null && !body.slice(found.start + 1, found.end).includes('\n');
+		const open = configObjectStart(body, ts);
+		const found = jsoncValue(body, key, open);
+		// An entry carries its `//` comment only where it lands on a line of its own: with anything
+		// after it on the line — a closing brace, another member — that becomes the comment.
+		const inline = found === null || !body.slice(found.start + 1, found.end).includes('\n');
 		const value = typeof entry === 'function' ? entry(!inline) : entry;
 		return (
-			jsoncAppend(body, key, value) ??
-			jsoncAddKey(body, key, array ? `[${value}]` : `{ ${value} }`, configObjectStart(body, ts), ts)
+			jsoncAppend(body, key, value, open) ??
+			jsoncAddKey(body, key, array ? `[${value}]` : `{ ${value} }`, open, ts)
 		);
 	};
 	const withPlugins = add(text, 'jsPlugins', pluginEntry(specifier, ts), true);
@@ -676,6 +774,20 @@ function addStep(doc, hook, name, value, runs, only) {
 	const commands = doc.getIn([hook, 'commands']);
 	if (commands.flow && !commands.items.length) commands.flow = false;
 	doc.setIn([hook, 'commands', name], doc.createNode(value));
+}
+
+/** Add a lefthook script unless its file is already there, or a command already runs the tool.
+ * Returns whether a script of this name is ours, so the caller writes the body only then. */
+function addScript(doc, hook, name, value, runs) {
+	if (doc.hasIn([hook, 'scripts', name])) return true;
+	const commands = doc.getIn([hook, 'commands'])?.toJSON() ?? {};
+	if (runs && Object.values(commands).some((step) => runs.test(step?.run ?? ''))) return false;
+	if (!doc.hasIn([hook, 'scripts'])) doc.setIn([hook, 'scripts'], doc.createNode({}));
+	// `scripts: {}` would otherwise get every script on one line
+	const scripts = doc.getIn([hook, 'scripts']);
+	if (scripts.flow && !scripts.items.length) scripts.flow = false;
+	doc.setIn([hook, 'scripts', name], doc.createNode(value));
+	return true;
 }
 
 /** Apply `edit(doc)` to lefthook.yml, if the repository has one. */
@@ -946,9 +1058,17 @@ function writeStructure(repo, projects, doc, base, args) {
 			say(`✔ ${where(p)}: package.json script ${BRIEF_SCRIPT}, where a reviewer should look (always exits 0)`);
 		}
 		const dir = lefthookRoot(p.rel);
-		const glob = [everywhere(doc, dir, '*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}'), `${dir}package.json`, `${dir}.fallowrc.json`];
-		const step = { glob, ...(dir ? { root: dir } : {}), env: RELATIVE_WORKTREES_OFF, run: `${p.exec} fallow audit --base ${base}` };
-		addStep(doc, 'pre-push', fallowNames.get(p), step, /\bfallow audit\b/, roots.length === 1);
+		// A command is skipped when the push's changed set has no file left after the glob filter;
+		// a deletion-only push leaves none, and the dead code it orphaned goes unchecked. A lefthook
+		// script is not file-filtered, so it runs either way.
+		const name = `${fallowNames.get(p)}.sh`;
+		const run = `${p.exec} fallow audit --base ${base}`;
+		const body = `#!/usr/bin/env bash\nset -e\n${dir ? `cd ${JSON.stringify(dir)} && ` : ''}${run}\n`;
+		// Only when the script is ours: a repository that already runs fallow in a command keeps
+		// that policy and gains no stray file.
+		if (addScript(doc, 'pre-push', name, { runner: 'bash', env: RELATIVE_WORKTREES_OFF }, /\bfallow audit\b/)) {
+			writeHookScript(repo, 'pre-push', name, body);
+		}
 	}
 	const pyNames = stepNames('python-structure', projects.py);
 	for (const py of projects.py) {

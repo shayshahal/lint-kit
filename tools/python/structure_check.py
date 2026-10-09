@@ -24,8 +24,9 @@ branch introduced, never on what was already there:
   repository: 65s on JewelryX, against under a second for the paths alone.)
 - import cycles, over the modules the paths hold: a cycle none of the base's cycles contains.
   Only the imports that run when a module is imported count, so an import inside a function
-  and one under `if TYPE_CHECKING:` are not edges — both are how a cycle is deliberately
-  broken, and reporting them would be advice to undo the fix.
+  and one in the body of `if TYPE_CHECKING:` are not edges — both are how a cycle is
+  deliberately broken, and reporting them would be advice to undo the fix. An `else` branch
+  of `if TYPE_CHECKING:` does run, so imports there are edges like any other.
 
 --score is the other mode, and it never fails: it runs scb-check (uvx scb-check==0.2.0) and
 prints the two composites SlopCodeBench measures, verbosity and erosion, with what each is
@@ -88,15 +89,67 @@ def git(*args: str) -> str:
     return done.stdout
 
 
+def unquote_git_path(path: str) -> str:
+    """A pathname git printed C-quoted back as the name it stands for.
+
+    With the default `core.quotePath`, `git diff` writes a pathname holding a non-ASCII or
+    control byte as `"caf\\303\\251.py"`, so it no longer ends in `.py` and every structure
+    check that looks for `.py` silently skips it. `-z` avoids the quoting for name lists; a
+    patch's `+++` header has no such form, so it is unquoted here.
+    """
+    if len(path) < 2 or not (path.startswith('"') and path.endswith('"')):
+        return path
+    raw = bytearray()
+    i, end = 1, len(path) - 1
+    while i < end:
+        char = path[i]
+        if char != "\\":
+            raw += char.encode("utf-8")
+            i += 1
+        elif path[i + 1] in "01234567":
+            j = i + 1
+            while j < end and j < i + 4 and path[j] in "01234567":
+                j += 1
+            raw.append(int(path[i + 1 : j], 8))
+            i = j
+        else:
+            raw.append(
+                {
+                    "a": 7,
+                    "b": 8,
+                    "t": 9,
+                    "n": 10,
+                    "v": 11,
+                    "f": 12,
+                    "r": 13,
+                    '"': 34,
+                    "\\": 92,
+                }.get(path[i + 1], ord(path[i + 1]))
+            )
+            i += 2
+    return raw.decode("utf-8", "surrogateescape")
+
+
 def changed_python(merge_base: str, paths: list[str]) -> list[tuple[str | None, str]]:
-    """(path at base or None, path now) for each .py file added, changed or renamed since base."""
-    out = git("diff", "--name-status", "-M", "--relative", merge_base, "--", *paths)
+    """(path at base or None, path now) for each .py file added, changed or renamed since base.
+
+    `-z` because the default human-readable form C-quotes a non-ASCII pathname, and the quoted
+    form does not end in `.py`: the file is skipped as if it were not Python at all.
+    """
+    out = git("diff", "--name-status", "-M", "--relative", "-z", merge_base, "--", *paths)
     files = []
-    for line in out.splitlines():
-        status, *names = line.split("\t")
-        if not names[-1].endswith(".py") or status[0] not in "AMR":
-            continue
-        files.append((None if status[0] == "A" else names[0], names[-1]))
+    fields = out.split("\0")
+    i = 0
+    while i < len(fields) and fields[i]:
+        status = fields[i]
+        if status[0] in "RC":
+            old, new = fields[i + 1], fields[i + 2]
+            i += 3
+        else:
+            old = new = fields[i + 1]
+            i += 2
+        if new.endswith(".py") and status[0] in "AMR":
+            files.append((None if status[0] == "A" else old, new))
     return files
 
 
@@ -107,7 +160,10 @@ def added_lines(merge_base: str, paths: list[str]) -> dict[str, set[int]]:
     lines: set[int] = set()
     for line in out.splitlines():
         if line.startswith("+++ "):
-            lines = added.setdefault(line[6:] if line.startswith("+++ b/") else line[4:], set())
+            name = unquote_git_path(line[4:])
+            if name.startswith("b/"):
+                name = name[2:]
+            lines = set() if name == "/dev/null" else added.setdefault(name, set())
         elif line.startswith("@@"):
             start, _, count = line.split(" ")[2][1:].partition(",")
             lines.update(range(int(start), int(start) + int(count or 1)))
@@ -161,8 +217,11 @@ def _if_cognitive(node: ast.If, nesting: int) -> int:
 
 def _loop_cognitive(node: ast.For | ast.AsyncFor | ast.While, nesting: int) -> int:
     total = 1 + nesting
+    # The else body is walked by the branch below, at its own depth; the generic child sweep
+    # here must not also visit it, or every loop else is counted twice.
+    else_body = {id(statement) for statement in node.orelse}
     for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.expr, ast.stmt)):
+        if isinstance(child, (ast.expr, ast.stmt)) and id(child) not in else_body:
             total += cognitive_of_node(child, nesting + 1)
     if node.orelse:
         total += 1 + (nesting + 1)
@@ -404,7 +463,7 @@ def imports_of(source: str) -> list[tuple[int, int, str, list[str]]]:
 
     An import inside a function runs when that function is called, not when the module loads,
     so it does not close a cycle at import time — it is the usual way to break one. The same
-    goes for `if TYPE_CHECKING:`.
+    goes for the body of `if TYPE_CHECKING:`; its `else` does run, so imports there are edges.
     """
     try:
         tree = ast.parse(source)
@@ -417,25 +476,32 @@ def imports_of(source: str) -> list[tuple[int, int, str, list[str]]]:
             isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
         )
 
+    def handle(child: ast.AST) -> None:
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            return
+        if isinstance(child, ast.If) and type_only(child.test):
+            # The body is type-only and never runs, but `else` is the runtime half: an import
+            # there is an edge. Walk the else branch, one statement at a time, so an `import`
+            # nested in its own `if` is still reached while a function body is still skipped.
+            for statement in child.orelse:
+                handle(statement)
+        elif isinstance(child, ast.Import):
+            found.extend((child.lineno, 0, alias.name, []) for alias in child.names)
+        elif isinstance(child, ast.ImportFrom):
+            found.append(
+                (
+                    child.lineno,
+                    child.level or 0,
+                    child.module or "",
+                    [a.name for a in child.names],
+                )
+            )
+        else:
+            visit(child)
+
     def visit(node: ast.AST) -> None:
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                continue
-            if isinstance(child, ast.If) and type_only(child.test):
-                continue
-            if isinstance(child, ast.Import):
-                found.extend((child.lineno, 0, alias.name, []) for alias in child.names)
-            elif isinstance(child, ast.ImportFrom):
-                found.append(
-                    (
-                        child.lineno,
-                        child.level or 0,
-                        child.module or "",
-                        [a.name for a in child.names],
-                    )
-                )
-            else:
-                visit(child)
+            handle(child)
 
     visit(tree)
     return found
