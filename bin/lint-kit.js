@@ -39,7 +39,7 @@ export const SETS = {
 	'untranslated-text': { kind: 'eslint', about: 'text users read comes from the message catalogue' },
 	'tailwind-patterns': { kind: 'eslint', about: 'Tailwind / shadcn class conventions (vh, transition-all, dark:, dialog titles)' },
 	'error-handling': { kind: 'eslint', about: 'catch blocks that drop, only log, or stringify the error' },
-	'slop-patterns': { kind: 'oxlint', about: 'a function that only forwards its arguments to another (oxlint)' },
+	'slop-patterns': { kind: 'oxlint', about: 'a function that only forwards its arguments, and assertions that discard a type (oxlint)' },
 	fastapi: { kind: 'python', about: 'FastAPI rules ruff lacks, as a flake8 plugin (FAP001-017)' },
 	typecheck: { kind: 'typecheck', about: 'svelte-check --tsgo and pyright before each push (lefthook)' },
 	structure: {
@@ -617,7 +617,10 @@ function jsoncAppend(text, key, entry, open) {
 	if (!inner.includes('\n')) {
 		const sep = inner.trimEnd().endsWith(',') ? '' : ', ';
 		const before = text.slice(0, value.end).replace(/[ \t\r]+$/, '');
-		return `${before}${sep}${entry}${text.slice(value.end)}`;
+		// A space before the closing brace is kept, so adding a second entry to a one-line object
+		// does not close it up (`{ "a": 1, "b": 2 }`, not `{ "a": 1, "b": 2}`).
+		const space = text.slice(before.length, value.end) === '' ? '' : ' ';
+		return `${before}${sep}${entry}${space}${text.slice(value.end)}`;
 	}
 	const lineStart = text.lastIndexOf('\n', value.end) + 1;
 	let end = lineStart - 1;
@@ -678,9 +681,15 @@ const pluginEntry = (specifier, ts) =>
 		? `{ name: "slop-patterns", specifier: ${JSON.stringify(specifier)} }`
 		: `{ "name": "slop-patterns", "specifier": ${JSON.stringify(specifier)} }`;
 
-/** The `rules` entry, annotated the way the configs in the wild are. */
-const ruleEntry = (comment) =>
-	`"slop-patterns/no-trivial-wrapper": "warn"${comment ? ' // TODO(slop-patterns-error): raise once the findings are cleaned up' : ''}`;
+/**
+ * The set's rules, each at `warn`: any of them can be right about a framework shape the rule
+ * cannot see, so none of them gates a hook (docs/enforcement.md).
+ */
+const SLOP_RULES = ['no-trivial-wrapper', 'no-chained-type-assertions'];
+
+/** One `rules` entry, annotated the way the configs in the wild are. */
+const ruleEntry = (name, comment) =>
+	`"slop-patterns/${name}": "warn"${comment ? ' // TODO(slop-patterns-error): raise once the findings are cleaned up' : ''}`;
 
 /**
  * The plugin's own folder, as an ignore pattern, or null when the config cannot name it. The
@@ -734,8 +743,13 @@ export function patchOxlint(text, specifier, ts = false) {
 	};
 	const withPlugins = add(text, 'jsPlugins', pluginEntry(specifier, ts), true);
 	if (withPlugins === null) return text;
-	const withRules = add(withPlugins, 'rules', ruleEntry, false);
-	if (withRules === null) return text;
+	// One call per rule, so each entry lands with the indentation the config already uses.
+	let withRules = withPlugins;
+	for (const name of SLOP_RULES) {
+		const next = add(withRules, 'rules', (comment) => ruleEntry(name, comment), false);
+		if (next === null) return text;
+		withRules = next;
+	}
 	const ignore = ignoreEntry(specifier);
 	if (ignore === null) return withRules;
 	return addIgnore(withRules, ignore, configObjectStart(withRules, ts), ts) ?? withRules;
@@ -759,7 +773,7 @@ function writeOxlint(repo, project, wanted) {
 		// A fresh config names the vendored folder too, so the repository does not lint the tool it
 		// just had copied in. `ignoreEntry` is null when the config cannot safely name it.
 		const ignore = ignoreEntry(specifier);
-		const fresh = `{\n\t"jsPlugins": [\n\t\t{ "name": "slop-patterns", "specifier": ${JSON.stringify(specifier)} }\n\t],\n\t"rules": {\n\t\t"slop-patterns/no-trivial-wrapper": "warn"\n\t}${ignore ? `,\n\t"ignorePatterns": [${ignore}]` : ''}\n}\n`;
+		const fresh = `{\n\t"jsPlugins": [\n\t\t{ "name": "slop-patterns", "specifier": ${JSON.stringify(specifier)} }\n\t],\n\t"rules": {\n${SLOP_RULES.map((name) => `\t\t${ruleEntry(name, false)}`).join(',\n')}\n\t}${ignore ? `,\n\t"ignorePatterns": [${ignore}]` : ''}\n}\n`;
 		write(path.join(project.dir, '.oxlintrc.json'), fresh);
 		say(`✔ ${where(project)}: .oxlintrc.json (new, with the slop-patterns plugin)`);
 		return;
@@ -788,7 +802,7 @@ function writeOxlint(repo, project, wanted) {
 	say(
 		`→ ${where(project)}: ${name} was left alone. Add\n` +
 			`    jsPlugins: [{ name: 'slop-patterns', specifier: '${specifier}' }]\n` +
-			`    rules: { 'slop-patterns/no-trivial-wrapper': 'warn' }`,
+			`    rules: { ${SLOP_RULES.map((r) => `'slop-patterns/${r}': 'warn'`).join(', ')} }`,
 	);
 }
 

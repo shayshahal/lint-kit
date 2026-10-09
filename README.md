@@ -15,7 +15,7 @@ the repository owns the copies, and only whoever runs `init` needs access here.
 | `untranslated-text` | ESLint | text users read comes from the message catalogue (Paraglide `m.key()`) |
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
 | `error-handling` | ESLint | catch blocks (and promise `.catch()`) that drop the error, only log it, return a fixed default, or turn it into a string |
-| `slop-patterns` | oxlint | a named function whose whole body forwards its arguments to another function |
+| `slop-patterns` | oxlint | a named function whose whole body forwards its arguments to another function, and two assertions in a row that discard a type |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
 | `structure` | fallow, `structure_check.py` | lefthook pre-push steps that fail when a branch adds complexity, duplication, an import cycle or dead code its base did not have, and never on what was already there ([docs](docs/structure.md)) |
@@ -232,6 +232,14 @@ receiver (`new Intl.NumberFormat(…).format`). It leaves test files alone — a
 and `set` forward to a `Map` because they must mirror the real signature — and `src/params/<name>.ts`,
 where SvelteKit names the matchers and calls them from the router. A file beside that folder
 (`src/params.ts`) is not a matcher and is still reported.
+
+`no-chained-type-assertions` reports two or more assertions nested in one expression
+(`input as unknown as User`, `<Config><unknown>input`). The first discards everything the value's
+type said, so nothing downstream is checked and the second is a claim no one verified. A single
+assertion passes, and so does a chain of nothing but `as const`. It leaves test files alone too,
+where a double has to stand in for a type it is not (`new FakeXHR() as unknown as XMLHttpRequest`).
+Over the same 1,431 files of a SvelteKit monorepo it reports 43; `no-trivial-wrapper` reports 38 on
+that tree.
 
 The set lands at `warn`. Rules are checked with `node --test test/slop-patterns.test.js`.
 

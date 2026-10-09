@@ -38,7 +38,7 @@ Reported, but never fails a hook `init` installs.
 | Check | Where | Why it does not gate |
 | --- | --- | --- |
 | fallow `"warn"` rules (`unused-exports`, `unused-types`, `duplicate-exports`, `unused-enum-members`, `unused-class-members`) | pre-push | a signal worth reading, with legitimate exceptions |
-| `slop-patterns/no-trivial-wrapper` at `warn` | the repository's own oxlint config | a forwarding function can be required by a framework or mirror an interface; #20 is one such wrapper |
+| `slop-patterns/no-trivial-wrapper` and `slop-patterns/no-chained-type-assertions` at `warn` | the repository's own oxlint config | a forwarding function can be required by a framework or mirror an interface, and a test double has to stand in for a type it is not; #20 is one such wrapper |
 | `pnpm structure:brief` (`fallow review --brief`) | a script the reviewer runs | a "where to look" brief; it always exits 0 |
 
 Because the installed ESLint sets use `error`, a repository that downgrades one rule to `warn`
