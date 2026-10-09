@@ -678,6 +678,19 @@ const ignoreEntry = (specifier) => {
 };
 
 /**
+ * Add `ignore` (a JSON string) to the config's `ignorePatterns`, creating the array if absent.
+ * Null when there is nothing to add: the pattern is already there (a quoted form counts too) or
+ * the config's shape cannot take it. One place, so the fresh and upgrade paths cannot drift.
+ */
+function addIgnore(text, ignore, open, ts) {
+	if (ignore === null || text.includes(ignore.slice(1, -1))) return null;
+	if (jsoncValue(text, 'ignorePatterns', open) !== null) {
+		return jsoncAppend(text, 'ignorePatterns', ignore, open);
+	}
+	return jsoncAddKey(text, 'ignorePatterns', `[${ignore}]`, open, ts);
+}
+
+/**
  * Add the slop-patterns plugin to an oxlint config, in place. Rewriting the file would drop the
  * comments and finding counts these configs are hand-annotated with, so this only inserts.
  * `ts` is for `oxlint.config.ts` / `.mts`, whose keys are bare and whose object is wrapped.
@@ -701,7 +714,8 @@ export function patchOxlint(text, specifier, ts = false) {
 	const withRules = add(withPlugins, 'rules', ruleEntry, false);
 	if (withRules === null) return text;
 	const ignore = ignoreEntry(specifier);
-	return ignore === null ? withRules : (add(withRules, 'ignorePatterns', ignore, true) ?? withRules);
+	if (ignore === null) return withRules;
+	return addIgnore(withRules, ignore, configObjectStart(withRules, ts), ts) ?? withRules;
 }
 
 /**
@@ -711,14 +725,7 @@ export function patchOxlint(text, specifier, ts = false) {
  * nothing to add.
  */
 export function patchOxlintIgnore(text, specifier, ts = false) {
-	const ignore = ignoreEntry(specifier);
-	// The unquoted value, so a TypeScript config's single-quoted pattern counts as present too.
-	if (ignore === null || text.includes(ignore.slice(1, -1))) return null;
-	const open = configObjectStart(text, ts);
-	if (jsoncValue(text, 'ignorePatterns', open) !== null) {
-		return jsoncAppend(text, 'ignorePatterns', ignore, open);
-	}
-	return jsoncAddKey(text, 'ignorePatterns', `[${ignore}]`, open, ts);
+	return addIgnore(text, ignoreEntry(specifier), configObjectStart(text, ts), ts);
 }
 
 /** Wire the oxlint sets into one project's config. */
