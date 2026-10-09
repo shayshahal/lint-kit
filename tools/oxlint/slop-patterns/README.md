@@ -70,6 +70,20 @@ Measured over the same monorepo (742 Svelte, 7,217 TypeScript files):
 
 | Rule | Findings | Why it is not here |
 | --- | --- | --- |
-| single-use function | 1,337 | Almost all are `handle`, `reroute`, `health_check`, route handlers and hooks a framework calls by name. Delta-gating does not help: every new route adds one. |
+| single-use function | 1,337 | Almost all are `handle`, `reroute`, `health_check`, route handlers and hooks a framework calls by name. |
 | single-method class | 0 | Every candidate was a Starlette middleware (`dispatch`) or an exception class (`__init__`), both required shapes. |
 | verbosity, erosion, clone %, maintainability index | — | Whole-submission scores from a pinned binary, not local patterns, and a fixed threshold over a whole repository is what `structure` compares against its base instead. |
+
+That first count is over a whole repository, which is not the population a rule fires on: a rule
+sees new code. Running it over the 23 merges that touched Python in JewelryX's backend, a
+function added by a branch and called at most twice is **4 of 15** short new functions, in **3 of
+23** merges — the same order as the complexity gate, so the delta does help, and the earlier
+"every new route adds one" was wrong: routes are decorated, and a rule excludes decorated
+functions.
+
+What the four were is why it is still not here. Two are `is_in_catalog` and
+`in_catalog_listing_ids`, one call site each, whose names carry the domain meaning and whose
+bodies await a repository call and so cannot be inlined readably. One is `_user_items`, shared by
+a find and a count query, and **two call sites is what a helper is for**, not evidence of waste.
+One had been deleted since. Judging them needs the call site, which a rule does not have, so the
+advice "inline it" is wrong on well-factored code more often than on slop.
