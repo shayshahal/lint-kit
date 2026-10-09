@@ -63,18 +63,25 @@ test('no-trivial-wrapper: every wrapper in the invalid fixture, nothing in the v
 	assert.match(found[0].message, /only forwards its arguments/);
 });
 
-test('no-trivial-wrapper: a SvelteKit param matcher in src/params.ts is left alone, the same function elsewhere is not', () => {	const source = 'const CATEGORIES = new Set(["rings"]);\nexport const matchCategory = (param: string) => CATEGORIES.has(param);\n';
-	const matcher = path.join(TMP, 'proj/src/params.ts');
+test('no-trivial-wrapper: a SvelteKit matcher in src/params/<name>.ts is left alone, elsewhere is not', () => {
+	const source = 'const CATEGORIES = new Set(["rings"]);\nexport const match = (param: string) => CATEGORIES.has(param);\n';
+	// `src/params/<name>.ts`, including a nested project; the rule normalizes `\` to `/`.
+	const matcher = path.join(TMP, 'proj/src/params/category.ts');
+	const nested = path.join(TMP, 'proj/packages/app/src/params/category.ts');
+	// a file beside the folder is not a matcher, and neither is one anywhere else
+	const beside = path.join(TMP, 'proj/src/params.ts');
 	const elsewhere = path.join(TMP, 'proj/src/elsewhere.ts');
 	const spec = path.join(TMP, 'proj/src/helpers.spec.ts');
 	const inTests = path.join(TMP, 'proj/src/tests/helpers.ts');
-	for (const file of [matcher, elsewhere, spec, inTests]) {
+	for (const file of [matcher, nested, beside, elsewhere, spec, inTests]) {
 		fs.mkdirSync(path.dirname(file), { recursive: true });
 		fs.writeFileSync(file, source);
 	}
 	assert.deepEqual(lint([matcher]), []);
+	assert.deepEqual(lint([nested]), []);
 	assert.deepEqual(lint([spec]), []);
 	assert.deepEqual(lint([inTests]), []);
+	assert.equal(lint([beside]).length, 1, 'src/params.ts is not a matcher file');
 	assert.equal(lint([elsewhere]).length, 1);
 });
 
@@ -113,22 +120,44 @@ test('a patched oxlint.config.ts is a config oxlint loads and lints through', ()
 const END_RULE_THEN_COMMENT = '{\n  "rules": {\n    "no-console": "error",\n    // existing explanation\n  }\n}\n';
 const RULES_NOT_FIRST = '{ "ignorePatterns": ["generated/**"], "rules": { "no-console": "error" } }\n';
 
+/** Run real oxlint over the invalid fixture with a patched config, and return our rule's findings. */
+function patchedFindings(name, patched) {
+	const config = path.join(TMP, `patched-${name}.json`);
+	fs.writeFileSync(config, patched);
+	let out;
+	try {
+		out = execFileSync(
+			process.execPath,
+			[OXLINT, '--config', config, '--format', 'json', path.join(FIXTURES, 'invalid-forwards-arguments.ts')],
+			{ cwd: ROOT, encoding: 'utf8' },
+		);
+	} catch (e) {
+		out = e.stdout;
+	}
+	return JSON.parse(out).diagnostics.filter((d) => String(d.code ?? '').includes('no-trivial-wrapper'));
+}
+
 test('the #17 configs patch into configurations real oxlint loads and lints through', () => {
 	const specifier = path.join(SET, 'index.ts').replace(/\\/g, '/');
-	const subject = path.join(FIXTURES, 'invalid-forwards-arguments.ts');
 	for (const [name, before] of Object.entries({ comment: END_RULE_THEN_COMMENT, compact: RULES_NOT_FIRST })) {
-		const config = path.join(TMP, `patched-${name}.json`);
-		fs.writeFileSync(config, patchOxlint(before, specifier));
-		let out;
-		try {
-			out = execFileSync(process.execPath, [OXLINT, '--config', config, '--format', 'json', subject], {
-				cwd: ROOT,
-				encoding: 'utf8',
-			});
-		} catch (e) {
-			out = e.stdout;
-		}
-		const found = JSON.parse(out).diagnostics.filter((d) => String(d.code ?? '').includes('no-trivial-wrapper'));
-		assert.ok(found.length >= 1, `${name}: oxlint did not load the patched config: ${out}`);
+		assert.ok(patchedFindings(name, patchOxlint(before, specifier)).length >= 1, `${name} did not load`);
 	}
+});
+
+const NESTED_OVERRIDE =
+	'{\n  "overrides": [\n    {\n      "files": ["**/*.test.ts"],\n      "rules": {\n        "no-console": "error"\n      }\n    }\n  ],\n  "rules": {\n    "no-debugger": "error"\n  }\n}\n';
+const EMPTY_CONTAINERS = '{\n  "jsPlugins": [\n  ],\n  "ignorePatterns": [\n  ],\n  "rules": {}\n}\n';
+
+test('a nested override is not the root rules, and empty containers still wire the rule (#18, #19)', () => {
+	const specifier = path.join(SET, 'index.ts').replace(/\\/g, '/');
+	const nested = patchOxlint(NESTED_OVERRIDE, specifier);
+	// the rule lands in the root `rules`, after `no-debugger`, and the override is untouched
+	assert.match(nested, /"no-debugger": "error",\n\s+"slop-patterns\/no-trivial-wrapper": "warn"/);
+	assert.doesNotMatch(nested, /"no-console": "error",/, 'the override keeps its own policy');
+	assert.ok(patchedFindings('nested', nested).length >= 1);
+
+	const empty = patchOxlint(EMPTY_CONTAINERS, specifier);
+	for (const key of ['jsPlugins', 'ignorePatterns', 'rules']) assert.match(empty, new RegExp(`"${key}"`));
+	assert.ok(patchedFindings('empty', empty).length >= 1);
+	assert.equal(patchOxlint(empty, specifier), empty, 'a re-run changes nothing');
 });

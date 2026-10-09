@@ -204,8 +204,9 @@ A config in none of those shapes is left alone, with the two lines to add printe
 arguments on unchanged. It passes a transformed, reordered or added argument, a default value,
 an anonymous callback, a body with more than one statement, and a callee that computes its own
 receiver (`new Intl.NumberFormat(…).format`). It leaves test files alone — a test double's `get`
-and `set` forward to a `Map` because they must mirror the real signature — and `src/params.ts`,
-where SvelteKit names the matchers and calls them from the router.
+and `set` forward to a `Map` because they must mirror the real signature — and `src/params/<name>.ts`,
+where SvelteKit names the matchers and calls them from the router. A file beside that folder
+(`src/params.ts`) is not a matcher and is still reported.
 
 The set lands at `warn`. Rules are checked with `node --test test/slop-patterns.test.js`.
 

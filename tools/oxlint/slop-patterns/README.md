@@ -37,9 +37,10 @@ The rule passes anything that is not pure forwarding:
 - a body with more than one statement.
 
 It also skips every function in a test file — a test double's `get`, `set` and `delete` forward
-to a `Map` because they must mirror the real signature — and every function in `src/params.ts`.
+to a `Map` because they must mirror the real signature — and every function in `src/params/<name>.ts`.
 SvelteKit names the matchers there and calls them from the router, so a one-line
-`export const matchX = (param) => SET.has(param)` is the shape the framework requires.
+`export const match = (param) => SET.has(param)` is the shape the framework requires. A file
+beside the folder (`src/params.ts`) is not a matcher and is still reported.
 
 Land it on `warn`. Over a 7,200-file SvelteKit monorepo it reports 33 functions in source;
 about half are clear renames and half are getters and setters for one field

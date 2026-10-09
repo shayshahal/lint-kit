@@ -31,10 +31,11 @@ transformed or reordered argument, an extra argument, a default value, an anonym
 callback, a body with more than one statement, and reading state the function was not
 handed.
 
-`src/params.ts` is not covered here because the exclusion is by path: SvelteKit names the
-matchers in that file and calls them from the router. To check it, put a
-`export const matchX = (param) => SET.has(param)` in `src/params.ts` of the scratch
-repository and confirm no finding.
+`src/params/<name>.ts` is not covered here because the exclusion is by path: SvelteKit names the
+matchers there and calls them from the router. To check it, put a
+`export const match = (param) => SET.has(param)` in `src/params/category.ts` of the scratch
+repository and confirm no finding. A file beside the folder (`src/params.ts`) is not a matcher
+and is still reported.
 
 The same goes for test files (`*.test.ts`, `*.spec.ts`, `src/tests/**`), where a test double's
 `get`, `set` and `delete` must forward to mirror the real signature. `test/slop-patterns.test.js`

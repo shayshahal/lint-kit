@@ -3,11 +3,12 @@ import { defineRule } from "@oxlint/plugins";
 import type { ESTree, SourceCode } from "@oxlint/plugins";
 
 /**
- * SvelteKit names the matchers in `src/params.ts` and calls them from the router, so a
- * one-line `export const matchX = (param) => SET.has(param)` is the shape the framework
- * requires, not indirection worth removing.
+ * SvelteKit keeps its parameter matchers in `src/params/<name>.ts` and calls them from the
+ * router by convention, so a one-line `export const match = (param) => SET.has(param)` there is
+ * the shape the framework requires, not indirection worth removing. A file beside the folder
+ * (`src/params.ts`) is not one, so it stays reportable.
  */
-const SVELTEKIT_PARAM_MATCHERS = /(?:^|[/\\])src[/\\]params\.[cm]?[jt]s$/u;
+const SVELTEKIT_PARAM_MATCHERS = /(?:^|[/\\])src[/\\]params[/\\][^/\\]+\.[cm]?[jt]s$/u;
 
 /**
  * A test double's `get`, `set` and `delete` forward to a `Map` because they must mirror the

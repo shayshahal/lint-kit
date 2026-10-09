@@ -704,12 +704,32 @@ export function patchOxlint(text, specifier, ts = false) {
 	return ignore === null ? withRules : (add(withRules, 'ignorePatterns', ignore, true) ?? withRules);
 }
 
+/**
+ * Add the plugin's own folder to `ignorePatterns` when the config can safely name it (see
+ * `ignoreEntry`). This is the upgrade path: the plugin is already registered, so `patchOxlint`
+ * returns early, but an older `init` may have left the vendored folder out. Null when there is
+ * nothing to add.
+ */
+export function patchOxlintIgnore(text, specifier, ts = false) {
+	const ignore = ignoreEntry(specifier);
+	// The unquoted value, so a TypeScript config's single-quoted pattern counts as present too.
+	if (ignore === null || text.includes(ignore.slice(1, -1))) return null;
+	const open = configObjectStart(text, ts);
+	if (jsoncValue(text, 'ignorePatterns', open) !== null) {
+		return jsoncAppend(text, 'ignorePatterns', ignore, open);
+	}
+	return jsoncAddKey(text, 'ignorePatterns', `[${ignore}]`, open, ts);
+}
+
 /** Wire the oxlint sets into one project's config. */
 function writeOxlint(repo, project, wanted) {
 	const specifier = `./${rel(project.dir, path.join(repo, 'tools', 'oxlint', 'slop-patterns', 'index.ts'))}`;
 	const file = oxlintConfig(project.dir);
 	if (file === null) {
-		const fresh = `{\n\t"jsPlugins": [\n\t\t{ "name": "slop-patterns", "specifier": ${JSON.stringify(specifier)} }\n\t],\n\t"rules": {\n\t\t"slop-patterns/no-trivial-wrapper": "warn"\n\t}\n}\n`;
+		// A fresh config names the vendored folder too, so the repository does not lint the tool it
+		// just had copied in. `ignoreEntry` is null when the config cannot safely name it.
+		const ignore = ignoreEntry(specifier);
+		const fresh = `{\n\t"jsPlugins": [\n\t\t{ "name": "slop-patterns", "specifier": ${JSON.stringify(specifier)} }\n\t],\n\t"rules": {\n\t\t"slop-patterns/no-trivial-wrapper": "warn"\n\t}${ignore ? `,\n\t"ignorePatterns": [${ignore}]` : ''}\n}\n`;
 		write(path.join(project.dir, '.oxlintrc.json'), fresh);
 		say(`✔ ${where(project)}: .oxlintrc.json (new, with the slop-patterns plugin)`);
 		return;
@@ -717,6 +737,14 @@ function writeOxlint(repo, project, wanted) {
 	const name = path.basename(file);
 	const before = read(file);
 	if (PLUGIN_REGISTERED.test(before)) {
+		// A re-run over an install that predates the exclusion still repairs it; repeated runs add
+		// nothing. A config whose shape cannot name the folder keeps that deliberate omission.
+		const repaired = patchOxlintIgnore(before, specifier, !OXLINT_JSONC.includes(name));
+		if (repaired !== null && repaired !== before) {
+			write(file, repaired);
+			say(`✔ ${where(project)}: ${name} gains the vendored-plugin ignore pattern`);
+			return;
+		}
 		say(`✔ ${where(project)}: ${name} already loads the slop-patterns plugin`);
 		return;
 	}
@@ -963,10 +991,13 @@ const BRIEF_SCRIPT = 'structure:brief';
 export function findBase(args, lefthookText, repo) {
 	if (args.base) return args.base.includes('/') ? args.base : `origin/${args.base}`;
 	const push = parseDocument(lefthookText).toJSON()?.['pre-push'] ?? {};
-	for (const step of Object.values(push.commands ?? {})) {
-		const written = /(?:structure_check\.py|fallow audit) --base (origin\/\S+)/.exec(step?.run ?? '');
-		if (written) return written[1];
-	}
+	// A structure step's base sits in a command's `run` or, for fallow, in the script it runs.
+	// Reuse whatever ref it names — another remote or a local branch, not only origin/* — so a
+	// later step compares with the same history the existing one does.
+	const written = /(?:structure_check\.py|fallow audit) --base (\S+)/.exec(
+		`${lefthookText}\n${hookScriptText(repo)}`,
+	);
+	if (written) return written[1];
 	const files = /\b(origin\/[\w./-]+?)\.\.\.?HEAD\b/.exec(push.files ?? '');
 	if (files) return files[1];
 	try {
