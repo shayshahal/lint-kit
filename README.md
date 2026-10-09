@@ -289,6 +289,6 @@ pnpm test                      # RuleTester for every ESLint rule, and init end 
 (cd python && uv run pytest)   # every FAP rule, and structure_check.py (uses jscpd from pnpm install)
 ```
 
-To release, bump the version in `package.json` and the pinned command above
-(`test/version.test.js` fails until they agree). Once CI passes on `main`, the Release workflow
-tags `v<version>` and publishes a GitHub release.
+To release, bump the version in `package.json`, the pinned command above, and add a section to
+`CHANGELOG.md` named after it (`test/version.test.js` fails until all three agree). Once CI passes
+on `main`, the Release workflow tags `v<version>` and publishes that section as the release notes.

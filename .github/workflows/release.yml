@@ -28,4 +28,13 @@ jobs:
             echo "$tag exists"
             exit 0
           fi
-          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes
+          # The notes are the CHANGELOG's section for this version, so the release page and the
+          # file cannot disagree. test/version.test.js fails when the section is missing or empty;
+          # the check here is the second one, because a silent empty release is worse than a
+          # failed job.
+          awk -v version="${tag#v}" 'BEGIN { found = 0 } $0 == "## " version { found = 1; next } found && /^## / { exit } found { print }' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no section for ${tag#v}" >&2
+            exit 1
+          fi
+          gh release create "$tag" --target "$SHA" --title "$tag" --notes-file notes.md
