@@ -673,6 +673,45 @@ test('an oxlint config with no jsPlugins or rules gains both', () => {
 	]);
 });
 
+test('an ESLint config with no recognizable export is left alone and the run goes on (#27)', async () => {
+	const weird = 'const config = [];\nexport { config };\n';
+	const dir = project('eslint-unrecognized', {
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
+		'eslint.config.mjs': weird,
+	});
+	const said = [];
+	const log = console.log;
+	console.log = (...args) => said.push(args.join(' '));
+	try {
+		assert.equal(await main(['init', '--no-install', '--sets', 'svelte-skills', '--cwd', dir]), 0);
+	} finally {
+		console.log = log;
+	}
+	assert.equal(text(dir, 'eslint.config.mjs'), weird, 'the config is untouched');
+	assert.match(said.join('\n'), /was left alone\. Spread the rules yourself/);
+	// the abort this replaced would have skipped the rest of the install
+	assert.ok(fs.existsSync(path.join(dir, 'tools/eslint/svelte-skills.mjs')));
+	assert.ok(fs.existsSync(path.join(dir, 'eslint.rules.js')));
+});
+
+test('an oxlint config whose root object cannot be found is left alone (#27)', async () => {
+	const weird = 'export default ["not", "an", "object"];\n';
+	const dir = project('oxlint-unrecognized', {
+		'package.json': JSON.stringify({ devDependencies: { oxlint: '1.81.0' } }),
+		'oxlint.config.mjs': weird,
+	});
+	const said = [];
+	const log = console.log;
+	console.log = (...args) => said.push(args.join(' '));
+	try {
+		assert.equal(await main(['init', '--no-install', '--sets', 'slop-patterns', '--cwd', dir]), 0);
+	} finally {
+		console.log = log;
+	}
+	assert.equal(text(dir, 'oxlint.config.mjs'), weird, 'the config is untouched');
+	assert.match(said.join('\n'), /was left alone\. Add/);
+});
+
 test('arguments with spaces survive the Windows shell', () => {
 	const spec = 'some-package @ git+https://github.com/x/y@v1#subdirectory=python';
 	assert.deepEqual(shellArgs(['add', '--dev', spec], true), ['add', '--dev', `"${spec}"`]);

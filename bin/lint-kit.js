@@ -384,7 +384,8 @@ export default [
 /** ESLint's own lookup order. */
 export const ESLINT_CONFIGS = ['js', 'mjs', 'cjs', 'ts', 'mts', 'cts'].map((ext) => `eslint.config.${ext}`);
 
-/** Make the ESLint config spread eslint.rules.js last: it holds one list per restricted-* rule. */
+/** Make the ESLint config spread eslint.rules.js last: it holds one list per restricted-* rule.
+ * An unrecognized shape is left alone (docs/support.md): null tells `writeEslint` to say so. */
 export function patchEslintConfig(text) {
 	if (text.includes(ESLINT_RULES)) return text;
 	const esm = text.search(/^export default /m);
@@ -399,7 +400,8 @@ export function patchEslintConfig(text) {
 	}
 	// CommonJS cannot import eslint.rules.js synchronously; ESLint awaits an exported promise.
 	const cjs = text.match(/^module\.exports\s*=\s*/m);
-	if (!cjs) throw new Error(`the ESLint config has no \`export default\` or \`module.exports\`; add ...toolRules yourself`);
+	// Neither shape: the config is left as it is and `writeEslint` says what to add.
+	if (!cjs) return null;
 	const body = text.slice(cjs.index + cjs[0].length).replace(/;\s*$/, '');
 	return (
 		text.slice(0, cjs.index) +
@@ -436,7 +438,15 @@ function writeEslint(repo, project, wanted, args) {
 		const file = path.join(project.dir, existing);
 		const before = read(file);
 		const after = patchEslintConfig(before);
-		if (after !== before) {
+		if (after === null) {
+			// A config shape this does not understand: leave it, and say what to add. Aborting the
+			// whole run would skip every later project and set.
+			say(
+				`→ ${where(project)}: ${existing} was left alone. Spread the rules yourself:\n` +
+					`    import toolRules from './${ESLINT_RULES}';\n` +
+					`    export default [...yourConfig, ...toolRules];`,
+			);
+		} else if (after !== before) {
 			write(file, after);
 			say(`✔ ${where(project)}: ${existing} spreads ${ESLINT_RULES} last`);
 		}
