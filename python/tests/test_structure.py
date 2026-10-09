@@ -32,6 +32,13 @@ def summed(name: str) -> str:
     return f"def {name}(a, b):\n    total = 0\n{steps}    return total\n\n\n"
 
 
+def nested(name: str, depth: int) -> str:
+    """A function of `depth` ifs one inside the next: complexity 1 + depth, but cognitive
+    1 + 2 + ... + depth, because each level charges for how deep it sits."""
+    body = "".join(f"{'    ' * (i + 1)}if x == {i}:\n" for i in range(depth))
+    return f"def {name}(x):\n{body}{'    ' * (depth + 1)}return -1\n\n\n"
+
+
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     """A git repository whose main branch holds `base`; the test edits files on a branch."""
@@ -104,6 +111,71 @@ def test_the_limit_comes_from_pyproject(repo, capsys):
     setup({"pyproject.toml": "[tool.structure-check]\nmax-complexity = 20\n", "app/a.py": ""})
     commit({"app/a.py": branchy("price", 12)})
     assert run(capsys)[0] == 0
+
+
+def test_nesting_that_stays_under_the_complexity_limit_still_fails(repo, capsys):
+    """The case the cyclomatic check cannot see. Five ifs one inside the next is complexity 6,
+    under the limit, and cognitive 15, over it: nesting is what cognitive charges for."""
+    setup, commit = repo
+    setup({"app/a.py": ""})
+    commit({"app/a.py": nested("buried", 5)})
+    code, out = run(capsys)
+    assert code == 1
+    assert "buried: complexity 6, new (max 10)" not in out
+    assert "buried: cognitive complexity 15, new (max 10)" in out
+
+
+def test_nesting_that_was_already_deep_passes(repo, capsys):
+    setup, commit = repo
+    legacy = nested("buried", 5)
+    setup({"app/a.py": legacy})
+    commit({"app/a.py": legacy + "def helper():\n    return 1\n"})
+    assert run(capsys) == (
+        0,
+        "structure-check: 1 changed .py file(s), no new complexity, duplication or import cycles\n",
+    )
+
+
+def test_a_function_that_deepens_its_nesting_fails(repo, capsys):
+    setup, commit = repo
+    setup({"app/a.py": nested("buried", 4)})
+    commit({"app/a.py": nested("buried", 5)})
+    code, out = run(capsys)
+    assert code == 1
+    assert "buried: cognitive complexity 10 → 15, over the max of 10" in out
+
+
+def test_cognitive_and_cyclomatic_are_reported_apart(repo, capsys):
+    """A function can be over both, and the two are different numbers, so it gets two lines."""
+    setup, commit = repo
+    setup({"app/a.py": ""})
+    commit({"app/a.py": branchy("flat", 12) + nested("buried", 5)})
+    _code, out = run(capsys)
+    assert "flat: complexity 13, new (max 10)" in out
+    assert "buried: cognitive complexity 15, new (max 10)" in out
+
+
+def test_deepening_nesting_that_was_already_over_the_cognitive_limit_passes(repo, capsys):
+    """Cognitive is gated on new and crossing functions only. 127 functions in JewelryX's backend
+    are already over 10 cognitive, so holding all of them still would fail most merges."""
+    setup, commit = repo
+    setup({"app/a.py": nested("buried", 5)})
+    commit({"app/a.py": nested("buried", 6)})
+    assert run(capsys) == (
+        0,
+        "structure-check: 1 changed .py file(s), no new complexity, duplication or import cycles\n",
+    )
+
+
+def test_growing_a_function_already_over_the_complexity_limit_still_fails(repo, capsys):
+    """The asymmetry is deliberate: cyclomatic keeps the case, because far fewer functions are
+    over it to begin with."""
+    setup, commit = repo
+    setup({"app/a.py": branchy("legacy", 15)})
+    commit({"app/a.py": branchy("legacy", 16)})
+    code, out = run(capsys)
+    assert code == 1
+    assert "legacy: complexity 16 → 17, already over 10 and grew" in out
 
 
 def test_new_duplication_fails(repo, capsys):
@@ -281,12 +353,73 @@ class Holder:
 
 def test_a_nested_function_is_named_on_its_own():
     """mccabe folds `inner` into `outer`; ruff's C901 reports both, and so does this. The
-    numbers are C901's: `outer` 5, `inner` 3, `method` 3, `inside` 2."""
+    numbers are C901's: `outer` 5, `inner` 3, `method` 3, `inside` 2. The third value is the
+    cognitive complexity, and a nested function's branches count into the one enclosing it."""
     found = complexities(NESTED)
-    assert found["outer"] == (1, 5)  # its own `if`, plus inner's two
-    assert found["outer.inner"] == (5, 3)
-    assert found["Holder.method"] == (16, 3)  # its own `if`, plus inside's
-    assert found["Holder.method.inside"] == (17, 2)
+    assert found["outer"] == (1, 5, 3)  # its own `if`, plus inner's two
+    assert found["outer.inner"] == (5, 3, 2)
+    assert found["Holder.method"] == (16, 3, 1)  # no `if` of its own, only inside's
+    assert found["Holder.method.inside"] == (17, 2, 1)
+
+
+def nested_ifs(depth: int) -> str:
+    """`depth` ifs one inside the next."""
+    body = "".join(f"{'    ' * (i + 1)}if x == {i}:\n" for i in range(depth))
+    return f"def f(x):\n{body}{'    ' * (depth + 1)}return -1\n"
+
+
+def and_chain(count: int) -> str:
+    """One expression of `count` names joined by `and`."""
+    names = [f"a{i}" for i in range(count)]
+    return f"def f({', '.join(names)}):\n    return {' and '.join(names)}\n"
+
+
+IF_ELIF_ELSE = (
+    "def f(a, b):\n"
+    "    if a:\n"
+    "        return 1\n"
+    "    elif b:\n"
+    "        return 2\n"
+    "    else:\n"
+    "        return 3\n"
+)
+IF_ELIF = "def f(a, b):\n    if a:\n        return 1\n    elif b:\n        return 2\n"
+IF_ELSE_IF = (
+    "def f(a, b):\n    if a:\n        return 1\n    else:\n        if b:\n            return 2\n"
+)
+FOR_WHILE_BREAK = "def f(xs):\n    for x in xs:\n        while x:\n            break\n"
+
+COGNITIVE = [
+    # a boolean operator is one each, not one per run: eleven `and`s is eleven
+    (and_chain(12), 11),
+    # three branches at the same level: 1 + 0, three times
+    (branchy("f", 3), 3),
+    # the nesting penalty: 1, then 1 + 1, then 1 + 2
+    (nested_ifs(3), 6),
+    (nested_ifs(5), 15),
+    # `elif` and `else` are clauses of the one `if`, so each costs 1 + the depth inside it
+    (IF_ELIF_ELSE, 5),
+    # ... which is why `else:` opening with an `if` costs more than the `elif` that looks the same
+    (IF_ELIF, 3),
+    (IF_ELSE_IF, 6),
+    # a loop, a nested loop, and a `break` inside it
+    (FOR_WHILE_BREAK, 4),
+]
+
+
+def test_cognitive_is_scb_checks_measure():
+    """Every number here was read off `scb-check check -v`, which prints the functions over its
+    threshold, so the gate and the published score cannot drift apart."""
+    for source, expected in COGNITIVE:
+        (_line, _complexity, cognitive) = complexities(source)["f"]
+        assert cognitive == expected, f"{source!r} should be {expected}, got {cognitive}"
+
+
+def test_an_elif_costs_less_than_an_else_that_opens_with_an_if():
+    """The same tree to Python's ast, two different trees to the grammar, so the walk has to
+    tell them apart by where the inner `if` starts."""
+    assert complexities(IF_ELIF)["f"][2] == 3
+    assert complexities(IF_ELSE_IF)["f"][2] == 6
 
 
 def test_heavy_functions_keeps_only_what_is_over_the_limit(tmp_path, monkeypatch):

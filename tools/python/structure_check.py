@@ -114,9 +114,100 @@ def complexity_of(node: ast.AST) -> int:
     return max((g.complexity() for g in visitor.graphs.values()), default=0)
 
 
-def complexities(source: str) -> dict[str, tuple[int, int]]:
-    """Function (Class.method, outer.inner) -> (line, complexity), for every function in the
-    source, a nested one included. Unparseable source has none.
+# scb-check's cognitive complexity, which is the number `--score` reports and the one the
+# published measure is comparable with. A flow break costs one plus how deep it sits, a boolean
+# operator costs one *each* (so `a and b and c` is 2, not 1), and `break`/`continue` cost one and
+# are not walked into. `elif` and `else` are clauses of one `if_statement` in the grammar, so
+# each costs one plus the depth *inside* the `if`, and their bodies sit one deeper again.
+COGNITIVE_FLOW = (ast.For, ast.AsyncFor, ast.While, ast.ExceptHandler, ast.IfExp)
+
+
+def _statements_cognitive(statements: list[ast.stmt], nesting: int) -> int:
+    return sum(cognitive_of_node(s, nesting) for s in statements)
+
+
+def _if_cognitive(node: ast.If, nesting: int) -> int:
+    """Python's ast nests `elif` and `else` in `orelse`; the grammar has them as clauses of the
+    same `if_statement`, so the chain is walked here rather than recursed into. An `elif` is
+    told from an `else:` that happens to open with an `if` by where that `if` starts: an `elif`
+    lines up with the `if` it continues, and the body of an `else` is indented past it."""
+    total = 1 + nesting
+    total += cognitive_of_node(node.test, nesting + 1)
+    total += _statements_cognitive(node.body, nesting + 1)
+    branch = node.orelse
+    while branch:
+        head = branch[0]
+        is_elif = (
+            len(branch) == 1 and isinstance(head, ast.If) and head.col_offset == node.col_offset
+        )
+        total += 1 + (nesting + 1)
+        if is_elif:
+            total += cognitive_of_node(head.test, nesting + 2)
+            total += _statements_cognitive(head.body, nesting + 2)
+            branch = head.orelse
+        else:
+            total += _statements_cognitive(branch, nesting + 2)
+            branch = []
+    return total
+
+
+def _loop_cognitive(node: ast.For | ast.AsyncFor | ast.While, nesting: int) -> int:
+    total = 1 + nesting
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.expr, ast.stmt)):
+            total += cognitive_of_node(child, nesting + 1)
+    if node.orelse:
+        total += 1 + (nesting + 1)
+        total += _statements_cognitive(node.orelse, nesting + 2)
+    return total
+
+
+def _try_cognitive(node: ast.Try, nesting: int) -> int:
+    total = _statements_cognitive(node.body, nesting)
+    for handler in node.handlers:
+        total += 1 + nesting
+        if handler.type is not None:
+            total += cognitive_of_node(handler.type, nesting + 1)
+        total += _statements_cognitive(handler.body, nesting + 1)
+    if node.orelse:
+        total += 1 + nesting
+        total += _statements_cognitive(node.orelse, nesting + 1)
+    total += _statements_cognitive(node.finalbody, nesting)
+    return total
+
+
+def cognitive_of_node(node: ast.AST, nesting: int) -> int:
+    """The cognitive complexity of `node` and everything under it, which sits `nesting` deep."""
+    if isinstance(node, (ast.Break, ast.Continue)):
+        return 1
+    if isinstance(node, ast.BoolOp):
+        return (len(node.values) - 1) + sum(
+            cognitive_of_node(value, nesting) for value in node.values
+        )
+    if isinstance(node, ast.If):
+        return _if_cognitive(node, nesting)
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+        return _loop_cognitive(node, nesting)
+    if isinstance(node, ast.Try):
+        return _try_cognitive(node, nesting)
+    if isinstance(node, COGNITIVE_FLOW):
+        return (
+            1
+            + nesting
+            + sum(cognitive_of_node(child, nesting + 1) for child in ast.iter_child_nodes(node))
+        )
+    return sum(cognitive_of_node(child, nesting) for child in ast.iter_child_nodes(node))
+
+
+def cognitive_of(node: ast.AST) -> int:
+    """One function's cognitive complexity, with what is nested in it counted in, as scb-check
+    counts it. No floor of 1: a function with no branch of its own is 0."""
+    return cognitive_of_node(node, 0)
+
+
+def complexities(source: str) -> dict[str, tuple[int, int, int]]:
+    """Function (Class.method, outer.inner) -> (line, complexity, cognitive), for every function
+    in the source, a nested one included. Unparseable source has none.
 
     mccabe graphs a module, and folds a nested function's decisions into the function that
     encloses it the way it treats a closure, so a nested function is never a key of its own and
@@ -125,18 +216,20 @@ def complexities(source: str) -> dict[str, tuple[int, int]]:
     is nested in it, and the nested one is named as well. That matters for the message rather
     than for the detection, since folding is additive and a nested function over the limit
     always puts its enclosing function over the limit too.
+
+    The cognitive number is scb-check's, so the gate and the score agree on it.
     """
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return {}
-    found: dict[str, tuple[int, int]] = {}
+    found: dict[str, tuple[int, int, int]] = {}
 
     def walk(node: ast.AST, prefix: str) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 name = f"{prefix}{child.name}"
-                found[name] = (child.lineno, complexity_of(child))
+                found[name] = (child.lineno, complexity_of(child), cognitive_of(child))
                 walk(child, f"{name}.")
             elif isinstance(child, ast.ClassDef):
                 walk(child, f"{prefix}{child.name}.")
@@ -147,27 +240,63 @@ def complexities(source: str) -> dict[str, tuple[int, int]]:
     return found
 
 
+def measure_regressions(
+    where: str,
+    measure: str,
+    was: int | None,
+    now: int,
+    limit: int,
+    *,
+    already_over_grew: bool = True,
+) -> list[Regression]:
+    """One function and one measure: over the limit now, and not over it, or not as far over it,
+    before. A measure under the limit on both sides is not reported at all.
+
+    `already_over_grew=False` drops the last case — a function that was over the limit before the
+    branch and is further over it now. That is the case the cognitive measure is gated without:
+    a codebase can hold many more functions over the cognitive limit than over the cyclomatic
+    one, and holding all of them still is a far bigger ask than the signal is worth.
+    """
+    if now <= limit:
+        return []
+    if was is None:
+        return [Regression(where, f"{measure} {now}, new (max {limit})")]
+    if was <= limit:
+        return [Regression(where, f"{measure} {was} → {now}, over the max of {limit}")]
+    if already_over_grew and now > was:
+        return [Regression(where, f"{measure} {was} → {now}, already over {limit} and grew")]
+    return []
+
+
 def complexity_regressions(
     merge_base: str, files: list[tuple[str | None, str]], limit: int
 ) -> list[Regression]:
+    """Both complexities, because they catch different functions: cognitive charges for nesting
+    rather than counting branches, so one can cross its limit while the other stays under.
+
+    The two are gated differently on purpose. Cyclomatic keeps the "already over and grew" case;
+    cognitive does not. On JewelryX's backend 80 functions are over 10 on both, 1 is over 10
+    cyclomatic only, and 127 are over 10 cognitive only, so gating that case for cognitive would
+    fail 18 of the last 23 merges that touched Python against 3 for cyclomatic alone. Without it
+    it is 4 of 23, and 3 to 5 at every threshold from 10 to 20, so what it catches is the branch
+    that introduces a deeply nested function rather than the number chosen.
+    """
     found = []
     for old_path, path in files:
         before = complexities(git("show", f"{merge_base}:./{old_path}")) if old_path else {}
         after = complexities(pathlib.Path(path).read_text(encoding="utf-8"))
-        for name, (line, now) in after.items():
-            was = before.get(name, (0, None))[1]
+        for name, (line, now, cognitive) in after.items():
+            was = before.get(name)
             where = f"{path}:{line} {name}:"
-            if now <= limit:
-                continue
-            if was is None:
-                found.append(Regression(where, f"complexity {now}, new (max {limit})"))
-            elif was <= limit:
-                message = f"complexity {was} → {now}, over the max of {limit}"
-                found.append(Regression(where, message))
-            elif now > was:
-                found.append(
-                    Regression(where, f"complexity {was} → {now}, already over {limit} and grew")
-                )
+            found += measure_regressions(where, "complexity", was[1] if was else None, now, limit)
+            found += measure_regressions(
+                where,
+                "cognitive complexity",
+                was[2] if was else None,
+                cognitive,
+                limit,
+                already_over_grew=False,
+            )
     return found
 
 
@@ -467,7 +596,7 @@ def heavy_functions(paths: list[str], limit: int) -> list[Heavy]:
         except (SyntaxError, ValueError):
             continue
         lines = source.splitlines()
-        for line, complexity in complexities(source).values():
+        for line, complexity, _cognitive in complexities(source).values():
             if complexity <= limit or line not in spans:
                 continue
             name, end = spans[line]
@@ -585,8 +714,9 @@ def check(base: str, paths: list[str]) -> int:
     if found:
         print(
             f"structure-check: {len(found)} structure regression(s) since {base} "
-            f"({merge_base[:9]}). Split the function, extract the shared code, or move the "
-            "import into the function that needs it; what was already there does not count."
+            f"({merge_base[:9]}). Split the function, flatten the nesting, extract the shared "
+            "code, or move the import into the function that needs it; what was already there "
+            "does not count."
         )
         return 1
     print(

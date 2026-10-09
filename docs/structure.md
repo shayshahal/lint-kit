@@ -72,7 +72,7 @@ python-structure:
 ```
 app/services/order_service.py:3583 trial_grade: complexity 15, new (max 10)
 app/services/order_service.py:3564-3580 duplicates app/services/order_service.py:100-116 (17 lines), new
-structure-check: 2 structure regression(s) since origin/dev (b170a4fca). Split the function or extract the shared code; what was already there does not count.
+structure-check: 2 structure regression(s) since origin/dev (b170a4fca). Split the function, flatten the nesting, extract the shared code, or move the import into the function that needs it; what was already there does not count.
 ```
 
 It checks the given folders (the FastAPI app package when `init` finds one) and does nothing when
@@ -84,6 +84,22 @@ the branch changed no `.py` file in them.
   that stayed the same or got simpler passes. The limit is `max-complexity` in
   `[tool.structure-check]` (default 10). It only applies to functions the branch changed, so
   don't add C901 with a global `max-complexity` instead: that fails on everything already there.
+- **Cognitive complexity**, the same way and against the same limit, because it is a different
+  measure and not a stricter one: it charges for nesting rather than counting branches, so a
+  function can cross it while its complexity stays under. Five `if`s one inside the next is
+  complexity 6 and cognitive 15. The number is
+  [scb-check](https://github.com/gabeorlanski/scb-check)'s, not Sonar's, so the gate and `--score`
+  agree on it — a boolean operator costs one each, eleven `and`s is 11 where Sonar counts the run
+  as one, and `elif` and `else` each cost one plus the depth inside the `if`.
+
+  It is gated on **new functions and functions that crossed the limit only**. The "already over
+  it and grew" case is left to cyclomatic, and the reason is arithmetic rather than taste: on
+  JewelryX's backend 80 functions are over 10 on both measures, 1 is over 10 cyclomatic only, and
+  127 are over 10 cognitive only. Holding all of those still fails 18 of the last 23 merges that
+  touched Python, against 3 for cyclomatic alone. Without it, 6 fail, and the count stays between
+  3 and 5 for the cognitive half at every threshold from 10 to 20 — so what it catches is the
+  branch that introduces a deeply nested function, not the number picked. A function that was
+  already over the cognitive limit can still be deepened; a new one cannot start over it.
 - **Duplication** with [jscpd](https://github.com/kucherenko/jscpd), over the folders as they are
   and as they were at base. A clone fails when it wasn't at base **and** most of one of its copies
   is code the branch added. Moving duplicated code to another file passes. So does an
