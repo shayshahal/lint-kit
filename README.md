@@ -63,8 +63,12 @@ project's folder (`eslint-admin`, `svelte-check-shop`).
   edited in place, never rewritten, so the per-rule finding counts and comments these configs
   are hand-annotated with stay where they are. oxlint auto-discovers only four names; the rest
   are reachable through `oxlint -c`, and a project running that way would never read a
-  `.oxlintrc.json` written beside the file it actually passes. Without a config, the project
-  gets a `.oxlintrc.json`. There is no
+  `.oxlintrc.json` written beside the file it actually passes. The plugin's own folder is added
+  to `ignorePatterns`, because a repository should not lint a tool that was copied into it. A
+  config that cannot name that folder gains no such entry: oxlint resolves these within the
+  config file's directory and refuses `..`, so a project whose config is not at the repository
+  root would get a pattern oxlint will not load at all, and that project is not pointed at the
+  root's `tools/` anyway. Without a config, the project gets a `.oxlintrc.json`. There is no
   lefthook step either: a repository that runs oxlint already has one.
 - **lefthook**: when the repository has a `lefthook.yml`, pre-commit steps run ESLint on staged
   `src/` files, flake8 (FAP) on the app package, `check-deps` when `pyproject.toml` changes, and
@@ -145,6 +149,7 @@ warnings, `require-each-key` and `prefer-style-directive`. The plugins are expor
 ```jsonc
 // .oxlintrc.json — added by init, and the project's from then on
 {
+	"ignorePatterns": ["tools/oxlint/slop-patterns/**"],
 	"jsPlugins": [{ "name": "slop-patterns", "specifier": "./tools/oxlint/slop-patterns/index.ts" }],
 	"rules": { "slop-patterns/no-trivial-wrapper": "warn" }
 }
