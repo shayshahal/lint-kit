@@ -20,6 +20,8 @@
  * browser. On SvelteKit 2.56 they do, so that is not a rule.
  */
 
+import { defineRule, settings } from './inspection.mjs';
+
 /** Files the rules apply to by default; tests, specs and stories are out of scope. */
 export const DEFAULT_FILES = ['src/**/*.svelte', 'src/**/*.ts', 'src/**/*.js'];
 export const DEFAULT_IGNORES = ['src/tests/**', '**/*.test.ts', '**/*.spec.ts', '**/*.stories.*'];
@@ -27,33 +29,37 @@ export const DEFAULT_IGNORES = ['src/tests/**', '**/*.test.ts', '**/*.spec.ts', 
 /**
  * Flat-config entries: every svelte-skills rule at error, plus the three eslint-plugin-svelte
  * rules above.
- * @param {{ files?: string[], ignores?: string[] }} [options] - ignores are added to the defaults.
+ * @param {{ files?: string[], ignores?: string[], inspection?: 'full' | 'branch' | { mode: 'branch', base: string }, rules?: Record<string, import('eslint').Linter.RuleEntry> }} [options] - ignores are added to the defaults. `inspection` narrows every rule to the lines the branch added (see inspection.mjs); `rules` overrides a rule's entry, the set's own or one of the three svelte ones.
  */
-export function config({ files = DEFAULT_FILES, ignores = [] } = {}) {
+export function config({ files = DEFAULT_FILES, ignores = [], inspection, rules: overrides = {} } = {}) {
 	return [
 		{
+			name: 'svelte-skills',
 			files,
 			ignores: [...DEFAULT_IGNORES, ...ignores],
 			plugins: { 'svelte-skills': plugin },
+			...settings(inspection),
 			rules: {
 				...Object.fromEntries(Object.keys(rules).map((name) => [`svelte-skills/${name}`, 'error'])),
 				'svelte/valid-compile': ['error', { ignoreWarnings: false }],
 				'svelte/require-each-key': 'error',
 				'svelte/prefer-style-directive': 'error',
+				...overrides,
 			},
 		},
 	];
 }
 
-const problem = (description, create, fixable) => ({
-	meta: {
-		type: 'problem',
-		docs: { description },
-		schema: [],
-		...(fixable ? { fixable: 'code' } : {}),
-	},
-	create,
-});
+const problem = (description, create, fixable) =>
+	defineRule({
+		meta: {
+			type: 'problem',
+			docs: { description },
+			schema: [],
+			...(fixable ? { fixable: 'code' } : {}),
+		},
+		create,
+	});
 
 const isSvelteFile = (context) => context.filename.endsWith('.svelte');
 const isRemoteFile = (context) => /\.remote\.(ts|js)$/.test(context.filename);

@@ -4,6 +4,11 @@ Tailwind / shadcn conventions. Most are `no-restricted-syntax` / `no-restricted-
 which ESLint cannot link here; this page explains each one. Class patterns match markup
 (`class="…"`), script strings (`cn()`, `tv()`, arrays) and template literals.
 
+`tailwindPatterns.config()` takes `inspection`, which narrows `viewport-vh` to the lines the
+branch added since the merge-base with its base (`init` writes it); `inspection.mjs` beside this
+file has the detail. The `no-restricted-syntax` and `no-restricted-imports` entries above are
+ESLint's own rules and always see the whole file.
+
 ## viewport-vh
 
 **fix.** `h-screen` / `min-h-screen` / `max-h-screen` and arbitrary values in `vh` (`[90vh]`,

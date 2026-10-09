@@ -332,18 +332,31 @@ const ESLINT_NAMES = {
 	'tailwind-patterns': 'tailwindPatterns',
 	'error-handling': 'errorHandling',
 };
+/**
+ * What init writes for every ESLint set: a rule reports only the lines the branch added since the
+ * merge-base with its base, so a repository that is already large is not blocked by what was
+ * there before. 'full' lints the whole file. The base is origin/HEAD, else the branch's upstream;
+ * name one where branches merge elsewhere: { mode: 'branch', base: 'origin/dev' }.
+ */
+const INSPECTION = `		inspection: 'branch',`;
 const ESLINT_ENTRIES = {
-	'svelte-skills': () => `	...svelteSkills.config(),`,
+	'svelte-skills': () => `	...svelteSkills.config({
+${INSPECTION}
+	}),`,
 	'untranslated-text': () => `	...untranslatedText.config({
+${INSPECTION}
 		// allow: ['Acme( Inc)?'],          // brand names and other strings that are not text
 		// bannedInCode: '[\\\\u0590-\\\\u05FF]', // a script no string in code may contain (Hebrew)
 		// locales: ['he', 'en'],           // keys of an inline { he: '…', en: '…' } pair
 	}),`,
 	'tailwind-patterns': () => `	...tailwindPatterns.config({
+${INSPECTION}
 		uiFiles: ['src/lib/components/ui/**'],
 		darkMode: false, // true when the app toggles .dark: bg-white / text-black become errors
 	}),`,
-	'error-handling': () => `	...errorHandling.config(),`,
+	'error-handling': () => `	...errorHandling.config({
+${INSPECTION}
+	}),`,
 };
 
 /** A project ESLint sets can go into: one that has an ESLint config, or a Svelte one. */
@@ -1166,6 +1179,7 @@ export async function main(argv = process.argv.slice(2)) {
 	const fastapi = sets.includes('fastapi') ? projects.py.filter(isFastapi) : [];
 	const structure = sets.includes('structure');
 	copyTools(repo, [
+		...(eslintSets.length ? ['eslint/inspection.mjs'] : []),
 		...eslintSets.flatMap((s) => [`eslint/${s}.mjs`, `eslint/${s}.md`]),
 		...oxlintSets.map((s) => `oxlint/${s}`),
 		...(fastapi.length ? ['python/fastapi_rules.py'] : []),

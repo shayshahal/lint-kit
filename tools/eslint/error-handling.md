@@ -15,6 +15,10 @@ try {
 }
 ```
 
+`errorHandling.config()` takes `inspection`, which narrows all three rules to the lines the branch
+added since the merge-base with its base (`init` writes it); `inspection.mjs` beside this file has
+the detail.
+
 ## no-swallowed-catch
 
 A `catch` block that is empty, only logs, or only returns an empty value (`null`, `undefined`,

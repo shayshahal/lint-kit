@@ -149,6 +149,23 @@ warnings, `require-each-key` and `prefer-style-directive`. The plugins are expor
 `{@const}` into `$derived`, `throw error()` into `error()`, `$derived(() => …)` into
 `$derived.by`, and `h-screen` / `[90vh]` into `h-dvh` / `[90dvh]`.
 
+Every set also takes `inspection`: `'branch'` reports a rule only on the lines the branch added or
+changed since the merge-base with its base, so installing a set on a repository that is already
+large does not block the first commit on what was there before. `init` writes
+`inspection: 'branch'`; with no setting a rule reports the whole file. The base is `origin/HEAD`,
+else the branch's upstream; name one where branches merge elsewhere:
+`inspection: { mode: 'branch', base: 'origin/dev' }`. The merge-base and not `HEAD` is what makes
+this mean the same thing in the pre-commit hook, in CI and in an editor — the hook sees the staged
+files, CI and pre-push lint a clean checkout. One `git diff -U0` per run.
+
+What the diff cannot answer is reported rather than skipped: a file git does not track yet (a new
+file is all new, and `git diff` never shows an untracked one), a directory that is not a
+repository, an unresolvable base, and a file outside the repository. A report is kept when the
+range it points at meets an added line. A rule's own entry can override the set:
+`['error', { inspection: 'full' }]`. Two rules are never narrowed: `tailwind-patterns` writes
+`no-restricted-syntax` and `no-restricted-imports`, which are ESLint's, so they still see the whole
+file.
+
 ## oxlint sets
 
 ```jsonc
@@ -156,7 +173,10 @@ warnings, `require-each-key` and `prefer-style-directive`. The plugins are expor
 {
 	"ignorePatterns": ["tools/oxlint/slop-patterns/**"],
 	"jsPlugins": [{ "name": "slop-patterns", "specifier": "./tools/oxlint/slop-patterns/index.ts" }],
-	"rules": { "slop-patterns/no-trivial-wrapper": "warn" }
+	"rules": {
+		"slop-patterns/no-trivial-wrapper": "warn",
+		"slop-patterns/no-chained-type-assertions": "warn"
+	}
 }
 ```
 

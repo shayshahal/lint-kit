@@ -16,6 +16,8 @@
  * which would replace these.
  */
 
+import { defineRule, settings } from './inspection.mjs';
+
 /** The ui/ folder: design-system components own their appearance there. */
 export const DEFAULT_UI_FILES = ['src/lib/components/ui/**'];
 
@@ -80,7 +82,7 @@ export const toDvh = (text) =>
 		.replace(SCREEN_TOKEN, '$1$2dvh')
 		.replace(ARBITRARY_VALUE, (value) => value.replace(/(\d)vh\b/g, '$1dvh'));
 
-const viewportVh = {
+const viewportVh = defineRule({
 	meta: {
 		type: 'problem',
 		docs: {
@@ -109,7 +111,7 @@ const viewportVh = {
 			TemplateElement: (node) => check(node, node.value.raw),
 		};
 	},
-};
+});
 
 export const plugin = { meta: { name: 'tailwind-patterns' }, rules: { 'viewport-vh': viewportVh } };
 
@@ -131,6 +133,10 @@ export const lucideBarrel = (message = MESSAGES.lucideBarrel) => ({
  * @property {RestrictedSyntax[]} [extraUi] - the project's own entries that also apply in uiFiles.
  * @property {object[]} [restrictedImports] - extra no-restricted-imports `paths` entries.
  * @property {Partial<typeof MESSAGES>} [messages] - replace a pattern's message.
+ * @property {'full' | 'branch' | { mode: 'branch', base: string }} [inspection] - narrow the
+ *   tailwind-patterns rules to the lines the branch added (see inspection.mjs). The two core
+ *   rules this set writes (no-restricted-syntax, no-restricted-imports) are not narrowed.
+ * @property {Record<string, import('eslint').Linter.RuleEntry>} [rules] - override an entry.
  */
 
 /** @param {TailwindPatternsOptions} [options] */
@@ -142,13 +148,17 @@ export function config({
 	extraUi = [],
 	restrictedImports = [],
 	messages: overrides = {},
+	inspection,
+	rules: overridden = {},
 } = {}) {
 	const m = { ...MESSAGES, ...overrides };
 	const lightOnly = darkMode ? classRule(LIGHT_ONLY, m.lightOnly) : [];
 	return [
 		{
+			name: 'tailwind-patterns',
 			files,
 			plugins: { 'tailwind-patterns': plugin },
+			...settings(inspection),
 			rules: {
 				'tailwind-patterns/viewport-vh': ['error', { message: m.viewportVh }],
 				'no-restricted-imports': [
@@ -164,13 +174,16 @@ export function config({
 					{ selector: UNTITLED_OVERLAY, message: m.untitledOverlay },
 					...extra,
 				],
+				...overridden,
 			},
 		},
 		{
 			// ui/ is where dark: overrides belong, and where the overlay wrappers (no title of their
 			// own) live. lightOnly, transition-all and vh stay errors there too.
+			name: 'tailwind-patterns/ui',
 			files: uiFiles,
 			plugins: { 'tailwind-patterns': plugin },
+			...settings(inspection),
 			rules: {
 				'tailwind-patterns/viewport-vh': ['error', { message: m.viewportVh }],
 				'no-restricted-syntax': [
@@ -179,6 +192,7 @@ export function config({
 					...classRule(TRANSITION_ALL, m.transitionAll),
 					...extraUi,
 				],
+				...overridden,
 			},
 		},
 	];

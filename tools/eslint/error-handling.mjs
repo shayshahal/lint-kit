@@ -11,6 +11,8 @@
  * passes: `catch { /* the cache is optional *\/ }`.
  */
 
+import { defineRule, settings } from './inspection.mjs';
+
 /** Files the rules apply to by default; tests and stories mock and swallow on purpose. */
 export const DEFAULT_FILES = ['src/**/*.svelte', 'src/**/*.ts', 'src/**/*.js'];
 export const DEFAULT_IGNORES = ['src/tests/**', '**/*.test.ts', '**/*.spec.ts', '**/*.stories.*'];
@@ -19,18 +21,21 @@ const DOCS = new URL('./error-handling.md', import.meta.url).href;
 
 /**
  * Flat-config entries with the three rules at error.
- * @param {{ files?: string[], ignores?: string[] }} [options] - ignores are added to the defaults.
+ * @param {{ files?: string[], ignores?: string[], inspection?: 'full' | 'branch' | { mode: 'branch', base: string }, rules?: Record<string, import('eslint').Linter.RuleEntry> }} [options] - ignores are added to the defaults; `inspection` narrows every rule to the lines the branch added (see inspection.mjs); `rules` overrides a rule's entry.
  */
-export function config({ files = DEFAULT_FILES, ignores = [] } = {}) {
+export function config({ files = DEFAULT_FILES, ignores = [], inspection, rules: overrides = {} } = {}) {
 	return [
 		{
+			name: 'error-handling',
 			files,
 			ignores: [...DEFAULT_IGNORES, ...ignores],
 			plugins: { 'error-handling': plugin },
+			...settings(inspection),
 			rules: {
 				'error-handling/no-swallowed-catch': 'error',
 				'error-handling/no-default-promise-catch': 'error',
 				'error-handling/no-stringified-error': 'error',
+				...overrides,
 			},
 		},
 	];
@@ -96,7 +101,7 @@ const MESSAGES = {
 		'This catch turns the error into a fixed value, so the caller cannot tell a failure from an empty result. Rethrow, or return something the caller checks.',
 };
 
-export const noSwallowedCatch = {
+export const noSwallowedCatch = defineRule({
 	meta: {
 		type: 'problem',
 		docs: { description: 'A catch block must handle or rethrow the error.', url: `${DOCS}#no-swallowed-catch` },
@@ -111,7 +116,7 @@ export const noSwallowedCatch = {
 			},
 		};
 	},
-};
+});
 
 /** The handler of `p.catch(handler)`. */
 const catchHandler = (node) =>
@@ -122,7 +127,7 @@ const catchHandler = (node) =>
 		? node.arguments[0]
 		: null;
 
-export const noDefaultPromiseCatch = {
+export const noDefaultPromiseCatch = defineRule({
 	meta: {
 		type: 'problem',
 		docs: {
@@ -156,7 +161,7 @@ export const noDefaultPromiseCatch = {
 			},
 		};
 	},
-};
+});
 
 /** `x instanceof Error` (or its negation) tested on this error, above `node`. */
 function narrowed(node, name) {
@@ -183,7 +188,7 @@ function stringified(ref) {
 	return null;
 }
 
-export const noStringifiedError = {
+export const noStringifiedError = defineRule({
 	meta: {
 		type: 'problem',
 		docs: {
@@ -216,7 +221,7 @@ export const noStringifiedError = {
 			},
 		};
 	},
-};
+});
 
 export const plugin = {
 	meta: { name: 'error-handling' },

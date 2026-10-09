@@ -11,7 +11,7 @@ A finding fails the commit or push.
 
 | Check | Where | Fails with |
 | --- | --- | --- |
-| ESLint sets (`svelte-skills`, `untranslated-text`, `tailwind-patterns`, `error-handling`), every rule at `error` | pre-commit (`eslint {staged_files}`) | ESLint exits 1 |
+| ESLint sets (`svelte-skills`, `untranslated-text`, `tailwind-patterns`, `error-handling`), every rule at `error`, on the lines the branch added | pre-commit (`eslint {staged_files}`) | ESLint exits 1 |
 | flake8 FAP rules | pre-commit | flake8 exits 1 |
 | ruff `FAST` / `ASYNC` | pre-commit | ruff exits 1 |
 | `svelte-check --tsgo` (Svelte projects) | pre-push | svelte-check exits 1 |
@@ -21,9 +21,15 @@ A finding fails the commit or push.
 
 A blocking check is only ever charged for what the branch introduced. The structure tools compare
 with the merge-base of the branch and its base, and fallow reports an inherited finding as
-inherited; what the base already had never fails. Each has its own regression test: the ESLint
-RuleTesters, `python/tests/test_structure.py`, and the real-`oxlint` deletion test for the fallow
-script.
+inherited; what the base already had never fails. The ESLint sets are narrowed the same way and
+against the same base: `init` writes `inspection: 'branch'`, so a rule keeps a report only when the
+range it points at meets a line the branch added ([inspection.mjs](../tools/eslint/inspection.mjs)).
+The exceptions, all deliberate: `tailwind-patterns` writes two of ESLint's own rules
+(`no-restricted-syntax`, `no-restricted-imports`) and those still see the whole file; a repository
+that removes the setting gets whole-file linting; and a file git does not track yet is reported in
+full, because a new file is all new. Each check has its own regression test: the ESLint
+RuleTesters, `test/inspection.test.js` for the gate itself, `python/tests/test_structure.py`, and
+the real-`oxlint` deletion test for the fallow script.
 
 ## Advisory
 

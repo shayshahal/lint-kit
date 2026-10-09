@@ -14,6 +14,8 @@
  * with `inlineLocales`, a string that is a branch of a conditional passes.
  */
 
+import { defineRule, settings } from './inspection.mjs';
+
 /** Files the rule applies to by default; tests, specs and stories assert or demo what users see. */
 export const DEFAULT_FILES = ['src/**/*.svelte', 'src/**/*.ts', 'src/**/*.js'];
 export const DEFAULT_IGNORES = ['src/tests/**', '**/*.test.ts', '**/*.spec.ts', '**/*.stories.*'];
@@ -30,16 +32,19 @@ export const DEFAULT_IGNORES = ['src/tests/**', '**/*.test.ts', '**/*.spec.ts', 
 
 /**
  * Flat-config entries with the rule at error.
- * @param {UntranslatedTextOptions & { files?: string[], ignores?: string[] }} [options] - ignores
+ * @param {UntranslatedTextOptions & { files?: string[], ignores?: string[], inspection?: 'full' | 'branch' | { mode: 'branch', base: string }, rules?: Record<string, import('eslint').Linter.RuleEntry> }} [options] - ignores
  *   are added to the defaults: files whose text is deliberately one language (say why there).
+ *   `inspection` narrows the rule to the lines the branch added (see inspection.mjs).
  */
-export function config({ files = DEFAULT_FILES, ignores = [], ...options } = {}) {
+export function config({ files = DEFAULT_FILES, ignores = [], inspection, rules: overrides = {}, ...options } = {}) {
 	return [
 		{
+			name: 'untranslated-text',
 			files,
 			ignores: [...DEFAULT_IGNORES, ...ignores],
 			plugins: { 'untranslated-text': plugin },
-			rules: { 'untranslated-text/no-untranslated-text': ['error', options] },
+			...settings(inspection),
+			rules: { 'untranslated-text/no-untranslated-text': ['error', options], ...overrides },
 		},
 	];
 }
@@ -55,7 +60,7 @@ const MESSAGE =
 const CODE_MESSAGE =
 	'This script in code shows in every language of the UI. Move the string to the message catalogue and call m.key().';
 
-export const rule = {
+export const rule = defineRule({
 	meta: {
 		type: 'problem',
 		docs: {
@@ -139,7 +144,7 @@ export const rule = {
 			},
 		};
 	},
-};
+});
 
 export const plugin = {
 	meta: { name: 'untranslated-text' },
