@@ -90,6 +90,7 @@ project's folder (`eslint-admin`, `svelte-check-shop`).
   fallow config gets a `.fallowrc.json`, and `package.json` gets a `structure:brief` script:
   `fallow review --brief`, a "where to look" brief for a reviewer that always exits 0. On by
   default when the repository has a `lefthook.yml`. See [docs/structure.md](docs/structure.md).
+  What fails a hook and what is only reported is in [docs/enforcement.md](docs/enforcement.md).
 
 **Re-running** copies `tools/` again (the copies are the installer's: edit the options in
 `eslint.rules.js` and the config files, not the copies) and adds what is missing: a set, a

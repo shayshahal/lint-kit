@@ -6,7 +6,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import { parse } from 'yaml';
-import { main, patchEslintConfig, patchFlake8, patchOxlint, patchRuff, shellArgs } from '../bin/lint-kit.js';
+import { fallowConfig, main, patchEslintConfig, patchFlake8, patchOxlint, patchRuff, shellArgs } from '../bin/lint-kit.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Inside the repo, so the generated configs resolve eslint and its plugins from its node_modules.
@@ -724,4 +724,28 @@ test('arguments with spaces survive the Windows shell', () => {
 		'"x&y"',
 		'"a""b"',
 	]);
+});
+
+test('every installed check carries its documented enforcement kind (#28)', async () => {
+	// Blocking: the ESLint sets ship every rule at error, so real ESLint reports severity 2.
+	const dir = project('enforcement', {
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5', tailwindcss: '^4' } }),
+		'src/routes/+page.svelte':
+			"<script lang=\"ts\">import { writable } from 'svelte/store';</script>\n<div class=\"h-screen\">Hi</div>\n",
+	});
+	await init(dir, '--yes');
+	const [result] = await new ESLint({ cwd: dir }).lintFiles([path.join(dir, 'src/routes/+page.svelte')]);
+	const findings = result.messages.filter((m) => m.ruleId);
+	assert.ok(findings.length >= 1, 'the fixture is reported');
+	assert.ok(findings.every((m) => m.severity === 2), 'the installed rules are error (blocking)');
+	// Advisory: slop-patterns lands at warn.
+	assert.match(
+		patchOxlint('{\n\t"rules": {}\n}\n', './tools/oxlint/slop-patterns/index.ts'),
+		/"slop-patterns\/no-trivial-wrapper": "warn"/,
+	);
+	// Blocking: fallow's dead-code rules are error; its noisy ones warn; two are off.
+	const fallow = fallowConfig([]);
+	assert.match(fallow, /"unused-dev-dependencies": "error"/);
+	assert.match(fallow, /"unused-exports": "warn"/);
+	assert.match(fallow, /"unused-component-props": "off"/);
 });
