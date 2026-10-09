@@ -424,7 +424,22 @@ function writeEslint(repo, project, wanted, args) {
 
 // ── oxlint ──────────────────────────────────────────────────────────────────────
 
-const OXLINT_CONFIGS = ['.oxlintrc.json', '.oxlintrc.jsonc', 'oxlint.config.ts', 'oxlint.config.mts'];
+/**
+ * What oxlint accepts as `-c <file>`. Its own auto-discovery is the first four, but `--config`
+ * takes any path with a JS/TS extension, so a project running `oxlint -c ./oxlint.config.mjs`
+ * has a config that is real and reachable and that discovery alone would miss. The JSONC two
+ * are the ones this can insert into; the rest are module syntax.
+ */
+const OXLINT_CONFIGS = [
+	'.oxlintrc.json',
+	'.oxlintrc.jsonc',
+	'oxlint.config.ts',
+	'oxlint.config.mts',
+	'oxlint.config.cts',
+	'oxlint.config.js',
+	'oxlint.config.mjs',
+	'oxlint.config.cjs',
+];
 /** The ones this can insert into; the TypeScript configs are a different syntax. */
 const OXLINT_JSONC = ['.oxlintrc.json', '.oxlintrc.jsonc'];
 
@@ -521,11 +536,12 @@ function jsoncAddKey(text, key, value, open, ts) {
 /** Where the top-level config object opens. */
 function configObjectStart(text, ts) {
 	if (!ts) return text.indexOf('{');
-	// A TypeScript config wraps the object, and `import { defineConfig }` puts a brace before
-	// it, so the first `{` in the file is the wrong one.
+	// A module config wraps the object, and `import { defineConfig }` puts a brace before it, so
+	// the first `{` in the file is the wrong one. `.js`, `.mjs` and `.cts` default-export it;
+	// `.cjs`, and a `.js` in a CommonJS package, assign it to `module.exports`.
 	const call = /\bdefineConfig\s*\(\s*\{/u.exec(text);
 	if (call) return call.index + call[0].lastIndexOf('{');
-	const exported = /^[ \t]*export default\s*\{/mu.exec(text);
+	const exported = /^[ \t]*(?:export default\s*|module\.exports\s*=\s*)\{/mu.exec(text);
 	return exported ? exported.index + exported[0].lastIndexOf('{') : -1;
 }
 

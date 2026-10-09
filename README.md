@@ -59,9 +59,12 @@ project's folder (`eslint-admin`, `svelte-check-shop`).
 - **oxlint sets**, in each project that depends on oxlint or has an oxlint config, for the sets
   its dependencies call for (`slop-patterns`: oxlint). The plugin goes to
   `tools/oxlint/<set>/`, and the project's config gains its `jsPlugins` entry and its rule at
-  `warn`: `.oxlintrc.json` / `.jsonc` and `oxlint.config.ts` / `.mts` are both edited in place,
-  never rewritten, so the per-rule finding counts and comments these configs are hand-annotated
-  with stay where they are. Without a config, the project gets a `.oxlintrc.json`. There is no
+  `warn`: `.oxlintrc.json` / `.jsonc` and any `oxlint.config.{js,mjs,cjs,ts,mts,cts}` are
+  edited in place, never rewritten, so the per-rule finding counts and comments these configs
+  are hand-annotated with stay where they are. oxlint auto-discovers only four names; the rest
+  are reachable through `oxlint -c`, and a project running that way would never read a
+  `.oxlintrc.json` written beside the file it actually passes. Without a config, the project
+  gets a `.oxlintrc.json`. There is no
   lefthook step either: a repository that runs oxlint already has one.
 - **lefthook**: when the repository has a `lefthook.yml`, pre-commit steps run ESLint on staged
   `src/` files, flake8 (FAP) on the app package, `check-deps` when `pyproject.toml` changes, and
@@ -154,9 +157,13 @@ or an exception. Over a 7,200-file SvelteKit monorepo those found 1,337 and 0 �
 [tools/oxlint/slop-patterns/README.md](tools/oxlint/slop-patterns/README.md).
 
 Both oxlint config syntaxes are written into, because oxlint loads one config per directory and a
-`.oxlintrc.json` beside a `oxlint.config.ts` would leave neither working. A TypeScript config is
-found through its `defineConfig(` call, not the first `{` in the file — an
-`import { defineConfig } from 'oxlint'` has one of those first — and its keys are written bare:
+`.oxlintrc.json` beside a `oxlint.config.ts` would leave neither working. A module config is
+found through its `defineConfig(` call, or its `export default {` / `module.exports = {`, and
+not the first `{` in the file — an `import { defineConfig } from 'oxlint'` has one of those
+first. Its keys are written bare, and which module form it uses is the file's own: `.mjs`,
+`.mts` and `.ts` are ESM, `.cjs` and `.cts` must assign to `module.exports`, and `.js` follows
+the package's `type`. Node refuses to load a `.cts` that exports ESM, so that one is not a
+choice:
 
 ```ts
 // oxlint.config.ts — the same two entries, in its own syntax
@@ -171,8 +178,18 @@ export default defineConfig({
 });
 ```
 
-A config in neither shape (no `export default` to insert into) is left alone, with the two lines
-to add printed instead.
+```js
+// oxlint.config.cjs — the same two entries, assigned rather than default-exported
+module.exports = {
+	jsPlugins: [{ name: 'slop-patterns', specifier: './tools/oxlint/slop-patterns/index.ts' }],
+	rules: {
+		'no-console': 'error', // an existing member keeps its comment, and gains its comma
+		'slop-patterns/no-trivial-wrapper': 'warn',
+	},
+};
+```
+
+A config in none of those shapes is left alone, with the two lines to add printed instead.
 
 `no-trivial-wrapper` reports a named function whose whole body is one call passing its own
 arguments on unchanged. It passes a transformed, reordered or added argument, a default value,
