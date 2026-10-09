@@ -563,6 +563,24 @@ const ruleEntry = (comment) =>
 	`"slop-patterns/no-trivial-wrapper": "warn"${comment ? ' // TODO(slop-patterns-error): raise once the findings are cleaned up' : ''}`;
 
 /**
+ * The plugin's own folder, as an ignore pattern, or null when the config cannot name it. The
+ * repository should not lint a tool that was copied into it: JewelryX's config already ignores
+ * `tools/oxlint/anti-slop/**` for its own vendored plugin, and without the matching entry here
+ * the one init installs is linted with the repository's rules — 3 warnings on JewelryX, one of
+ * them its `anti-slop` rule asking for a `SAFETY:` comment inside our source.
+ *
+ * oxlint resolves these within the config file's directory and refuses `..`: a project whose
+ * config is not at the repository root would get a pattern it will not load at all. That is the
+ * one case where the entry is left out, and nothing is lost by it — oxlint only lints the files
+ * it is pointed at, and that project is not pointed at the root's tools/.
+ */
+const ignoreEntry = (specifier) => {
+	const folder = path.posix.dirname(specifier).replace(/^\.\//u, '');
+	// `.` is a plugin sitting beside the config, which would ignore the config's whole folder.
+	return folder === '.' || folder.startsWith('..') ? null : JSON.stringify(`${folder}/**`);
+};
+
+/**
  * Add the slop-patterns plugin to an oxlint config, in place. Rewriting the file would drop the
  * comments and finding counts these configs are hand-annotated with, so this only inserts.
  * `ts` is for `oxlint.config.ts` / `.mts`, whose keys are bare and whose object is wrapped.
@@ -582,7 +600,10 @@ export function patchOxlint(text, specifier, ts = false) {
 	};
 	const withPlugins = add(text, 'jsPlugins', pluginEntry(specifier, ts), true);
 	if (withPlugins === null) return text;
-	return add(withPlugins, 'rules', ruleEntry, false) ?? text;
+	const withRules = add(withPlugins, 'rules', ruleEntry, false);
+	if (withRules === null) return text;
+	const ignore = ignoreEntry(specifier);
+	return ignore === null ? withRules : (add(withRules, 'ignorePatterns', ignore, true) ?? withRules);
 }
 
 /** Wire the oxlint sets into one project's config. */

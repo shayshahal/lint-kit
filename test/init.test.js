@@ -381,6 +381,33 @@ test('an oxlint project gets the plugin in tools/oxlint and its config patched i
 	// the file is hand-annotated: the existing rule keeps its comment, and the comma the new
 	// entry needs goes before it rather than inside it
 	assert.match(config, /"no-console": "error", \/\/ keep this note/);
+	// the plugin is a tool that was copied in, so the repository must not lint it
+	assert.match(config, /"ignorePatterns": \["tools\/oxlint\/slop-patterns\/\*\*"\]/);
+});
+
+test('an existing ignorePatterns keeps what it had and gains the plugin folder', async () => {
+	const dir = project('oxlint-ignoring', {
+		'package.json': JSON.stringify({ devDependencies: { oxlint: '1.81.0' } }),
+		'.oxlintrc.json': '{\n\t"ignorePatterns": ["dist/", "build/"],\n\t"rules": {}\n}\n',
+	});
+	assert.equal(await init(dir, '--sets', 'slop-patterns'), 0);
+	const config = text(dir, '.oxlintrc.json');
+	assert.match(config, /"ignorePatterns": \["dist\/", "build\/", "tools\/oxlint\/slop-patterns\/\*\*"\]/);
+});
+
+test('a config that cannot name the plugin folder gains no ignore pattern', () => {
+	// oxlint resolves these within the config file's directory and refuses `..`, so a project
+	// whose config is not at the repository root would get a pattern it will not load at all.
+	// Nothing is lost: oxlint lints the files it is pointed at, and that project is not pointed
+	// at the root's tools/.
+	const after = patchOxlint(TS_CONFIG, './../../tools/oxlint/slop-patterns/index.ts', true);
+	assert.doesNotMatch(after, /ignorePatterns/);
+	assert.match(after, /jsPlugins: \[\{ name: "slop-patterns", specifier: "\.\/\.\.\/\.\.\/tools\/oxlint\/slop-patterns\/index\.ts" \}\]/);
+});
+
+test('a plugin sitting beside the config gains no ignore pattern', () => {
+	// The folder would be `.`, which would ignore the config's whole directory.
+	assert.doesNotMatch(patchOxlint('{\n\t"rules": {}\n}\n', './x.ts'), /ignorePatterns/);
 });
 
 test('an oxlint.config.ts is patched in place, and no .oxlintrc.json appears beside it', async () => {
@@ -471,6 +498,7 @@ test('a TypeScript config with neither key gains both, inside defineConfig(', ()
 		'import { defineConfig } from "oxlint";',
 		'',
 		'export default defineConfig({',
+		'	ignorePatterns: ["tools/oxlint/slop-patterns/**"],',
 		'\tjsPlugins: [{ name: "slop-patterns", specifier: "./tools/oxlint/slop-patterns/index.ts" }],',
 		'\trules: {',
 		'\t\t"no-console": "error",',
@@ -510,7 +538,7 @@ test('an oxlint config that already lists plugins and rules gets one entry added
 	const after = patchOxlint(before, './tools/oxlint/slop-patterns/index.ts');
 	assert.deepEqual(after.split('\n'), [
 		'{',
-		'  "ignorePatterns": ["dist/"],',
+		'  "ignorePatterns": ["dist/", "tools/oxlint/slop-patterns/**"],',
 		'  "rules": {',
 		'    "a/b": "error",',
 		'    "c/d": "warn", // TODO(a): 65 findings',
@@ -536,7 +564,7 @@ test('an oxlint config with no jsPlugins or rules gains both', () => {
 		'{',
 		'\t"rules": { "slop-patterns/no-trivial-wrapper": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up },',
 		'\t"jsPlugins": [{ "name": "slop-patterns", "specifier": "./tools/oxlint/slop-patterns/index.ts" }],',
-		'\t"ignorePatterns": ["dist/"]',
+		'	"ignorePatterns": ["dist/", "tools/oxlint/slop-patterns/**"]',
 		'}',
 		'',
 	]);
