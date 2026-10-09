@@ -153,7 +153,11 @@ warnings, `require-each-key` and `prefer-style-directive`. The plugins are expor
 `slop-patterns` holds the waste patterns a rule can name a replacement for. Two of the three
 SlopCodeBench measures are deliberately absent: a single-use function is mostly a route handler
 or a lifecycle hook a framework calls by name, and a single-method class is mostly a middleware
-or an exception. Over a 7,200-file SvelteKit monorepo those found 1,337 and 0 — see
+or an exception. Over a 7,200-file SvelteKit monorepo those found 1,337 and 0. Narrowing the
+first to what a rule would actually see — the functions a branch adds — it is 4 of 15 short new
+functions in 3 of 23 merges, which is the complexity gate's order rather than noise, and still
+not worth a rule: what it finds is a well-factored helper with one or two call sites, and two
+call sites is what a helper is for. See
 [tools/oxlint/slop-patterns/README.md](tools/oxlint/slop-patterns/README.md).
 
 Both oxlint config syntaxes are written into, because oxlint loads one config per directory and a
