@@ -307,6 +307,34 @@ test('structure: a fallow step the project has, and long lines left as written',
 	assert.equal(fs.existsSync(path.join(dir, '.lefthook/pre-push/fallow.sh')), false);
 });
 
+test('a structure step base off origin is reused for the brief and new steps (#24)', async () => {
+	// With no --base on the command line and no origin/HEAD in the fixture, the base can only
+	// come from the step the repository already has. It used to be ignored unless it named origin.
+	const lefthook = 'pre-push:\n  commands:\n    fallow-audit:\n      run: pnpm exec fallow audit --base upstream/dev\n';
+	const dir = project('structure-upstream', {
+		'lefthook.yml': lefthook,
+		'package.json': JSON.stringify({ devDependencies: { typescript: '^5' } }),
+		'pnpm-lock.yaml': '',
+		'backend/pyproject.toml': '[project]\nname = "api"\n',
+		'backend/app/main.py': 'x = 1\n',
+	});
+	await init(dir, '--sets', 'structure');
+	assert.equal(JSON.parse(text(dir, 'package.json')).scripts['structure:brief'], 'fallow review --brief --base upstream/dev');
+	assert.match(hooks(dir)['pre-push'].commands['python-structure'].run, /--base upstream\/dev/);
+});
+
+test('a base in the fallow script is reused, not only one in a command (#24)', async () => {
+	const dir = project('structure-script-base', {
+		'lefthook.yml': 'pre-push:\n  scripts:\n    "fallow.sh":\n      runner: bash\n',
+		'package.json': JSON.stringify({ devDependencies: { typescript: '^5' } }),
+		'pnpm-lock.yaml': '',
+		'.lefthook/pre-push/fallow.sh': '#!/usr/bin/env bash\nset -e\npnpm exec fallow audit --base upstream/dev\n',
+	});
+	await init(dir, '--sets', 'structure');
+	assert.match(text(dir, '.lefthook/pre-push/fallow.sh'), /--base upstream\/dev/);
+	assert.equal(JSON.parse(text(dir, 'package.json')).scripts['structure:brief'], 'fallow review --brief --base upstream/dev');
+});
+
 test('a deletion-only push reaches the fallow step (real lefthook, #21)', async () => {
 	// lefthook drops a deleted path from every command's file list, and intersects a `files`
 	// command with the push's own set, which a deletion-only push leaves empty. A command is
@@ -531,6 +559,36 @@ test('a second run over a config that already has the plugin says so and adds no
 	// a config that already has the plugin sends the reader looking for a problem that is not there
 	assert.doesNotMatch(said.join('\n'), /was left alone/);
 	assert.equal(text(dir, '.oxlintrc.json'), first, 'the config is untouched');
+});
+
+test('a fresh oxlint config excludes the vendored plugin folder (#26)', async () => {
+	const dir = project('oxlint-fresh', {
+		'package.json': JSON.stringify({ devDependencies: { oxlint: '1.81.0' } }),
+	});
+	assert.equal(await init(dir, '--sets', 'slop-patterns'), 0);
+	const config = text(dir, '.oxlintrc.json');
+	assert.match(config, /"name": "slop-patterns", "specifier": "\.\/tools\/oxlint\/slop-patterns\/index\.ts"/);
+	assert.match(config, /"ignorePatterns": \["tools\/oxlint\/slop-patterns\/\*\*"\]/);
+});
+
+test('a rerun repairs a registered plugin whose config lacks the ignore pattern (#26)', async () => {
+	const registered = `${JSON.stringify(
+		{
+			jsPlugins: [{ name: 'slop-patterns', specifier: './tools/oxlint/slop-patterns/index.ts' }],
+			rules: { 'slop-patterns/no-trivial-wrapper': 'warn' },
+		},
+		null,
+		'\t',
+	)}\n`;
+	const dir = project('oxlint-repair', {
+		'package.json': JSON.stringify({ devDependencies: { oxlint: '1.81.0' } }),
+		'.oxlintrc.json': registered,
+	});
+	assert.equal(await init(dir, '--sets', 'slop-patterns'), 0);
+	const once = text(dir, '.oxlintrc.json');
+	assert.match(once, /"ignorePatterns": \["tools\/oxlint\/slop-patterns\/\*\*"\]/);
+	assert.equal(await init(dir, '--sets', 'slop-patterns'), 0);
+	assert.equal(text(dir, '.oxlintrc.json'), once, 'a repeat run adds nothing');
 });
 
 const TS_CONFIG = 'import { defineConfig } from "oxlint";\n\nexport default defineConfig({\n\trules: {\n\t\t"no-console": "error"\n\t}\n});\n';
