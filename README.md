@@ -98,6 +98,10 @@ project, a step. It never removes anything; sets already there default to yes an
 are left as they are; `eslint.rules.js` is rewritten when a set is added, and the previous one
 kept as `eslint.rules.js.bak`.
 
+The supported config shapes and the fallback for anything else are in
+[docs/support.md](docs/support.md): an unrecognized shape is left as it is, with the manual entry
+to add, never reported as wired.
+
 Options: `--sets svelte-skills,fastapi` and `--yes` skip the questions, `--no-install` writes
 files only, `--base <branch>` names the branch structure compares with, `--cwd <dir>` runs it on
 another repository.
