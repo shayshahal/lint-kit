@@ -15,6 +15,7 @@ the repository owns the copies, and only whoever runs `init` needs access here.
 | `untranslated-text` | ESLint | text users read comes from the message catalogue (Paraglide `m.key()`) |
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
 | `error-handling` | ESLint | catch blocks (and promise `.catch()`) that drop the error, only log it, return a fixed default, or turn it into a string |
+| `prose` | ESLint | inflated vocabulary in comments, and `//` comments above an export or a member that should be JSDoc (opt-in) |
 | `slop-patterns` | oxlint | a named function whose whole body forwards its arguments to another function, and two assertions in a row that discard a type |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
@@ -109,7 +110,7 @@ another repository.
 
 ## ESLint sets
 
-All four expect the Svelte and TypeScript parsers to be set up (eslint-plugin-svelte's
+All five expect the Svelte and TypeScript parsers to be set up (eslint-plugin-svelte's
 recommended config, `@typescript-eslint/parser`), and default to `src/**` with tests, specs and
 stories left out. The options, in `eslint.rules.js`:
 
@@ -118,6 +119,7 @@ import svelteSkills from './tools/eslint/svelte-skills.mjs';
 import untranslatedText from './tools/eslint/untranslated-text.mjs';
 import tailwindPatterns, { classRule } from './tools/eslint/tailwind-patterns.mjs';
 import errorHandling from './tools/eslint/error-handling.mjs';
+import prose from './tools/eslint/prose.mjs';
 
 export default [
 	...svelteSkills.config({ ignores: ['src/legacy/**'] }),
@@ -137,6 +139,7 @@ export default [
 		restrictedImports: [{ name: 'svelte/transition', importNames: ['fly'], message: '…' }],
 	}),
 	...errorHandling.config(),
+	...prose.config({ inspection: 'branch' }), // opt-in: ask for it with --sets prose
 ];
 ```
 
@@ -144,6 +147,11 @@ export default [
 warnings, `require-each-key` and `prefer-style-directive`. The plugins are exported too
 (`svelteSkills.plugin`, `untranslatedText.plugin`, `tailwindPatterns.plugin`,
 `errorHandling.plugin`) for wiring rules one by one.
+
+`prose` is the one ESLint set `init` never picks from a project's dependencies: ask for it with
+`--sets prose`, and it stays on a re-run. `no-jargon` reports 7 findings over the same 791-file
+monorepo (6 of them in generated SDK files) and `prefer-jsdoc` 203, every one autofixed. Both
+rules and the words they know are in [tools/eslint/prose.md](tools/eslint/prose.md).
 
 `eslint --fix` rewrites what has one right answer: `class:` directives into the class attribute,
 `{@const}` into `$derived`, `throw error()` into `error()`, `$derived(() => …)` into

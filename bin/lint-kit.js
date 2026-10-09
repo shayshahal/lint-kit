@@ -5,7 +5,7 @@
  * tools' own config.
  *
  *   npx github:shayshahal/lint-kit init [--sets svelte-skills,untranslated-text,tailwind-patterns,
- *                                        error-handling,fastapi,typecheck,structure]
+ *                                        error-handling,prose,fastapi,typecheck,structure]
  *                                        [--yes] [--no-install] [--base <branch>] [--cwd <dir>]
  *
  * Projects: in a monorepo, the members of the JS workspace (pnpm-workspace.yaml, or "workspaces"
@@ -39,6 +39,7 @@ export const SETS = {
 	'untranslated-text': { kind: 'eslint', about: 'text users read comes from the message catalogue' },
 	'tailwind-patterns': { kind: 'eslint', about: 'Tailwind / shadcn class conventions (vh, transition-all, dark:, dialog titles)' },
 	'error-handling': { kind: 'eslint', about: 'catch blocks that drop, only log, or stringify the error' },
+	prose: { kind: 'eslint', about: 'inflated vocabulary in comments, and // comments that should be JSDoc (ask for it)' },
 	'slop-patterns': { kind: 'oxlint', about: 'a function that only forwards its arguments, and assertions that discard a type (oxlint)' },
 	fastapi: { kind: 'python', about: 'FastAPI rules ruff lacks, as a flake8 plugin (FAP001-017)' },
 	typecheck: { kind: 'typecheck', about: 'svelte-check --tsgo and pyright before each push (lefthook)' },
@@ -53,7 +54,15 @@ const ESLINT_FOR = {
 	'untranslated-text': (deps) => '@inlang/paraglide-js' in deps,
 	'tailwind-patterns': (deps) => 'tailwindcss' in deps,
 	'error-handling': (deps) => 'svelte' in deps || 'typescript' in deps,
+	// Fits any project with an ESLint config: prose rules read comments, not code. Never selected
+	// on its own — `OPT_IN` keeps a set of opinions out of a default install.
+	prose: () => true,
 };
+/**
+ * Sets a dependency never selects: they are a taste, so a repository asks for them by name and
+ * keeps them on a re-run. `detect` only offers one that is already installed.
+ */
+const OPT_IN = new Set(['prose']);
 const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', '@typescript-eslint/parser'];
 /** The JS project dependency each oxlint set is for. */
 const OXLINT_FOR = {
@@ -222,7 +231,10 @@ function detect(repo, projects) {
 	const anyDep = (dep) => projects.js.some((p) => dep in p.deps);
 	const fastapi = projects.py.some(isFastapi);
 	const eslint = Object.fromEntries(
-		Object.keys(ESLINT_FOR).map((s) => [s, had.eslint(s) || eslintProjects(projects).some((p) => ESLINT_FOR[s](p.deps))]),
+		Object.keys(ESLINT_FOR).map((s) => [
+			s,
+			had.eslint(s) || (!OPT_IN.has(s) && eslintProjects(projects).some((p) => ESLINT_FOR[s](p.deps))),
+		]),
 	);
 	const oxlint = Object.fromEntries(
 		Object.keys(OXLINT_FOR).map((s) => [s, had.oxlint(s) || oxlintProjects(projects).some((p) => OXLINT_FOR[s](p.deps))]),
@@ -331,6 +343,7 @@ const ESLINT_NAMES = {
 	'untranslated-text': 'untranslatedText',
 	'tailwind-patterns': 'tailwindPatterns',
 	'error-handling': 'errorHandling',
+	prose: 'prose',
 };
 /**
  * What init writes for every ESLint set: a rule reports only the lines the branch added since the
@@ -355,6 +368,9 @@ ${INSPECTION}
 		darkMode: false, // true when the app toggles .dark: bg-white / text-black become errors
 	}),`,
 	'error-handling': () => `	...errorHandling.config({
+${INSPECTION}
+	}),`,
+	prose: () => `	...prose.config({
 ${INSPECTION}
 	}),`,
 };
