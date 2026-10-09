@@ -33,11 +33,21 @@ fallow compares it with its own upstream and finds almost nothing.
 ## JS / TS: fallow audit
 
 ```yaml
-fallow:
-  glob: ['*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}', package.json, .fallowrc.json]
-  env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: worktree.useRelativePaths, GIT_CONFIG_VALUE_0: 'false' }
-  run: pnpm exec fallow audit --base origin/dev
+pre-push:
+  scripts:
+    "fallow.sh":
+      runner: bash
+      env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: worktree.useRelativePaths, GIT_CONFIG_VALUE_0: 'false' }
+# .lefthook/pre-push/fallow.sh:
+#   pnpm exec fallow audit --base origin/dev
 ```
+
+fallow runs as a lefthook **script**, not a command. A command is skipped when the push's changed
+set has no file left after its `glob` filter is applied, and lefthook drops deleted files before
+that filter: a branch whose only change is a deletion would skip fallow and never see the dead
+code the deletion orphaned. That is the whole no-worse promise, so the step has to run on those
+pushes too. A script is not file-filtered, so it runs on every push; `fallow audit` against the
+base then reports nothing when the branch changed nothing it cares about.
 
 [fallow](https://docs.fallow.tools) checks dead code, complexity and duplication in the changed
 files. A finding the branch introduced fails the push if its rule is `"error"`. A `"warn"`
@@ -54,7 +64,8 @@ The file is the project's from then on, and `init` never rewrites it.
 The `env` lines matter in a bare repository with its worktrees beside it, where
 `worktree.useRelativePaths` is on. To check a branch, `audit` checks the base out in a temporary
 worktree, and fallow 3.31 cannot create one with relative paths ("could not create a temporary
-worktree for base ref"). In an ordinary clone they do nothing.
+worktree for base ref"). In an ordinary clone they do nothing. They sit on the script entry,
+which lefthook runs before the body.
 
 `pnpm structure:brief` (`fallow review --brief --base origin/dev`) runs the same analysis and
 prints it as a "where to look" brief for a reviewer: risky files, contracts used outside the
@@ -111,9 +122,10 @@ the branch changed no `.py` file in them.
   reported at the branch's own copy.
 
   Only the imports that run when a module is imported are edges. An import inside a function runs
-  when that function is called, and one under `if TYPE_CHECKING:` never runs, so neither closes a
-  cycle — both are how a cycle is deliberately broken, and counting them would be advice to undo
-  the fix. On JewelryX's 251-module backend that is the difference between 3 cycles and 0.
+  when that function is called, and one in the body of `if TYPE_CHECKING:` never runs, so neither
+  closes a cycle — both are how a cycle is deliberately broken, and counting them would be advice
+  to undo the fix. An `else` branch of `if TYPE_CHECKING:` does run, so an import there is an
+  edge. On JewelryX's 251-module backend that is the difference between 3 cycles and 0.
 
   This is the Python half of what fallow reports as `circular-dependencies` for JS, which
   `init`'s `.fallowrc.json` gates by default. Worth knowing: the base pass is skipped when the

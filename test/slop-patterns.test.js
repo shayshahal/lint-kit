@@ -108,3 +108,27 @@ test('a patched oxlint.config.ts is a config oxlint loads and lints through', ()
 	assert.equal(found.length, 1, out);
 	assert.match(found[0].message, /`formatCurrency` adds nothing to `formatMoney`/);
 });
+
+/** The two configs #17 reproduced the corruption with, as they were before the patch. */
+const END_RULE_THEN_COMMENT = '{\n  "rules": {\n    "no-console": "error",\n    // existing explanation\n  }\n}\n';
+const RULES_NOT_FIRST = '{ "ignorePatterns": ["generated/**"], "rules": { "no-console": "error" } }\n';
+
+test('the #17 configs patch into configurations real oxlint loads and lints through', () => {
+	const specifier = path.join(SET, 'index.ts').replace(/\\/g, '/');
+	const subject = path.join(FIXTURES, 'invalid-forwards-arguments.ts');
+	for (const [name, before] of Object.entries({ comment: END_RULE_THEN_COMMENT, compact: RULES_NOT_FIRST })) {
+		const config = path.join(TMP, `patched-${name}.json`);
+		fs.writeFileSync(config, patchOxlint(before, specifier));
+		let out;
+		try {
+			out = execFileSync(process.execPath, [OXLINT, '--config', config, '--format', 'json', subject], {
+				cwd: ROOT,
+				encoding: 'utf8',
+			});
+		} catch (e) {
+			out = e.stdout;
+		}
+		const found = JSON.parse(out).diagnostics.filter((d) => String(d.code ?? '').includes('no-trivial-wrapper'));
+		assert.ok(found.length >= 1, `${name}: oxlint did not load the patched config: ${out}`);
+	}
+});

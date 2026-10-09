@@ -24,8 +24,7 @@ function project(name, files) {
 	return dir;
 }
 
-const quiet = async (argv) => {
-	const log = console.log;
+const quiet = async (argv) => {	const log = console.log;
 	console.log = () => {};
 	try {
 		return await main(argv);
@@ -36,6 +35,8 @@ const quiet = async (argv) => {
 const init = (dir, ...args) => quiet(['init', '--no-install', '--cwd', dir, ...args]);
 const text = (dir, file) => fs.readFileSync(path.join(dir, file), 'utf8');
 const hooks = (dir) => parse(text(dir, 'lefthook.yml'));
+/** lefthook's binary: the .CMD shim on Windows, where execFileSync needs a shell to run it. */
+const LEFTHOOK = path.join(ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'lefthook.CMD' : 'lefthook');
 
 async function ruleIds(dir, file) {
 	const [result] = await new ESLint({ cwd: dir }).lintFiles([path.join(dir, file)]);
@@ -249,13 +250,15 @@ test('structure: fallow and structure_check.py before each push, against the bra
 		'backend/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
 	});
 	await init(dir, '--sets', 'structure');
-	const steps = hooks(dir)['pre-push'].commands;
-	assert.deepEqual(steps.fallow, {
-		glob: ['*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}', 'package.json', '.fallowrc.json'],
+	const push = hooks(dir)['pre-push'];
+	// a script, not a command: lefthook drops deleted files from a command's file list, so a
+	// deletion-only push would skip fallow and never see the dead code it orphaned (#21)
+	assert.deepEqual(push.scripts['fallow.sh'], {
+		runner: 'bash',
 		env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'worktree.useRelativePaths', GIT_CONFIG_VALUE_0: 'false' },
-		run: 'pnpm exec fallow audit --base origin/dev',
 	});
-	assert.deepEqual(steps['python-structure'], {
+	assert.equal(text(dir, '.lefthook/pre-push/fallow.sh'), '#!/usr/bin/env bash\nset -e\npnpm exec fallow audit --base origin/dev\n');
+	assert.deepEqual(push.commands['python-structure'], {
 		glob: 'backend/*.py',
 		root: 'backend/',
 		run: 'uv run python ../tools/python/structure_check.py --base origin/dev app',
@@ -266,8 +269,10 @@ test('structure: fallow and structure_check.py before each push, against the bra
 	assert.match(fallowrc, /"maxCrap": 100000/);
 	assert.equal(JSON.parse(text(dir, 'package.json')).scripts['structure:brief'], 'fallow review --brief --base origin/dev');
 	const once = text(dir, 'lefthook.yml');
+	const scriptOnce = text(dir, '.lefthook/pre-push/fallow.sh');
 	await init(dir, '--sets', 'structure');
 	assert.equal(text(dir, 'lefthook.yml'), once);
+	assert.equal(text(dir, '.lefthook/pre-push/fallow.sh'), scriptOnce);
 	assert.equal(text(dir, '.fallowrc.json'), fallowrc);
 });
 
@@ -280,9 +285,10 @@ test('structure: --base names the branch, and a fallow config the project has is
 		'.fallowrc.json': own,
 	});
 	await init(dir, '--sets', 'structure', '--base', 'qa');
-	const steps = hooks(dir)['pre-push'].commands;
-	assert.equal(steps.fallow.run, 'npx fallow audit --base origin/qa');
-	assert.equal(steps['python-structure'], undefined); // no Python here
+	const push = hooks(dir)['pre-push'];
+	assert.equal(push.scripts['fallow.sh'].runner, 'bash');
+	assert.match(text(dir, '.lefthook/pre-push/fallow.sh'), /npx fallow audit --base origin\/qa/);
+	assert.equal(push.commands?.['python-structure'], undefined); // no Python here
 	assert.equal(text(dir, '.fallowrc.json'), own);
 	assert.match(text(dir, 'package.json'), /^ {2}"scripts": \{\n {4}"structure:brief": "fallow review --brief --base origin\/qa"/m);
 });
@@ -297,6 +303,42 @@ test('structure: a fallow step the project has, and long lines left as written',
 	});
 	await init(dir, '--sets', 'structure', '--base', 'dev');
 	assert.equal(text(dir, 'lefthook.yml'), lefthook);
+	// the repository's own fallow command is the policy, so no script is written beside it
+	assert.equal(fs.existsSync(path.join(dir, '.lefthook/pre-push/fallow.sh')), false);
+});
+
+test('a deletion-only push reaches the fallow step (real lefthook, #21)', async () => {
+	// lefthook drops a deleted path from every command's file list, and intersects a `files`
+	// command with the push's own set, which a deletion-only push leaves empty. A command is
+	// skipped however it is wired; a script is not filtered, so the dead code the deletion
+	// orphaned is still checked. `fallow` itself is not installed here, so a marker stands in
+	// for it: what the push proves is that the step is reached at all.
+	const origin = path.join(TMP, 'lh-origin.git');
+	const work = path.join(TMP, 'lh-work');
+	execFileSync('git', ['init', '--bare', '-q', origin]);
+	execFileSync('git', ['clone', '-q', origin, work]);
+	const git = (...args) => execFileSync('git', args, { cwd: work, stdio: 'ignore' });
+	git('config', 'user.email', 't@example.test');
+	git('config', 'user.name', 't');
+	fs.writeFileSync(path.join(work, 'pnpm-lock.yaml'), '');
+	fs.writeFileSync(path.join(work, 'package.json'), JSON.stringify({ devDependencies: { typescript: '^5' } }));
+	fs.writeFileSync(path.join(work, 'lefthook.yml'), 'pre-push:\n  commands:\n    placeholder:\n      run: true\n');
+	fs.mkdirSync(path.join(work, 'src'));
+	fs.writeFileSync(path.join(work, 'src/app.ts'), 'export const x = 1;\n');
+	await init(work, '--sets', 'structure', '--base', 'main');
+	assert.equal(hooks(work)['pre-push'].scripts['fallow.sh'].runner, 'bash');
+	fs.writeFileSync(path.join(work, '.lefthook/pre-push/fallow.sh'), '#!/usr/bin/env bash\nset -e\ntouch fallow-ran\n');
+	git('add', '-A');
+	git('commit', '-qm', 'base');
+	git('branch', '-M', 'main');
+	git('push', '-q', '-u', 'origin', 'main');
+	git('checkout', '-qb', 'feature');
+	git('push', '-q', '-u', 'origin', 'feature');
+	execFileSync(LEFTHOOK, ['install'], { cwd: work, stdio: 'ignore', shell: process.platform === 'win32' });
+	git('rm', '-q', 'src/app.ts');
+	git('commit', '-qm', 'delete the only entry');
+	git('push', 'origin', 'feature');
+	assert.ok(fs.existsSync(path.join(work, 'fallow-ran')), 'the fallow script did not run on a deletion-only push');
 });
 
 test('a monorepo: each workspace member and Python project gets its own steps, tools/ is shared', async () => {
@@ -331,9 +373,10 @@ test('a monorepo: each workspace member and Python project gets its own steps, t
 		'svelte-check-admin': 'apps/admin/**/*.{svelte,ts,js}',
 		'svelte-check-shop': 'apps/shop/**/*.{svelte,ts,js}',
 		pyright: 'services/api/**/*.py',
-		fallow: ['**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,svelte,vue}', 'package.json', '.fallowrc.json'],
 		'python-structure': 'services/api/**/*.py',
 	});
+	assert.equal(push.scripts['fallow.sh'].runner, 'bash');
+	assert.match(text(dir, '.lefthook/pre-push/fallow.sh'), /pnpm exec fallow audit --base origin\/dev/);
 	assert.equal(push.commands['python-structure'].run, 'uv run python ../../tools/python/structure_check.py --base origin/dev app');
 	assert.match(text(dir, '.fallowrc.json'), /"ignorePatterns": \["services\/api\/\*\*", "tools\/\*\*", "\*\*\/\.svelte-check\/\*\*"\]/);
 });
@@ -561,8 +604,10 @@ test('an oxlint config that already lists plugins and rules gets one entry added
 test('an oxlint config with no jsPlugins or rules gains both', () => {
 	const after = patchOxlint('{\n\t"ignorePatterns": ["dist/"]\n}\n', './tools/oxlint/slop-patterns/index.ts');
 	assert.deepEqual(after.split('\n'), [
+		// The rules object is created on one line, so its entry carries no `//` comment: anything
+		// after it on that line would be swallowed, closing brace included (#17).
 		'{',
-		'\t"rules": { "slop-patterns/no-trivial-wrapper": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up },',
+		'\t"rules": { "slop-patterns/no-trivial-wrapper": "warn" },',
 		'\t"jsPlugins": [{ "name": "slop-patterns", "specifier": "./tools/oxlint/slop-patterns/index.ts" }],',
 		'	"ignorePatterns": ["dist/", "tools/oxlint/slop-patterns/**"]',
 		'}',
