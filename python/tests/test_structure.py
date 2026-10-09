@@ -15,6 +15,7 @@ from structure_check import (
     main,
     scb_check_report,
     score_lines,
+    sloc_lines,
 )
 
 BIN = pathlib.Path(__file__).resolve().parents[2] / "node_modules" / ".bin"
@@ -321,9 +322,35 @@ def test_score_lines_survives_a_report_with_no_loc():
     assert "0 of 0 mass" in lines[2]
 
 
-def test_function_sloc_counts_code_lines_only():
-    lines = ["def f():", "    # a comment", "", "    return 1", "", "# not in the span"]
-    assert function_sloc(lines, 1, 4) == 2
+def test_sloc_lines_drops_a_docstring_but_keeps_a_string_that_is_a_value():
+    """scb-check does not count a standalone string statement as code, and a docstring is one.
+    `b` and `f` strings are values rather than prose and stay in. Three lines, and scb-check's
+    own total_loc for this source is 3."""
+    source = (
+        "def f():\n"
+        '    """Prose about the function, which scb-check does not count as code."""\n'
+        '    note = f"""a long f-string is a value"""\n'
+        "    return note\n"
+    )
+    assert sloc_lines(source) == frozenset({1, 3, 4})
+
+
+def test_sloc_lines_keeps_a_string_statement_that_does_not_own_its_line():
+    """A comment after it means it is not a statement of its own, so the line stays code."""
+    source = 'def f():\n    """Kept, because a comment follows it."""  # why\n    return 1\n'
+    assert sloc_lines(source) == frozenset({1, 2, 3})
+
+
+def test_sloc_lines_keeps_a_bytes_literal():
+    source = 'def f():\n    b"""Kept: bytes, not prose."""\n    return 1\n'
+    assert sloc_lines(source) == frozenset({1, 2, 3})
+
+
+def test_function_sloc_counts_the_code_lines_in_the_span():
+    code = frozenset({1, 3, 6})
+    assert function_sloc(code, 1, 3) == 2
+    assert function_sloc(code, 4, 6) == 1
+    assert function_sloc(code, 4, 5) == 0
 
 
 NESTED = """def outer(x):
