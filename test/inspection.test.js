@@ -108,6 +108,21 @@ test('no repository, so nothing can be told apart: everything is reported', () =
 	assert.deepEqual(lines(dir, ON_BRANCH), [4, 12]);
 });
 
+test('a file reached through another spelling of the same directory is still that file', () => {
+	const dir = repository('spelling', AT_BASE, ON_BRANCH);
+	// git reports the directory one way and a caller can hand ESLint another spelling of it: a
+	// junction, or the 8.3 short name Windows gives `os.tmpdir()`. The two do not compare unless
+	// both are canonicalized, and then every report falls back to the whole file. This is where CI
+	// found it, on a runner where os.tmpdir() was RUNNER~1 and git said runneradmin.
+	const link = path.join(TMP, 'spelling-link');
+	try {
+		fs.symlinkSync(dir, link, 'junction');
+	} catch {
+		return; // a platform that will not make one cannot exercise this
+	}
+	assert.deepEqual(lines(link, ON_BRANCH), [12]);
+});
+
 test('a rule entry overrides the mode the set was given', () => {
 	const dir = repository('override', AT_BASE, ON_BRANCH);
 	const wide = { rules: { 'error-handling/no-swallowed-catch': ['error', { inspection: 'full' }] } };

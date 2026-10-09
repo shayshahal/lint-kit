@@ -19,6 +19,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 
 /** The modes a config may name. */
@@ -86,11 +87,27 @@ function addedLines(diff) {
 	return added;
 }
 
+/**
+ * A path as the filesystem spells it. On Windows `os.tmpdir()` hands out the 8.3 short name
+ * (`RUNNER~1`) while git reports the long one (`runneradmin`), and the two do not compare, so
+ * `path.relative` between them is `..\..\..` and every report would fall back to whole-file. A
+ * path that does not exist is left as it is: it cannot be canonicalized, and the caller reports
+ * rather than skips.
+ */
+function canonical(target) {
+	try {
+		return realpathSync.native(target);
+	} catch {
+		return target;
+	}
+}
+
 /** {root, added, untracked} for the branch's base, or null when git cannot say (then everything
  *  reports). */
 function branchLines(cwd, base) {
-	const root = git(cwd, ['rev-parse', '--show-toplevel'])?.trim();
-	if (!root) return null;
+	const toplevel = git(cwd, ['rev-parse', '--show-toplevel'])?.trim();
+	if (!toplevel) return null;
+	const root = canonical(toplevel);
 	const ref = base ?? defaultBase(root);
 	if (!ref) return null;
 	const mergeBase = git(root, ['merge-base', 'HEAD', ref])?.trim();
@@ -114,11 +131,19 @@ function branchLinesOnce(cwd, base) {
 	return cache.get(key);
 }
 
+const relCache = new Map();
+
 /** The repository-relative path of the linted file, or null for stdin and files outside it. */
 function relative(root, context) {
 	const filename = context.physicalFilename || context.filename;
 	if (!filename || filename.startsWith('<')) return null;
-	const rel = path.relative(root, path.resolve(context.cwd, filename));
+	const key = `${root}\0${context.cwd}\0${filename}`;
+	if (!relCache.has(key)) relCache.set(key, relativeTo(root, context.cwd, filename));
+	return relCache.get(key);
+}
+
+function relativeTo(root, cwd, filename) {
+	const rel = path.relative(root, canonical(path.resolve(cwd, filename)));
 	if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
 	return rel.split(path.sep).join('/');
 }
