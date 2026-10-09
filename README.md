@@ -15,7 +15,8 @@ the repository owns the copies, and only whoever runs `init` needs access here.
 | `untranslated-text` | ESLint | text users read comes from the message catalogue (Paraglide `m.key()`) |
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
 | `error-handling` | ESLint | catch blocks (and promise `.catch()`) that drop the error, only log it, return a fixed default, or turn it into a string |
-| `slop-patterns` | oxlint | a named function whose whole body forwards its arguments to another function |
+| `prose` | ESLint | inflated vocabulary in comments, and `//` comments above an export or a member that should be JSDoc (opt-in) |
+| `slop-patterns` | oxlint | a named function whose whole body forwards its arguments to another function, and two assertions in a row that discard a type |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
 | `structure` | fallow, `structure_check.py` | lefthook pre-push steps that fail when a branch adds complexity, duplication, an import cycle or dead code its base did not have, and never on what was already there ([docs](docs/structure.md)) |
@@ -27,7 +28,7 @@ docstring.
 ## Run it
 
 ```sh
-npx github:shayshahal/lint-kit init          # or pin a release: github:shayshahal/lint-kit#v0.3.0
+npx github:shayshahal/lint-kit init          # or pin a release: github:shayshahal/lint-kit#v0.4.0
 ```
 
 With this repository private, use a URL your git can clone it with, e.g.
@@ -109,7 +110,7 @@ another repository.
 
 ## ESLint sets
 
-All four expect the Svelte and TypeScript parsers to be set up (eslint-plugin-svelte's
+All five expect the Svelte and TypeScript parsers to be set up (eslint-plugin-svelte's
 recommended config, `@typescript-eslint/parser`), and default to `src/**` with tests, specs and
 stories left out. The options, in `eslint.rules.js`:
 
@@ -118,6 +119,7 @@ import svelteSkills from './tools/eslint/svelte-skills.mjs';
 import untranslatedText from './tools/eslint/untranslated-text.mjs';
 import tailwindPatterns, { classRule } from './tools/eslint/tailwind-patterns.mjs';
 import errorHandling from './tools/eslint/error-handling.mjs';
+import prose from './tools/eslint/prose.mjs';
 
 export default [
 	...svelteSkills.config({ ignores: ['src/legacy/**'] }),
@@ -137,6 +139,7 @@ export default [
 		restrictedImports: [{ name: 'svelte/transition', importNames: ['fly'], message: '…' }],
 	}),
 	...errorHandling.config(),
+	...prose.config({ inspection: 'branch' }), // opt-in: ask for it with --sets prose
 ];
 ```
 
@@ -145,9 +148,31 @@ warnings, `require-each-key` and `prefer-style-directive`. The plugins are expor
 (`svelteSkills.plugin`, `untranslatedText.plugin`, `tailwindPatterns.plugin`,
 `errorHandling.plugin`) for wiring rules one by one.
 
+`prose` is the one ESLint set `init` never picks from a project's dependencies: ask for it with
+`--sets prose`, and it stays on a re-run. `no-jargon` reports 7 findings over the same 791-file
+monorepo (6 of them in generated SDK files) and `prefer-jsdoc` 203, every one autofixed. Both
+rules and the words they know are in [tools/eslint/prose.md](tools/eslint/prose.md).
+
 `eslint --fix` rewrites what has one right answer: `class:` directives into the class attribute,
 `{@const}` into `$derived`, `throw error()` into `error()`, `$derived(() => …)` into
 `$derived.by`, and `h-screen` / `[90vh]` into `h-dvh` / `[90dvh]`.
+
+Every set also takes `inspection`: `'branch'` reports a rule only on the lines the branch added or
+changed since the merge-base with its base, so installing a set on a repository that is already
+large does not block the first commit on what was there before. `init` writes
+`inspection: 'branch'`; with no setting a rule reports the whole file. The base is `origin/HEAD`,
+else the branch's upstream; name one where branches merge elsewhere:
+`inspection: { mode: 'branch', base: 'origin/dev' }`. The merge-base and not `HEAD` is what makes
+this mean the same thing in the pre-commit hook, in CI and in an editor — the hook sees the staged
+files, CI and pre-push lint a clean checkout. One `git diff -U0` per run.
+
+What the diff cannot answer is reported rather than skipped: a file git does not track yet (a new
+file is all new, and `git diff` never shows an untracked one), a directory that is not a
+repository, an unresolvable base, and a file outside the repository. A report is kept when the
+range it points at meets an added line. A rule's own entry can override the set:
+`['error', { inspection: 'full' }]`. Two rules are never narrowed: `tailwind-patterns` writes
+`no-restricted-syntax` and `no-restricted-imports`, which are ESLint's, so they still see the whole
+file.
 
 ## oxlint sets
 
@@ -156,7 +181,10 @@ warnings, `require-each-key` and `prefer-style-directive`. The plugins are expor
 {
 	"ignorePatterns": ["tools/oxlint/slop-patterns/**"],
 	"jsPlugins": [{ "name": "slop-patterns", "specifier": "./tools/oxlint/slop-patterns/index.ts" }],
-	"rules": { "slop-patterns/no-trivial-wrapper": "warn" }
+	"rules": {
+		"slop-patterns/no-trivial-wrapper": "warn",
+		"slop-patterns/no-chained-type-assertions": "warn"
+	}
 }
 ```
 
@@ -212,6 +240,14 @@ receiver (`new Intl.NumberFormat(…).format`). It leaves test files alone — a
 and `set` forward to a `Map` because they must mirror the real signature — and `src/params/<name>.ts`,
 where SvelteKit names the matchers and calls them from the router. A file beside that folder
 (`src/params.ts`) is not a matcher and is still reported.
+
+`no-chained-type-assertions` reports two or more assertions nested in one expression
+(`input as unknown as User`, `<Config><unknown>input`). The first discards everything the value's
+type said, so nothing downstream is checked and the second is a claim no one verified. A single
+assertion passes, and so does a chain of nothing but `as const`. It leaves test files alone too,
+where a double has to stand in for a type it is not (`new FakeXHR() as unknown as XMLHttpRequest`).
+Over the same 1,431 files of a SvelteKit monorepo it reports 43; `no-trivial-wrapper` reports 38 on
+that tree.
 
 The set lands at `warn`. Rules are checked with `node --test test/slop-patterns.test.js`.
 

@@ -1,5 +1,9 @@
 # untranslated-text
 
+`untranslatedText.config()` takes `inspection`, which narrows the rule to the lines the branch
+added since the merge-base with its base (`init` writes it); `inspection.mjs` beside this file has
+the detail.
+
 ## no-untranslated-text
 
 Every word a user reads comes from the app's message catalogue (Paraglide's `m.key()`, or any

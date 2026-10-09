@@ -5,7 +5,7 @@
  * tools' own config.
  *
  *   npx github:shayshahal/lint-kit init [--sets svelte-skills,untranslated-text,tailwind-patterns,
- *                                        error-handling,fastapi,typecheck,structure]
+ *                                        error-handling,prose,fastapi,typecheck,structure]
  *                                        [--yes] [--no-install] [--base <branch>] [--cwd <dir>]
  *
  * Projects: in a monorepo, the members of the JS workspace (pnpm-workspace.yaml, or "workspaces"
@@ -39,7 +39,8 @@ export const SETS = {
 	'untranslated-text': { kind: 'eslint', about: 'text users read comes from the message catalogue' },
 	'tailwind-patterns': { kind: 'eslint', about: 'Tailwind / shadcn class conventions (vh, transition-all, dark:, dialog titles)' },
 	'error-handling': { kind: 'eslint', about: 'catch blocks that drop, only log, or stringify the error' },
-	'slop-patterns': { kind: 'oxlint', about: 'a function that only forwards its arguments to another (oxlint)' },
+	prose: { kind: 'eslint', about: 'inflated vocabulary in comments, and // comments that should be JSDoc (ask for it)' },
+	'slop-patterns': { kind: 'oxlint', about: 'a function that only forwards its arguments, and assertions that discard a type (oxlint)' },
 	fastapi: { kind: 'python', about: 'FastAPI rules ruff lacks, as a flake8 plugin (FAP001-017)' },
 	typecheck: { kind: 'typecheck', about: 'svelte-check --tsgo and pyright before each push (lefthook)' },
 	structure: {
@@ -53,7 +54,15 @@ const ESLINT_FOR = {
 	'untranslated-text': (deps) => '@inlang/paraglide-js' in deps,
 	'tailwind-patterns': (deps) => 'tailwindcss' in deps,
 	'error-handling': (deps) => 'svelte' in deps || 'typescript' in deps,
+	// Fits any project with an ESLint config: prose rules read comments, not code. Never selected
+	// on its own — `OPT_IN` keeps a set of opinions out of a default install.
+	prose: () => true,
 };
+/**
+ * Sets a dependency never selects: they are a taste, so a repository asks for them by name and
+ * keeps them on a re-run. `detect` only offers one that is already installed.
+ */
+const OPT_IN = new Set(['prose']);
 const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', '@typescript-eslint/parser'];
 /** The JS project dependency each oxlint set is for. */
 const OXLINT_FOR = {
@@ -222,7 +231,10 @@ function detect(repo, projects) {
 	const anyDep = (dep) => projects.js.some((p) => dep in p.deps);
 	const fastapi = projects.py.some(isFastapi);
 	const eslint = Object.fromEntries(
-		Object.keys(ESLINT_FOR).map((s) => [s, had.eslint(s) || eslintProjects(projects).some((p) => ESLINT_FOR[s](p.deps))]),
+		Object.keys(ESLINT_FOR).map((s) => [
+			s,
+			had.eslint(s) || (!OPT_IN.has(s) && eslintProjects(projects).some((p) => ESLINT_FOR[s](p.deps))),
+		]),
 	);
 	const oxlint = Object.fromEntries(
 		Object.keys(OXLINT_FOR).map((s) => [s, had.oxlint(s) || oxlintProjects(projects).some((p) => OXLINT_FOR[s](p.deps))]),
@@ -331,19 +343,36 @@ const ESLINT_NAMES = {
 	'untranslated-text': 'untranslatedText',
 	'tailwind-patterns': 'tailwindPatterns',
 	'error-handling': 'errorHandling',
+	prose: 'prose',
 };
+/**
+ * What init writes for every ESLint set: a rule reports only the lines the branch added since the
+ * merge-base with its base, so a repository that is already large is not blocked by what was
+ * there before. 'full' lints the whole file. The base is origin/HEAD, else the branch's upstream;
+ * name one where branches merge elsewhere: { mode: 'branch', base: 'origin/dev' }.
+ */
+const INSPECTION = `		inspection: 'branch',`;
 const ESLINT_ENTRIES = {
-	'svelte-skills': () => `	...svelteSkills.config(),`,
+	'svelte-skills': () => `	...svelteSkills.config({
+${INSPECTION}
+	}),`,
 	'untranslated-text': () => `	...untranslatedText.config({
+${INSPECTION}
 		// allow: ['Acme( Inc)?'],          // brand names and other strings that are not text
 		// bannedInCode: '[\\\\u0590-\\\\u05FF]', // a script no string in code may contain (Hebrew)
 		// locales: ['he', 'en'],           // keys of an inline { he: '…', en: '…' } pair
 	}),`,
 	'tailwind-patterns': () => `	...tailwindPatterns.config({
+${INSPECTION}
 		uiFiles: ['src/lib/components/ui/**'],
 		darkMode: false, // true when the app toggles .dark: bg-white / text-black become errors
 	}),`,
-	'error-handling': () => `	...errorHandling.config(),`,
+	'error-handling': () => `	...errorHandling.config({
+${INSPECTION}
+	}),`,
+	prose: () => `	...prose.config({
+${INSPECTION}
+	}),`,
 };
 
 /** A project ESLint sets can go into: one that has an ESLint config, or a Svelte one. */
@@ -604,7 +633,10 @@ function jsoncAppend(text, key, entry, open) {
 	if (!inner.includes('\n')) {
 		const sep = inner.trimEnd().endsWith(',') ? '' : ', ';
 		const before = text.slice(0, value.end).replace(/[ \t\r]+$/, '');
-		return `${before}${sep}${entry}${text.slice(value.end)}`;
+		// A space before the closing brace is kept, so adding a second entry to a one-line object
+		// does not close it up (`{ "a": 1, "b": 2 }`, not `{ "a": 1, "b": 2}`).
+		const space = text.slice(before.length, value.end) === '' ? '' : ' ';
+		return `${before}${sep}${entry}${space}${text.slice(value.end)}`;
 	}
 	const lineStart = text.lastIndexOf('\n', value.end) + 1;
 	let end = lineStart - 1;
@@ -665,9 +697,15 @@ const pluginEntry = (specifier, ts) =>
 		? `{ name: "slop-patterns", specifier: ${JSON.stringify(specifier)} }`
 		: `{ "name": "slop-patterns", "specifier": ${JSON.stringify(specifier)} }`;
 
-/** The `rules` entry, annotated the way the configs in the wild are. */
-const ruleEntry = (comment) =>
-	`"slop-patterns/no-trivial-wrapper": "warn"${comment ? ' // TODO(slop-patterns-error): raise once the findings are cleaned up' : ''}`;
+/**
+ * The set's rules, each at `warn`: any of them can be right about a framework shape the rule
+ * cannot see, so none of them gates a hook (docs/enforcement.md).
+ */
+const SLOP_RULES = ['no-trivial-wrapper', 'no-chained-type-assertions'];
+
+/** One `rules` entry, annotated the way the configs in the wild are. */
+const ruleEntry = (name, comment) =>
+	`"slop-patterns/${name}": "warn"${comment ? ' // TODO(slop-patterns-error): raise once the findings are cleaned up' : ''}`;
 
 /**
  * The plugin's own folder, as an ignore pattern, or null when the config cannot name it. The
@@ -721,8 +759,13 @@ export function patchOxlint(text, specifier, ts = false) {
 	};
 	const withPlugins = add(text, 'jsPlugins', pluginEntry(specifier, ts), true);
 	if (withPlugins === null) return text;
-	const withRules = add(withPlugins, 'rules', ruleEntry, false);
-	if (withRules === null) return text;
+	// One call per rule, so each entry lands with the indentation the config already uses.
+	let withRules = withPlugins;
+	for (const name of SLOP_RULES) {
+		const next = add(withRules, 'rules', (comment) => ruleEntry(name, comment), false);
+		if (next === null) return text;
+		withRules = next;
+	}
 	const ignore = ignoreEntry(specifier);
 	if (ignore === null) return withRules;
 	return addIgnore(withRules, ignore, configObjectStart(withRules, ts), ts) ?? withRules;
@@ -746,7 +789,7 @@ function writeOxlint(repo, project, wanted) {
 		// A fresh config names the vendored folder too, so the repository does not lint the tool it
 		// just had copied in. `ignoreEntry` is null when the config cannot safely name it.
 		const ignore = ignoreEntry(specifier);
-		const fresh = `{\n\t"jsPlugins": [\n\t\t{ "name": "slop-patterns", "specifier": ${JSON.stringify(specifier)} }\n\t],\n\t"rules": {\n\t\t"slop-patterns/no-trivial-wrapper": "warn"\n\t}${ignore ? `,\n\t"ignorePatterns": [${ignore}]` : ''}\n}\n`;
+		const fresh = `{\n\t"jsPlugins": [\n\t\t{ "name": "slop-patterns", "specifier": ${JSON.stringify(specifier)} }\n\t],\n\t"rules": {\n${SLOP_RULES.map((name) => `\t\t${ruleEntry(name, false)}`).join(',\n')}\n\t}${ignore ? `,\n\t"ignorePatterns": [${ignore}]` : ''}\n}\n`;
 		write(path.join(project.dir, '.oxlintrc.json'), fresh);
 		say(`✔ ${where(project)}: .oxlintrc.json (new, with the slop-patterns plugin)`);
 		return;
@@ -775,7 +818,7 @@ function writeOxlint(repo, project, wanted) {
 	say(
 		`→ ${where(project)}: ${name} was left alone. Add\n` +
 			`    jsPlugins: [{ name: 'slop-patterns', specifier: '${specifier}' }]\n` +
-			`    rules: { 'slop-patterns/no-trivial-wrapper': 'warn' }`,
+			`    rules: { ${SLOP_RULES.map((r) => `'slop-patterns/${r}': 'warn'`).join(', ')} }`,
 	);
 }
 
@@ -1166,6 +1209,7 @@ export async function main(argv = process.argv.slice(2)) {
 	const fastapi = sets.includes('fastapi') ? projects.py.filter(isFastapi) : [];
 	const structure = sets.includes('structure');
 	copyTools(repo, [
+		...(eslintSets.length ? ['eslint/inspection.mjs'] : []),
 		...eslintSets.flatMap((s) => [`eslint/${s}.mjs`, `eslint/${s}.md`]),
 		...oxlintSets.map((s) => `oxlint/${s}`),
 		...(fastapi.length ? ['python/fastapi_rules.py'] : []),

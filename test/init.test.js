@@ -525,6 +525,49 @@ test('an oxlint.config.mjs is patched in place, and no .oxlintrc.json appears be
 	assert.match(after, /"no-console": "error", \/\/ keep this note/);
 });
 
+/**
+ * Lint one fixture file in a new process. ESLint caches the config module it imported, so a second
+ * `ruleIds` call in this process would still read the `eslint.rules.js` from before init rewrote it.
+ */
+function ruleIdsInNewProcess(dir, file) {
+	const script = `import { ESLint } from 'eslint';
+const [r] = await new ESLint({ cwd: ${JSON.stringify(dir)} }).lintFiles([${JSON.stringify(path.join(dir, file))}]);
+console.log(JSON.stringify(r.messages.map((m) => m.ruleId)));
+`;
+	return JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd: ROOT, encoding: 'utf8' }));
+}
+
+test('prose is never selected on its own, and is installed when it is asked for', async () => {
+	const files = {
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5', typescript: '^5' } }),
+		'eslint.config.js': `import svelte from 'eslint-plugin-svelte';
+import tsParser from '@typescript-eslint/parser';
+
+export default [
+	...svelte.configs.recommended,
+	{ files: ['**/*.svelte'], languageOptions: { parserOptions: { parser: tsParser } } },
+	{ files: ['**/*.ts'], languageOptions: { parser: tsParser } },
+];
+`,
+		'src/lib/x.ts': '// We utilize the cache.\nexport const a = 1;\n',
+	};
+	const dir = project('prose-opt-in', files);
+	// a project whose dependencies call for svelte-skills and error-handling, and not for prose
+	assert.equal(await init(dir, '--yes'), 0);
+	assert.doesNotMatch(text(dir, 'eslint.rules.js'), /prose/);
+	assert.equal(fs.existsSync(path.join(dir, 'tools/eslint/prose.mjs')), false);
+	assert.deepEqual(ruleIdsInNewProcess(dir, 'src/lib/x.ts'), []);
+
+	assert.equal(await init(dir, '--sets', 'prose'), 0);
+	assert.ok(fs.existsSync(path.join(dir, 'tools/eslint/prose.md')));
+	assert.match(text(dir, 'eslint.rules.js'), /prose\.config\(\{[\s\S]*inspection: 'branch',/);
+	assert.deepEqual(ruleIdsInNewProcess(dir, 'src/lib/x.ts'), ['prose/no-jargon', 'prose/prefer-jsdoc']);
+
+	// installed, so a later run that asks for nothing keeps it
+	assert.equal(await init(dir, '--yes'), 0);
+	assert.match(text(dir, 'eslint.rules.js'), /prose\.config/);
+});
+
 test('a CommonJS config is inserted into after module.exports =', () => {
 	const before = ['module.exports = {', '\trules: {', '\t\t"no-console": "error"', '\t}', '};', ''].join('\n');
 	assert.deepEqual(patchOxlint(before, './x.cjs', true).split('\n'), [
@@ -532,7 +575,8 @@ test('a CommonJS config is inserted into after module.exports =', () => {
 		'\tjsPlugins: [{ name: "slop-patterns", specifier: "./x.cjs" }],',
 		'\trules: {',
 		'\t\t"no-console": "error",',
-		'\t\t"slop-patterns/no-trivial-wrapper": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up',
+		'\t\t"slop-patterns/no-trivial-wrapper": "warn", // TODO(slop-patterns-error): raise once the findings are cleaned up',
+		'\t\t"slop-patterns/no-chained-type-assertions": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up',
 		'\t}',
 		'};',
 		'',
@@ -603,7 +647,8 @@ test('a TypeScript config with neither key gains both, inside defineConfig(', ()
 		'\tjsPlugins: [{ name: "slop-patterns", specifier: "./tools/oxlint/slop-patterns/index.ts" }],',
 		'\trules: {',
 		'\t\t"no-console": "error",',
-		'\t\t"slop-patterns/no-trivial-wrapper": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up',
+		'\t\t"slop-patterns/no-trivial-wrapper": "warn", // TODO(slop-patterns-error): raise once the findings are cleaned up',
+		'\t\t"slop-patterns/no-chained-type-assertions": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up',
 		'\t}',
 		'});',
 		'',
@@ -614,7 +659,8 @@ test('a TypeScript config with neither key gains both, inside defineConfig(', ()
 test('an entry inside a one-line object carries no comment that would swallow the closing brace', () => {
 	const after = patchOxlint('export default { rules: { "no-console": "error" } };\n', './x.ts', true);
 	assert.doesNotMatch(after, /\/\//, 'nothing after the inserted entry may become a comment');
-	assert.match(after, /"slop-patterns\/no-trivial-wrapper": "warn"\s*\}/);
+	assert.match(after, /"slop-patterns\/no-trivial-wrapper": "warn"/);
+	assert.match(after, /"slop-patterns\/no-chained-type-assertions": "warn"/);
 	assert.match(after, /jsPlugins: \[\{ name: "slop-patterns", specifier: "\.\/x\.ts" \}\]/);
 	assert.match(after, /"no-console": "error",/, 'the comma goes before the new entry, not after the old one');
 });
@@ -643,7 +689,8 @@ test('an oxlint config that already lists plugins and rules gets one entry added
 		'  "rules": {',
 		'    "a/b": "error",',
 		'    "c/d": "warn", // TODO(a): 65 findings',
-		'    "slop-patterns/no-trivial-wrapper": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up',
+		'    "slop-patterns/no-trivial-wrapper": "warn", // TODO(slop-patterns-error): raise once the findings are cleaned up',
+		'    "slop-patterns/no-chained-type-assertions": "warn" // TODO(slop-patterns-error): raise once the findings are cleaned up',
 		'  },',
 		'  "jsPlugins": [',
 		'    {',
@@ -665,7 +712,7 @@ test('an oxlint config with no jsPlugins or rules gains both', () => {
 		// The rules object is created on one line, so its entry carries no `//` comment: anything
 		// after it on that line would be swallowed, closing brace included (#17).
 		'{',
-		'\t"rules": { "slop-patterns/no-trivial-wrapper": "warn" },',
+		'\t"rules": { "slop-patterns/no-trivial-wrapper": "warn", "slop-patterns/no-chained-type-assertions": "warn" },',
 		'\t"jsPlugins": [{ "name": "slop-patterns", "specifier": "./tools/oxlint/slop-patterns/index.ts" }],',
 		'	"ignorePatterns": ["dist/", "tools/oxlint/slop-patterns/**"]',
 		'}',

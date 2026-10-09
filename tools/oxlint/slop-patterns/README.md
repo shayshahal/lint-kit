@@ -3,12 +3,13 @@
 Indirection that adds no behaviour, as an [oxlint](https://oxc.rs/docs/guide/usage/linter)
 plugin. The rules come from the waste metrics SlopCodeBench measures — *trivial wrappers*,
 *single-use functions*, *single-method classes* — kept to the ones a rule can name a
-replacement for.
+replacement for, plus the type-level shape of the same thing: an assertion that discards the
+type a value had is a claim standing in for a check.
 
-Only one of the three survived being run over a real repository: a single-use function is
-mostly a route handler or a lifecycle hook a framework calls by name, and a single-method
-class is mostly a middleware or an exception, so both report far more framework idiom than
-slop. See "What was left out" below.
+Of the three SlopCodeBench measures only one survived being run over a real repository: a
+single-use function is mostly a route handler or a lifecycle hook a framework calls by name,
+and a single-method class is mostly a middleware or an exception, so both report far more
+framework idiom than slop. See "What was left out" below.
 
 ## no-trivial-wrapper
 
@@ -55,6 +56,7 @@ about half are clear renames and half are getters and setters for one field
 	"jsPlugins": [{ "name": "slop-patterns", "specifier": "./tools/oxlint/slop-patterns/index.ts" }],
 	"rules": {
 		// TODO(slop-patterns-error): N findings — raise to error once they are cleaned up.
+		"slop-patterns/no-chained-type-assertions": "warn",
 		"slop-patterns/no-trivial-wrapper": "warn"
 	},
 	"overrides": [
@@ -65,6 +67,32 @@ about half are clear renames and half are getters and setters for one field
 
 Fixtures and how to run them: `fixtures/no-trivial-wrapper/README.md`.
 
+## no-chained-type-assertions
+
+Two or more assertions nested in one expression: `input as unknown as User`,
+`<Config><unknown>input`, or three deep. The first assertion throws away everything the
+value's type said, so nothing downstream is checked, and the second is a claim no one has
+verified. It is how generated code silences a type error instead of handling the case it is
+about.
+
+```ts
+// reported
+const user = input as unknown as User;
+
+// instead: parse where the value enters, or keep the one assertion that is true
+const user = parseUser(input);
+const narrowed = isUser(input) ? (input as User) : null;
+```
+
+The rule passes a single assertion, and a chain of nothing but `as const`, which widens a
+literal and asserts nothing about what it was. It reports the outermost assertion once for
+the whole chain. Like `no-trivial-wrapper` it stays out of test files, where a double has to
+stand in for a type it is not (`new FakeXHR() as unknown as XMLHttpRequest`) — over the
+monorepo below that exemption alone is 35 of the 78 findings.
+
+Land it on `warn`. Over the same monorepo (1,431 files under `packages/**/src`, including
+`.svelte`), it reports 43, none in a test file.
+
 ## What was left out
 
 Measured over the same monorepo (742 Svelte, 7,217 TypeScript files):
@@ -73,6 +101,8 @@ Measured over the same monorepo (742 Svelte, 7,217 TypeScript files):
 | --- | --- | --- |
 | single-use function | 1,337 | Almost all are `handle`, `reroute`, `health_check`, route handlers and hooks a framework calls by name. |
 | single-method class | 0 | Every candidate was a Starlette middleware (`dispatch`) or an exception class (`__init__`), both required shapes. |
+| trivial type alias (`type UserId = string`) | 2 | Too rare to be a rule: two primitive aliases in `packages/frontend/shared/filters/src/types.ts`, and neither is worth a finding. |
+| a class of nothing but statics | 0 | The same measurement that left single-method classes out, on a different predicate. |
 | verbosity, erosion, clone %, maintainability index | — | Whole-submission scores from a pinned binary, not local patterns, and a fixed threshold over a whole repository is what `structure` compares against its base instead. |
 
 That first count is over a whole repository, which is not the population a rule fires on: a rule

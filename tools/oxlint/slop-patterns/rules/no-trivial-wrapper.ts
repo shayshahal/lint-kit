@@ -2,6 +2,8 @@ import { defineRule } from "@oxlint/plugins";
 
 import type { ESTree, SourceCode } from "@oxlint/plugins";
 
+import { TEST_FILE } from "../paths.ts";
+
 /**
  * SvelteKit keeps its parameter matchers in `src/params/<name>.ts` and calls them from the
  * router by convention, so a one-line `export const match = (param) => SET.has(param)` there is
@@ -9,12 +11,6 @@ import type { ESTree, SourceCode } from "@oxlint/plugins";
  * (`src/params.ts`) is not one, so it stays reportable.
  */
 const SVELTEKIT_PARAM_MATCHERS = /(?:^|[/\\])src[/\\]params[/\\][^/\\]+\.[cm]?[jt]s$/u;
-
-/**
- * A test double's `get`, `set` and `delete` forward to a `Map` because they must mirror the
- * real signature, so forwarding is the point there and the rule stays out of test files.
- */
-const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$|[/\\](?:tests?|__tests__)[/\\]/u;
 
 /**
  * `ESTree.Function` covers `FunctionDeclaration` and `FunctionExpression`; there is no

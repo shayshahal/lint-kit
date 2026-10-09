@@ -10,6 +10,7 @@ import { patchOxlint } from '../bin/lint-kit.js';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SET = path.join(ROOT, 'tools/oxlint/slop-patterns');
 const FIXTURES = path.join(SET, 'fixtures/no-trivial-wrapper');
+const ASSERTION_FIXTURES = path.join(SET, 'fixtures/no-chained-type-assertions');
 // oxlint's bin is a Node script, so it runs the same way on every platform.
 const OXLINT = path.join(ROOT, 'node_modules/oxlint/bin/oxlint');
 // Outside the repository: the rule skips files under a `test/` folder, and this repository has one.
@@ -22,8 +23,8 @@ after(() => {
 	fs.rmSync(CONFIG_DIR, { recursive: true, force: true });
 });
 
-/** Run oxlint over `files` with the set loaded, and return this rule's findings. */
-function lint(files) {
+/** Run oxlint over `files` with the set loaded, and return `rule`'s findings. */
+function lint(files, rule = 'no-trivial-wrapper') {
 	const config = path.join(TMP, 'oxlintrc.json');
 	// An absolute specifier, not one relative to the config: on the Windows runners the
 	// checkout is on D: and the temp folder on C:, and path.relative across drives returns
@@ -34,7 +35,7 @@ function lint(files) {
 		JSON.stringify({
 			ignorePatterns: [],
 			jsPlugins: [{ name: 'slop-patterns', specifier }],
-			rules: { 'slop-patterns/no-trivial-wrapper': 'error' },
+			rules: { [`slop-patterns/${rule}`]: 'error' },
 		}),
 	);
 	let out;
@@ -47,7 +48,7 @@ function lint(files) {
 		out = e.stdout;
 	}
 	assert.ok(out, 'oxlint produced no output');
-	return JSON.parse(out).diagnostics.filter((d) => String(d.code ?? '').includes('no-trivial-wrapper'));
+	return JSON.parse(out).diagnostics.filter((d) => String(d.code ?? '').includes(rule));
 }
 
 test('no-trivial-wrapper: every wrapper in the invalid fixture, nothing in the valid one', () => {
@@ -61,6 +62,32 @@ test('no-trivial-wrapper: every wrapper in the invalid fixture, nothing in the v
 		assert.ok(d.filename.replace(/\\/g, '/').endsWith('invalid-forwards-arguments.ts'), `${d.filename} should not report`);
 	}
 	assert.match(found[0].message, /only forwards its arguments/);
+});
+
+test('no-chained-type-assertions: every chain in the invalid fixture, nothing in the valid one', () => {
+	const invalid = path.join(ASSERTION_FIXTURES, 'invalid-chained-assertions.ts');
+	const found = lint([invalid, path.join(ASSERTION_FIXTURES, 'valid-not-chained.ts')], 'no-chained-type-assertions');
+	// the declaration, the angle-bracket chain, the three-deep one (reported once, for the
+	// outermost assertion) and the one inside a call
+	assert.deepEqual(found.map((d) => d.labels?.[0]?.span?.line ?? d.line).sort((a, b) => a - b), [6, 9, 15, 19]);
+	for (const d of found) {
+		assert.ok(
+			d.filename.replace(/\\/g, '/').endsWith('invalid-chained-assertions.ts'),
+			`${d.filename} should not report`,
+		);
+		assert.match(d.message, /Two assertions in a row erase the type/);
+	}
+});
+
+test('no-chained-type-assertions: a test double faking an interface is left alone', () => {
+	const double = path.join(TMP, 'proj/src/helpers.test.ts');
+	const spec = path.join(TMP, 'proj/src/tests/helpers.ts');
+	const source = 'declare const FakeXHR: unknown;\nexport const xhr = FakeXHR as unknown as XMLHttpRequest;\n';
+	for (const file of [double, spec]) {
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, source);
+	}
+	assert.deepEqual(lint([double, spec], 'no-chained-type-assertions'), []);
 });
 
 test('no-trivial-wrapper: a SvelteKit matcher in src/params/<name>.ts is left alone, elsewhere is not', () => {

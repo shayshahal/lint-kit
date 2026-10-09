@@ -4,7 +4,10 @@ Svelte 5 / SvelteKit rules from the Svelte skills and docs. Each section says wh
 reports, why, and what to write instead. Rules marked **fix** are rewritten by `eslint --fix`.
 
 `svelteSkills.config()` also turns on three eslint-plugin-svelte rules: `valid-compile` with
-warnings, `require-each-key` and `prefer-style-directive`.
+warnings, `require-each-key` and `prefer-style-directive`. It also takes `inspection`, which
+narrows every rule to the lines the branch added since the merge-base with its base (`init` writes
+it); `inspection.mjs` beside this file has the detail, and the three svelte rules above are not
+narrowed.
 
 ## no-legacy-syntax
 
