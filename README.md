@@ -16,7 +16,7 @@ the repository owns the copies, and only whoever runs `init` needs access here.
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
 | `error-handling` | ESLint | catch blocks (and promise `.catch()`) that drop the error, only log it, return a fixed default, or turn it into a string |
 | `prose` | ESLint | inflated vocabulary in comments, and `//` comments above an export or a member that should be JSDoc (opt-in) |
-| `vitest` | ESLint | `test.only` / `it.only` / `describe.only` left in the project's tests, which silently skip everything else (opt-in) |
+| `vitest` | ESLint | `test.only` / `it.only` / `describe.only` left in the project's tests, which silently skip everything else, and async assertions that are not awaited or returned (opt-in) |
 | `slop-patterns` | oxlint | a named function whose whole body forwards its arguments to another function, and two assertions in a row that discard a type |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
@@ -160,14 +160,17 @@ and `prefer-jsdoc` 203, every one autofixed. Both rules and the words they know 
 [tools/eslint/prose.md](tools/eslint/prose.md).
 
 `vitest` needs a project that depends on Vitest. It checks `*.test.*` and `*.spec.*` files
-anywhere in the project, inside or outside `src/`, for `test.only()`, `it.only()` and
-`describe.only()` — a focused test makes the runner skip every other test in the file, and the
-suite still passes. The check is `@vitest/eslint-plugin`'s `vitest/no-focused-tests`, at error;
-the set turns on no other rule from that plugin (async and skip are their own slices), and a
-locally bound `test`, a `fit`/`fdescribe` Jest name, or a `test.only` imported from another
-library passes. `init` adds `@vitest/eslint-plugin@1.6.27` and routes the test files to the
-pre-commit ESLint step; a repository that already runs its own ESLint command keeps it and the
-run says what to add. Only Vitest is supported. The set resolves the plugin from the config's own
+anywhere in the project, inside or outside `src/`, for two ways a test silently passes: a focused
+test (`test.only()` / `it.only()` / `describe.only()`) makes the runner skip every other test in
+the file, and a promise chain that is never returned or awaited runs its expectation after the test
+has finished. The checks are `@vitest/eslint-plugin`'s `vitest/no-focused-tests`,
+`vitest/valid-expect` and `vitest/valid-expect-in-promise`, at error; a locally bound `test`, a
+`fit`/`fdescribe` Jest name, a `test.only` imported from another library, or a shadowed `expect`
+passes. The async rules are syntactic, so an assertion behind a project helper is not resolved, and
+the set turns on no other rule from that plugin (unconditional skips are their own slice). `init`
+adds `@vitest/eslint-plugin@1.6.27` and routes the test files to the pre-commit ESLint step; a
+repository that already runs its own ESLint command keeps it and the run says what to add. Only
+Vitest is supported. The set resolves the plugin from the config's own
 folder (`from: import.meta.url`), so a pnpm workspace member whose `node_modules` holds the plugin
 works even though `tools/eslint/` is copied once at the repository root. An
 `@vitest/eslint-plugin` the project already has is left alone: a version other than the verified

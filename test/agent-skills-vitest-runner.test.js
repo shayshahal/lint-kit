@@ -119,3 +119,16 @@ test('a .only after .each(...) is a collection failure, not a focused test', () 
 	assert.equal(report.success, false);
 	assert.match(report.testResults[0].message, /\.only is not a function/);
 });
+
+test('a floating expectation chain false-passes; returning it fails the test', () => {
+	// The complement of the lint claim: both rules report the chain, and the runner shows why the
+	// floating form is a silent pass — the test finishes before the callback asserts.
+	const status = statusByTitle(runVitestFixture('unawaited-shape.test.js', 1));
+	assert.equal(status['floating chain with a failing expectation false passes'], 'passed');
+	assert.equal(status['returning the chain catches the mismatch'], 'failed');
+	assert.equal(status['a returned chain passes when the value matches'], 'passed');
+	// Vitest 4 attributes a dangling `.resolves` assertion to the running test, so the direct shape
+	// is not the silent pass the chain is; the rule still requires the awaited/returned form the
+	// frozen support matrix decides, and its fix writes that form.
+	assert.equal(status['an unawaited .resolves is still reported by the runner'], 'failed');
+});

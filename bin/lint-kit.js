@@ -40,7 +40,7 @@ export const SETS = {
 	'tailwind-patterns': { kind: 'eslint', about: 'Tailwind / shadcn class conventions (vh, transition-all, dark:, dialog titles)' },
 	'error-handling': { kind: 'eslint', about: 'catch blocks that drop, only log, or stringify the error' },
 	prose: { kind: 'eslint', about: 'inflated vocabulary in comments, and // comments that should be JSDoc (ask for it)' },
-	vitest: { kind: 'eslint', about: 'focused tests (test.only / describe.only) in the project tests (Vitest, ask for it)' },
+	vitest: { kind: 'eslint', about: 'focused tests and unawaited async assertions in the project tests (Vitest, ask for it)' },
 	'slop-patterns': { kind: 'oxlint', about: 'a function that only forwards its arguments, and assertions that discard a type (oxlint)' },
 	fastapi: { kind: 'python', about: 'FastAPI rules ruff lacks, as a flake8 plugin (FAP001-017)' },
 	typecheck: { kind: 'typecheck', about: 'svelte-check --tsgo and pyright before each push (lefthook)' },
