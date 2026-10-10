@@ -60,7 +60,8 @@ function parseFinding(entry) {
 	if (!Number.isInteger(entry.StartLine) || entry.StartLine < 1) return { ok: false, reason: NO_LINE };
 	if (!Number.isInteger(entry.EndLine) || entry.EndLine < entry.StartLine) return { ok: false, reason: NO_END_LINE };
 	if (entry.Secret !== REDACTED) return { ok: false, reason: NOT_REDACTED };
-	if (!isSafeText(entry.Match) || !entry.Match.includes(REDACTED)) return { ok: false, reason: NOT_REDACTED };
+	// Match is discarded, not output metadata: real redacted context can contain newlines.
+	if (typeof entry.Match !== 'string' || !entry.Match.includes(REDACTED)) return { ok: false, reason: NOT_REDACTED };
 	if (typeof entry.Commit !== 'string' || (entry.Commit !== '' && !/^[0-9a-f]{40}$/.test(entry.Commit)))
 		return { ok: false, reason: UNSAFE_COMMIT };
 	return {

@@ -62,6 +62,47 @@ test('branch mode passes a clean branch and its documented allowlisted dummy val
 	for (const value of [DUMMY, INTRODUCED, INHERITED]) assert.doesNotMatch(result.output, new RegExp(value));
 });
 
+test('a Git-ignored untracked credential is not falsely labeled inherited', () => {
+	const repository = createRepository('ignored-untracked-credential');
+	addCleanFixture(repository);
+	writeFile(repository, '.gitignore', 'ignored.ts\n');
+	const base = commitAll(repository, 'base');
+	writeCredentialFile(repository, 'ignored.ts', INTRODUCED);
+
+	const result = scan(repository, ['--base', base]);
+
+	assert.equal(result.code, 1, result.output);
+	assert.match(result.stdout, /introduced generic-api-key ignored\.ts:1/);
+	assert.ok(!result.output.includes(INTRODUCED));
+});
+
+test('a fully redacted match can retain multiline assignment context', () => {
+	const repository = createRepository('multiline-assignment-context');
+	addCleanFixture(repository);
+	const base = commitAll(repository, 'base');
+	writeFile(repository, 'multiline.ts', `const apiKey =\n"${INTRODUCED}";\n`);
+
+	const result = scan(repository, ['--base', base]);
+
+	assert.equal(result.code, 1, result.output);
+	assert.match(result.stdout, /introduced generic-api-key multiline\.ts:1/);
+	assert.ok(!result.output.includes(INTRODUCED));
+});
+
+test('the dummy exception matches the whole secret, never a substring of another value', () => {
+	const repository = createRepository('exact-dummy-exception');
+	addCleanFixture(repository);
+	const base = commitAll(repository, 'base');
+	const value = `00${DUMMY}ff`;
+	writeCredentialFile(repository, 'different.ts', value);
+
+	const result = scan(repository, ['--base', base]);
+
+	assert.equal(result.code, 1, result.output);
+	assert.match(result.stdout, /introduced generic-api-key different\.ts:1/);
+	assert.ok(!result.output.includes(value));
+});
+
 test('branch mode surfaces an inherited credential without failing the branch', () => {
 	const repository = createRepository('inherited-credential');
 	writeCredentialFile(repository, 'inherited.ts', INHERITED);
@@ -276,6 +317,18 @@ test('branch mode resolves a branch-name base and origin/HEAD by default', () =>
 	assert.match(byBranch.stdout, /base main/);
 });
 
+test('a nested source is rejected rather than scanning inconsistent history and content roots', () => {
+	const repository = createRepository('nested-source');
+	addCleanFixture(repository);
+	commitAll(repository, 'base');
+	writeFile(repository, 'nested/keep.ts', 'export const keep = true;\n');
+
+	const result = scan(path.join(repository, 'nested'));
+
+	assert.equal(result.code, 2, result.output);
+	assert.match(result.stderr, /source must be the repository root/);
+});
+
 test('an unsupported mode or option is an execution failure', () => {
 	const repository = createRepository('unsupported-input');
 	writeCredentialFile(repository, 'introduced.ts', INTRODUCED);
@@ -283,6 +336,7 @@ test('an unsupported mode or option is an execution failure', () => {
 	assert.equal(scan(repository, ['--mode', 'sideways']).code, 2);
 	assert.equal(scan(repository, ['--severity=high']).code, 2);
 	assert.equal(scan(repository, ['--timeout', '0']).code, 2);
+	assert.equal(scan(repository, ['--timeout', '1e308']).code, 2);
 });
 
 test('--help names the modes and the exit codes', () => {

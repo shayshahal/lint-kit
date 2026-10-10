@@ -14,4 +14,5 @@ useDefault = true
 
 [[allowlists]]
 description = "lint-kit's documented dummy value: a placeholder written into generated fixtures and documentation, never a credential. A different value under the same assignment is still reported."
-regexes = ['''9f4c2b7e1a8d6f3c5e0b9a2d7c4f1e8b''']
+regexTarget = "secret"
+regexes = ['''^9f4c2b7e1a8d6f3c5e0b9a2d7c4f1e8b$''']

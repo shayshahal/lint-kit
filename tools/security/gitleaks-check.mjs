@@ -72,6 +72,10 @@ function main(argv) {
 
 	const source = path.resolve(options.source ?? process.cwd());
 	if (!isDirectory(source)) return cannotCheck(`the source directory does not exist: ${source}`);
+	const repositoryRoot = gitText(source, ['rev-parse', '--show-toplevel']);
+	if (repositoryRoot === null) return cannotCheck('the source is not a Git repository');
+	if (path.relative(fs.realpathSync.native(repositoryRoot), fs.realpathSync.native(source)) !== '')
+		return cannotCheck('the source must be the repository root; pass that directory with --source');
 
 	const config = path.resolve(
 		options.config ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'gitleaks.toml'),
@@ -159,11 +163,14 @@ function runBranch(scan, requestedBase, version) {
 
 /** Split working-tree findings into the lines the branch added and the ones it inherited. */
 function attributeTreeFindings(scan, treeFindings, mergeBase) {
-	// `-z` keeps a non-ASCII path byte-for-byte the way Gitleaks reports it; the line-based form
-	// C-quotes it ("caf\303\251.ts"), which can never match a finding and would hide it.
-	const untracked = gitRaw(scan.source, ['ls-files', '-z', '--others', '--exclude-standard']);
-	if (untracked === null) return { ok: false, reason: 'could not list untracked files' };
-	const untrackedFiles = new Set(untracked.split('\0').filter(Boolean));
+	// NUL-safe tracked names let us classify every reported untracked file, including ignored
+	// ones, without enumerating potentially huge ignored dependency/cache directories.
+	const tracked = gitRaw(scan.source, ['ls-files', '-z', '--cached']);
+	if (tracked === null) return { ok: false, reason: 'could not list tracked files' };
+	const trackedFiles = new Set(tracked.split('\0').filter(Boolean));
+	const untrackedFiles = new Set(
+		treeFindings.map((finding) => normalizePath(finding.file)).filter((file) => !trackedFiles.has(file)),
+	);
 
 	// A file the working tree converts on its way to git (a clean `filter` or
 	// `working-tree-encoding`) makes the added-line diff describe something other than what
@@ -470,8 +477,8 @@ function parseArguments(argv) {
 			return { ok: false, reason: 'unsupported mode; use branch or history' };
 		if (name === '--timeout') {
 			const seconds = Number(value);
-			if (!Number.isInteger(seconds) || seconds < 1)
-				return { ok: false, reason: 'unsupported timeout; use a whole number of seconds of at least 1' };
+			if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 2_147_483)
+				return { ok: false, reason: 'unsupported timeout; use a whole number of seconds from 1 to 2147483' };
 			options.timeout = seconds;
 			continue;
 		}
@@ -513,4 +520,9 @@ function short(sha) {
 	return sha.slice(0, 7);
 }
 
-process.exitCode = main(process.argv.slice(2));
+try {
+	process.exitCode = main(process.argv.slice(2));
+} catch {
+	// Filesystem/report failures cannot become clean, or expose raw exception/report content.
+	process.exitCode = cannotCheck('the check could not complete; no scanner or report content is forwarded');
+}

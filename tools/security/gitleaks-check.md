@@ -11,7 +11,9 @@ node tools/security/gitleaks-check.mjs --mode history --gitleaks gitleaks
 ```
 
 The executable is not downloaded or installed here: point `--gitleaks` at a Gitleaks 8.30.1 binary,
-or leave it out to use `gitleaks` on `PATH`. A different version is refused.
+or leave it out to use `gitleaks` on `PATH`. A different version is refused. Run from the Git
+repository root or pass that root with `--source`; a subdirectory is rejected rather than
+mixing full-repository history with a partial content scan. Timeouts accept 1–2147483 whole seconds.
 
 ## Exit codes
 
@@ -36,13 +38,16 @@ turn any of them into a pass; do not append `|| true`, and let CI block on `1` *
   introduced. A secret that was committed and later deleted is still in this range, so it still
   fails the branch; `--text` and `--no-textconv` stop a branch `.gitattributes` that marks files
   binary (`*.ts binary`) or sets a textconv driver from hiding their content from `git log -p`.
-- `gitleaks dir` over the working tree, including untracked files. Untracked paths are read with
-  `git ls-files -z`, so a non-ASCII name (`caf\u00e9.ts`) matches the finding Gitleaks reports.
+- `gitleaks dir` over the working tree, including untracked and Git-ignored files. Tracked paths
+  are read with `git ls-files -z --cached`, so Unicode names round-trip and ignored findings
+  cannot be mistaken for tracked, inherited content.
 
 Every finding from the commit range is introduced. A working-tree finding is introduced when the
 whole `StartLine..EndLine` range it spans overlaps a line the branch added since the merge-base, or
 when it is in a file git does not track yet; otherwise it is **inherited** and is printed but does
-not fail. That distinction is the whole point: the base's own secrets never fail a branch, and the
+not fail. An untracked value has no committed baseline: even a pre-existing ignored local
+credential cannot be proved inherited, so it blocks rather than being silently exempted.
+That distinction is the whole point: the base's own secrets never fail a branch, and the
 branch's own always do. The added lines come from `git diff --text --no-textconv`, so a file the
 branch marked binary is still attributed rather than silently called inherited.
 
@@ -55,7 +60,8 @@ incident remediation, not gating a branch.
 
 Gitleaks runs with `--redact=100`: a finding's `Secret` is exactly `REDACTED`, and the matched value
 inside `Match` is replaced with `REDACTED` while the rule's surrounding context stays
-(`apiKey = "REDACTED"`). Its stdout and stderr are discarded rather than forwarded. The report is
+(`apiKey = "REDACTED"`). Redacted context can span lines; it is discarded rather than used as
+output metadata. Its stdout and stderr are discarded rather than forwarded. The report is
 read, validated and deleted; the only thing printed is allowlisted metadata:
 
 ```
@@ -85,7 +91,8 @@ usual ways a branch could widen its own exceptions:
 
 `gitleaks.toml` extends the upstream default rules and allowlists lint-kit's one documented dummy
 value (`9f4c2b7e1a8d6f3c5e0b9a2d7c4f1e8b`, a placeholder written into generated fixtures). A
-different value under the same assignment is still reported. Add a consumer's reviewed placeholders
+different value under the same assignment is still reported. The exception is anchored against the
+entire `Secret`, so a longer value containing that placeholder is not exempt. Add a consumer's reviewed placeholders
 to their own `--config` file, one value at a time — do not use a test-directory pattern.
 
 ## Limits
