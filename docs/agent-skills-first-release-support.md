@@ -41,14 +41,18 @@ project already uses; the plugin is the maintained successor to the deprecated `
 The runner and the plugin are both exact `devDependencies` here, so the plugin's optional peer is
 exercised, not assumed.
 
-Compatibility evidence, exercised with the installed toolchain (`eslint@10.11.0`, Node 26.10.0):
+Compatibility evidence, exercised with the installed toolchain (`eslint@10.11.0`, Node 22.23.3
+with `CI=true`, and initial checks on Node 26.10.0):
 
 - The plugin declares peer `eslint >=8.57.0`, `node >=18`; `vitest`, `typescript` and
   `@typescript-eslint/eslint-plugin` are optional peers, so a consumer needs no Vitest install to
   lint. It runs under ESLint 10 flat config.
-- Vitest `4.1.11` declares `node ^20.0.0 || ^22.0.0 || >=24.0.0`, which satisfies this repo's
-  `engines: node >=20` on the 20/22/24+ lines. The latest major (Vitest 5) requires
-  `^22.12.0 || ^24.0.0 || >=26.0.0`, so `4.1.11` is the newest release that still supports Node 20.
+- Vitest `4.1.11` declares `node ^20.0.0 || ^22.0.0 || >=24.0.0`; unlike Vitest 5 it retains a
+  Node 20 line. The complete toolchain is stricter: ESLint 10.11.0 requires
+  `^20.19.0 || ^22.13.0 || >=24`, and resolved Vite 8.3.4 requires
+  `^20.19.0 || >=22.12.0`. Do not interpret this repo's broad `node >=20` engine declaration as
+  proof that Node 20.0 works. Node 20 is metadata-compatible from 20.19 but not runtime-tested
+  here; CI's Node 22.23.3 is verified.
 - Rejected: `eslint-plugin-vitest@0.5.4` (peer `eslint ^8.57.0 || ^9.0.0` — it does not support
   ESLint 10) and `eslint-plugin-jest` (viable, but selecting it would add a second runner engine
   and Jest is not the runner this stack targets). One runner only for the first release.
