@@ -75,6 +75,8 @@ function realRepository(name) {
 	const dir = path.join(TMP, name);
 	fs.mkdirSync(dir, { recursive: true });
 	git(dir, ['init', '-q', '-b', 'main']);
+	git(dir, ['config', 'user.name', 'lint-kit fixture']);
+	git(dir, ['config', 'user.email', 'fixture@example.invalid']);
 	return dir;
 }
 
