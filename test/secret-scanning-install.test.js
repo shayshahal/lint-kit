@@ -93,13 +93,86 @@ test('a re-run changes nothing and preserves an edited consumer config byte-for-
 	assert.equal((text(dir, 'lefthook.yml').match(/secret-scanning:/g) ?? []).length, 1);
 });
 
+test('a re-run refreshes stale copied tool code but never the consumer config or history script', async () => {
+	const dir = project('upgrade', {
+		'lefthook.yml': 'pre-commit:\n  commands:\n    format:\n      run: pnpm format\n',
+		'package.json': '{\n\t"name": "consumer"\n}\n',
+	});
+	await init(dir, '--sets', 'secret-scanning');
+	// an older copy of the command and report reader, and a consumer-edited config and script
+	fs.writeFileSync(path.join(dir, 'tools/security/gitleaks-check.mjs'), 'export const staleMarker = true;\n');
+	fs.writeFileSync(path.join(dir, 'tools/security/gitleaks-report.mjs'), 'export const staleMarker = true;\n');
+	const editedConfig = `${text(dir, 'tools/security/gitleaks.toml')}\n# consumer review\n`;
+	fs.writeFileSync(path.join(dir, 'tools/security/gitleaks.toml'), editedConfig);
+	const ownHistory = '{\n\t"name": "consumer",\n\t"scripts": {\n\t\t"secret-scanning:history": "echo mine"\n\t}\n}\n';
+	fs.writeFileSync(path.join(dir, 'package.json'), ownHistory);
+
+	assert.equal(await init(dir, '--sets', 'secret-scanning'), 0);
+	assert.doesNotMatch(text(dir, 'tools/security/gitleaks-check.mjs'), /staleMarker/, 'the copied command is refreshed');
+	assert.match(text(dir, 'tools/security/gitleaks-check.mjs'), /PINNED_GITLEAKS_VERSION/);
+	assert.doesNotMatch(text(dir, 'tools/security/gitleaks-report.mjs'), /staleMarker/, 'the report reader is refreshed');
+	assert.match(text(dir, 'tools/security/gitleaks-report.mjs'), /parseGitleaksReport/);
+	assert.equal(text(dir, 'tools/security/gitleaks.toml'), editedConfig, 'the consumer config is preserved');
+	assert.equal(text(dir, 'package.json'), ownHistory, 'the consumer history script is preserved');
+});
+
+test('init from a nested workspace still writes one repository-root step with POSIX paths', async () => {
+	const dir = project('nested-invoke', {
+		'lefthook.yml': 'pre-commit:\n  commands: {}\n',
+		'pnpm-workspace.yaml': "packages:\n  - 'apps/*'\n",
+		'pnpm-lock.yaml': '',
+		'package.json': '{"name":"root"}\n',
+		'apps/web/package.json': JSON.stringify({ devDependencies: { svelte: '^5' } }),
+	});
+	assert.equal(await init(path.join(dir, 'apps', 'web'), '--sets', 'secret-scanning'), 0);
+	assert.ok(fs.existsSync(path.join(dir, 'tools', 'security', 'gitleaks-check.mjs')));
+	assert.deepEqual(hooks(dir)['pre-push'].commands['secret-scanning'], { run: `${COMMAND} --base origin/main` });
+	assert.doesNotMatch(text(dir, 'lefthook.yml'), /tools\\security/);
+});
+
 test('an existing secret scan is left unchanged, with the copied command to add printed', async () => {
 	const own = 'pre-push:\n  commands:\n    gitleaks:\n      run: gitleaks detect --redact\n';
 	const dir = project('own-hook', { 'lefthook.yml': own });
 	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'secret-scanning']);
 	assert.equal(text(dir, 'lefthook.yml'), own, 'the repository step is untouched');
-	assert.match(said, /pre-push "gitleaks" already scans secrets; init left it unchanged/);
-	assert.match(said, /run: node tools\/security\/gitleaks-check\.mjs/);
+	assert.match(said, /pre-push "gitleaks" mentions secret scanning but is not the repository-root fail-closed run/);
+	assert.match(said, /run: node tools\/security\/gitleaks-check\.mjs --base <ref>/);
+});
+
+test('an existing canonical repository-root step is recognised, and nothing is added', async () => {
+	const own = 'pre-push:\n  commands:\n    secret-scanning:\n      run: node tools/security/gitleaks-check.mjs --base origin/develop\n';
+	const dir = project('canonical-hook', { 'lefthook.yml': own });
+	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'secret-scanning']);
+	assert.equal(text(dir, 'lefthook.yml'), own, 'the equivalent step is untouched');
+	assert.match(said, /already runs the copied command at the repository root; nothing added/);
+	assert.doesNotMatch(said, /mentions secret scanning/);
+});
+
+test('a step that only mentions the copied command is a manual action, not success', async () => {
+	const shapes = {
+		echo: 'pre-push:\n  commands:\n    docs:\n      run: echo gitleaks-check\n',
+		orTrue: 'pre-push:\n  commands:\n    secret-scanning:\n      run: node tools/security/gitleaks-check.mjs --base origin/main || true\n',
+		root: 'pre-push:\n  commands:\n    secret-scanning:\n      root: apps/web/\n      run: node tools/security/gitleaks-check.mjs --base origin/main\n',
+		glob: 'pre-push:\n  commands:\n    secret-scanning:\n      glob: "*.ts"\n      run: node tools/security/gitleaks-check.mjs --base origin/main\n',
+		skip: 'pre-push:\n  commands:\n    secret-scanning:\n      skip: true\n      run: node tools/security/gitleaks-check.mjs --base origin/main\n',
+		history: 'pre-push:\n  commands:\n    secret-scanning:\n      run: node tools/security/gitleaks-check.mjs --mode history\n',
+	};
+	for (const [name, own] of Object.entries(shapes)) {
+		const dir = project(`misleading-${name}`, { 'lefthook.yml': own });
+		const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'secret-scanning']);
+		assert.equal(text(dir, 'lefthook.yml'), own, `${name}: the step is untouched`);
+		assert.doesNotMatch(said, /already runs the copied command/, name);
+		assert.match(said, /mentions secret scanning but is not the repository-root fail-closed run/, name);
+	}
+});
+
+test('an unusual --base is not embedded in a generated shell command', async () => {
+	const dir = project('unusual-base', { 'lefthook.yml': 'pre-commit:\n  commands: {}\n' });
+	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'secret-scanning', '--base', 'origin/main; touch pwned']);
+	assert.doesNotMatch(text(dir, 'lefthook.yml'), /pwned/);
+	assert.doesNotMatch(said, /pwned/);
+	assert.match(said, /the resolved base is not a plain ref/);
+	assert.equal(hooks(dir)['pre-push']?.commands?.['secret-scanning'], undefined);
 });
 
 test('with no lefthook, nothing is wired and the pre-push step to add is printed', async () => {
@@ -109,6 +182,12 @@ test('with no lefthook, nothing is wired and the pre-push step to add is printed
 	assert.ok(fs.existsSync(path.join(dir, 'tools/security/gitleaks-check.mjs')));
 	assert.match(said, /this repository has no lefthook\.yml, so no pre-push step was added/);
 	assert.match(said, /pre-push:\n\s+commands:\n\s+secret-scanning:\n\s+run: node tools\/security\/gitleaks-check\.mjs/);
+});
+
+test('with no lefthook, the printed step respects an explicit --base', async () => {
+	const dir = project('no-hook-base', {});
+	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'secret-scanning', '--base', 'develop']);
+	assert.match(said, /run: node tools\/security\/gitleaks-check\.mjs --base origin\/develop/);
 });
 
 test('the copied command fails closed when the pinned scanner is absent', async () => {
@@ -242,6 +321,49 @@ test('the copied config and docs name the pinned scanner version', async () => {
 	assert.match(text(dir, 'tools/security/gitleaks-check.md'), /8\.30\.1/);
 });
 
+test('the generated pre-push hook fails closed when the scanner cannot run', async () => {
+	const work = clonedRepository('missing-tool-hook');
+	const run = (...args) => git(work, args);
+	fs.writeFileSync(path.join(work, 'lefthook.yml'), 'pre-commit:\n  commands:\n    format:\n      run: echo ok\n');
+	await init(work, '--sets', 'secret-scanning');
+	run('add', '-A');
+	run('commit', '-qm', 'base');
+	run('branch', '-M', 'main');
+	assert.equal(push(work, ['-q', '-u', 'origin', 'main']).code, 0, 'the base push is clean');
+	installLefthook(work);
+	run('checkout', '-qb', 'feature');
+	writeCredentialFile(work, 'secret.ts', INTRODUCED);
+	run('add', '-A');
+	run('commit', '-qm', 'add a credential');
+	const rejected = pushWithoutScanner(work, ['origin', 'feature']);
+	assert.notEqual(rejected.code, 0, rejected.output);
+	assert.match(rejected.output, /cannot check|not found/i);
+	assert.ok(!rejected.output.includes(INTRODUCED), 'the push log must not carry the matched value');
+});
+
+test('the documented CI shape runs the trusted command and config outside the source tree', async () => {
+	const dir = realRepository('ci-trusted');
+	fs.writeFileSync(path.join(dir, 'lefthook.yml'), 'pre-commit:\n  commands:\n    format:\n      run: echo ok\n');
+	await init(dir, '--sets', 'secret-scanning');
+	git(dir, ['add', '-A']);
+	git(dir, ['commit', '-qm', 'install']);
+	writeCredentialFile(dir, 'introduced.ts', INTRODUCED);
+	// the trusted command, report reader and config copied to a temp path outside the source tree
+	const trusted = path.join(TMP, 'ci-trusted-path');
+	fs.mkdirSync(trusted, { recursive: true });
+	for (const file of ['gitleaks-check.mjs', 'gitleaks-report.mjs', 'gitleaks.toml'])
+		fs.copyFileSync(path.join(ROOT, 'tools', 'security', file), path.join(trusted, file));
+	const result = spawnSync(
+		process.execPath,
+		[path.join(trusted, 'gitleaks-check.mjs'), '--source', dir, '--gitleaks', GITLEAKS, '--config', path.join(trusted, 'gitleaks.toml'), '--base', 'HEAD'],
+		{ encoding: 'utf8', env: process.env },
+	);
+	const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+	assert.equal(result.status, 1, output);
+	assert.match(result.stdout, /introduced generic-api-key introduced\.ts:1/);
+	assert.ok(!output.includes(INTRODUCED));
+});
+
 /** Run an init and return everything it logged. */
 async function capture(argv) {
 	const lines = [];
@@ -309,6 +431,18 @@ function push(dir, args) {
 		encoding: 'utf8',
 		env: { ...process.env, PATH: `${GITLEAKS_DIR}${path.delimiter}${process.env.PATH}` },
 	});
+	const stdout = result.stdout ?? '';
+	const stderr = result.stderr ?? '';
+	return { code: result.status, output: `${stdout}${stderr}` };
+}
+
+/** A push with the pinned scanner removed from PATH, so the generated hook fails closed on it. */
+function pushWithoutScanner(dir, args) {
+	const PATH = (process.env.PATH ?? '')
+		.split(path.delimiter)
+		.filter((entry) => entry && entry !== GITLEAKS_DIR && !/gitleaks/i.test(entry))
+		.join(path.delimiter);
+	const result = spawnSync('git', ['push', ...args], { cwd: dir, encoding: 'utf8', env: { ...process.env, PATH } });
 	const stdout = result.stdout ?? '';
 	const stderr = result.stderr ?? '';
 	return { code: result.status, output: `${stdout}${stderr}` };

@@ -292,31 +292,45 @@ otherwise run the command directly. A re-run never duplicates the step, and neve
 broadens `tools/security/gitleaks.toml`: reviewed exceptions live there, so an edited config is
 left byte-for-byte.
 
+A pre-push step counts as already wired only when it is exactly this repository-root command with
+an optional plain `--base` ref. A step that merely mentions `gitleaks-check` — `echo
+gitleaks-check`, `... || true`, a subfolder `root:`, a file `glob:`, `skip:`, or `--mode history` —
+is left untouched and reported as a manual action, never as wired. A base that is not a plain ref
+is not embedded in the generated shell command; `init` prints the step to add by hand instead.
+
 **CI.** The local hook is feedback only. A required check needs CI to run the command from a
 **trusted revision**, with the tool and config in trusted paths, before the untrusted checkout
-executes:
+executes. This is a sample to adapt, not a workflow `init` installs:
 
 ```yaml
-- name: Provision the pinned Gitleaks in a trusted path
+- name: Provision the pinned Gitleaks and the trusted command in temp paths
   run: |
+    set -euo pipefail
+    rm -rf /tmp/trusted && mkdir -p /tmp/trusted
     curl -fsSLo /tmp/gitleaks.tar.gz \
       https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
     echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum -c -
     tar -xzf /tmp/gitleaks.tar.gz -C /tmp
-    mkdir -p /tmp/trusted && git fetch origin main
+    git fetch --depth=1 origin main
+    git rev-parse FETCH_HEAD > /tmp/trusted-rev
+    trusted="$(cat /tmp/trusted-rev)"
     for f in gitleaks-check.mjs gitleaks-report.mjs gitleaks.toml; do
-      git show "origin/main:tools/security/$f" > "/tmp/trusted/$f"
+      git show "${trusted}:tools/security/${f}" > "/tmp/trusted/${f}"
     done
 - name: Scan the change with the trusted command and config
   run: |
+    set -euo pipefail
     node /tmp/trusted/gitleaks-check.mjs --source "$PWD" --gitleaks /tmp/gitleaks \
-      --config /tmp/trusted/gitleaks.toml --base origin/main
+      --config /tmp/trusted/gitleaks.toml --base "$(cat /tmp/trusted-rev)"
 ```
 
-Run the trusted copy, not the branch's, so a pull request cannot edit the command or add an
-allowlist. Block the job on both exit `1` and exit `2`. Writing the hook does **not** create a
-required check or any branch protection: those are external forge settings set by the repository's
-administrator, and this install makes no claim that they exist.
+The revision is pinned once (`/tmp/trusted-rev`) and the temp directory is emptied first, so a
+stale or half-written trusted config is never scanned. `set -euo pipefail` fails the step on a
+download, checksum, `git show` or extraction error. Run the trusted copy, not the branch's, so a
+pull request cannot edit the command or add an allowlist. Block the job on both exit `1` and exit
+`2`. Writing the hook does **not** create a required check or any branch protection: those are
+external forge settings set by the repository's administrator, and this install makes no claim
+that they exist.
 
 ## fastapi
 
