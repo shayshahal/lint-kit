@@ -3,13 +3,15 @@
 Reports an unapproved change to an enrolled checker configuration. The command is available as a
 copied file at `tools/policy/policy-guard.mjs` — installer wiring that copies it during `init` is
 deferred (#43), so today it is copied or run manually. The guard reads only Git objects and
-files, imports and executes no repository code, and parses no checker format — an enrolled file
-is an opaque path whose divergence from the trusted snapshot needs human review.
+files, and imports and executes no repository code. An `opaque` enrollment is protected as a
+whole path, while a `jsonc` enrollment is read with `jsonc-parser` and compared by the declared
+identity's direction.
 
 A repository declares the files the first release watches in `lint-kit.policy.json`. The guard
 takes the source change since the merge-base of `--base` and `--target`, keeps the paths that are
-enrolled, and reports each one whose target bytes differ from the trusted snapshot. A change whose
-target bytes already match the trusted snapshot is not a new unapproved change.
+enrolled, and judges each changed one against the trusted snapshot. A change whose target bytes
+already match the trusted snapshot is not a new unapproved change; an `opaque` change is review,
+and a parsed change that is equal or tighter is silent.
 
 ## Command
 
@@ -75,7 +77,10 @@ approval field is read.
       "format": "jsonc",
       "adapter": "fallow-jsonc",
       "identities": [
-        { "id": "health.maxCognitive", "unit": "score", "direction": "max" }
+        { "id": "health.maxCognitive", "unit": "score", "direction": "max" },
+        { "id": "health.maxCrap", "unit": "score", "direction": "max" },
+        { "id": "rules", "unit": "severity-map", "direction": "min" },
+        { "id": "ignorePatterns", "unit": "glob-list", "direction": "subset" }
       ]
     },
     { "id": "python-structure", "source": "tools/python/structure_check.py", "format": "opaque" }
@@ -86,11 +91,40 @@ approval field is read.
 - `version` must be `1`.
 - Every enrollment declares `id` (unique, non-empty), `source` (repository-relative, forward-slash
   after normalising `\`) and `format`.
-- `format: "opaque"` protects the whole file and declares no `adapter` or `identities`. This
-  slice treats every enrolled source as opaque.
+- `format: "opaque"` protects the whole file and declares no `adapter` or `identities`; an
+  `opaque` source is parsed no further.
 - `format: "jsonc"` requires the frozen `fallow-jsonc` adapter and a non-empty `identities` array
-  of `{ id, unit, direction }`. This slice validates the shape only; it reads no value, so it does
-  not advertise parsed semantics.
+  of `{ id, unit, direction }`, each checked against the adapter's known Fallow identities below.
+
+## Parsed identities (`fallow-jsonc`)
+
+`health.maxCognitive`, `health.maxCrap`, `rules` and `ignorePatterns` are the identities real
+Fallow configuration has. An enrollment declares each one's `id`, `unit` and `direction`, and the
+adapter rejects a declaration that disagrees with the identity's actual semantics (exit `2`), so a
+forged `min` floor on a `max` ceiling cannot turn a rise into a clean result.
+
+| Identity | Unit | Direction | A weakening |
+| --- | --- | --- | --- |
+| `health.maxCognitive` | `score` | `max` | the number rises |
+| `health.maxCrap` | `score` | `max` | the number rises |
+| `rules` | `severity-map` | `min` | a rule is removed, or its severity falls (`off < warn < error`); a new rule below `error` |
+| `ignorePatterns` | `glob-list` | `subset` | the literal list gains a pattern (including `**`); replacing a glob is a review, not a guessed subset |
+
+The value is read from the enrolled `source` at `--trusted-ref` and at the target; the enrollment
+stores no number or severity. A change outside the declared identities — another key, a comment,
+or whitespace — is `enrolled-unrecognized` and requires review, so parsing does not silently drop
+the rest of the file. A missing, wrong-typed or non-JSONC value is exit `2`, never a default.
+
+The parser is loaded only when a `jsonc` enrollment has a changed source, so an `opaque`-only
+repository never needs it. If the copied command cannot load `jsonc-parser`, the run exits `2`
+rather than failing as an uncaught module error.
+
+Findings name the identity and direction:
+
+```
+policy-guard: enrolled-change: .fallowrc.json (modified)
+policy-guard: enrolled-weakened: health.maxCognitive raised from 25 to 40 (a max ceiling must not rise)
+```
 
 ## Limits
 
@@ -103,7 +137,11 @@ approval field is read.
 - `working-tree` mode reads the working tree directly for every enrolled path, so an enrolled
   change committed and then reverted in the working tree still has its committed form in the
   object-to-object change and is compared against the trusted snapshot. CI runs `committed` mode.
-- No `pre-commit`/index mode, semantic value comparison, installer wiring or CI approval
-  integration. Those are separate issues.
+- No `pre-commit`/index mode, installer wiring or CI approval integration. Those are separate
+  issues.
+- Numeric floor identities (a `min` numeric threshold such as a coverage percentage) are **not**
+  supported: the frozen Fallow format has no such identity, so no floor key is fabricated. The
+  `min` direction is exercised by the `rules` severity floors. YAML/TOML checker adapters remain
+  deferred, and an `opaque` enrollment still protects those files.
 - Tested on Git `2.54.0` and the pinned Node 22 on Windows; CI also runs Ubuntu, which this local
   run does not prove.
