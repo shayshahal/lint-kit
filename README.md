@@ -160,15 +160,17 @@ and `prefer-jsdoc` 203, every one autofixed. Both rules and the words they know 
 [tools/eslint/prose.md](tools/eslint/prose.md).
 
 `vitest` needs a project that depends on Vitest. It checks `*.test.*` and `*.spec.*` files
-anywhere in the project, inside or outside `src/`, for two ways a test silently passes: a focused
-test (`test.only()` / `it.only()` / `describe.only()`) makes the runner skip every other test in
-the file, and a promise chain that is never returned or awaited runs its expectation after the test
-has finished. The checks are `@vitest/eslint-plugin`'s `vitest/no-focused-tests`,
-`vitest/valid-expect` and `vitest/valid-expect-in-promise`, at error; a locally bound `test`, a
-`fit`/`fdescribe` Jest name, a `test.only` imported from another library, or a shadowed `expect`
-passes. The async rules are syntactic, so an assertion behind a project helper is not resolved, and
-the set turns on no other rule from that plugin (unconditional skips are their own slice). `init`
-adds `@vitest/eslint-plugin@1.6.27` and routes the test files to the pre-commit ESLint step; a
+anywhere in the project, inside or outside `src/`, for a focused test and for assertions the runner
+does not wait for. A focused test (`test.only()` / `it.only()` / `describe.only()`) makes the
+runner skip every other test in the file, and a promise chain that is never returned or awaited
+runs its expectation after the test has finished — the assertion can escape the test's tracking
+even though the process may still fail from a late rejection. The checks are
+`@vitest/eslint-plugin`'s `vitest/no-focused-tests`, `vitest/valid-expect` and
+`vitest/valid-expect-in-promise`, at error; a locally bound `test`, a `fit`/`fdescribe` Jest name, a
+`test.only` imported from another library, or a shadowed `expect` passes. The async rules are
+syntactic, so an assertion behind a project helper is not resolved, and the set turns on no other
+rule from that plugin (unconditional skips are their own slice). `init` adds
+`@vitest/eslint-plugin@1.6.27` and routes the test files to the pre-commit ESLint step; a
 repository that already runs its own ESLint command keeps it and the run says what to add. Only
 Vitest is supported. The set resolves the plugin from the config's own
 folder (`from: import.meta.url`), so a pnpm workspace member whose `node_modules` holds the plugin

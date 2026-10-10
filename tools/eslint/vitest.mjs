@@ -3,8 +3,8 @@
  *
  * Vitest focuses a run through `.only` on the test or describe function, and a focused test left in
  * a branch silently suppresses every other test in the file: the suite still passes, so the
- * coverage that went missing is reported nowhere. A floating promise chain fails the same way: it
- * runs its callback after the test has finished, so an expectation inside it never reports. The
+ * coverage that went missing is reported nowhere. A promise chain that is never returned or awaited
+ * can hide a failing assertion the same way: it runs its callback after the test has finished. The
  * checks are the rules `@vitest/eslint-plugin` maintains, wrapped so this set narrows them to the
  * lines a branch added like every other set (see inspection.mjs):
  *
@@ -17,18 +17,20 @@
  * required or claimed. An assertion behind a project helper, or one reached through a reassigned
  * alias, is beyond what they can see.
  *
- * The runner evidence is test/fixtures/vitest-runner/unawaited-shape.test.js: the floating chain is
- * a silent pass and the returned chain is not. Vitest 4 attributes a dangling `.resolves` to the
- * running test rather than passing silently, so `valid-expect` is a stricter deterministic gate
- * than the runner's own detection; the awaited/returned form it writes is still the canonical one.
+ * The runner evidence is test/fixtures/vitest-runner/*.test.js: a floating chain with an assertion
+ * that never runs is a silent pass — the test finishes first, so the result says passed. A floating
+ * chain that rejects an immediate assertion is not that silent pass: Vitest attributes the late
+ * rejection to the process, so the CLI exits 1 while the individual test and the JSON report still
+ * say passed. Only the chain the test never waits for is the false pass the rule closes; the
+ * returned chain is the shape it asks for.
  *
  * The plugin pairs the two async rules in its own `recommended` config. They overlap on one shape:
  * a floating `.then`/`.catch`/`.finally` chain whose callback body is a single async assertion.
- * There `valid-expect` reports the chain `valid-expect-in-promise` already owns, and the
- * concise-arrow form reports both at the same node. The set keeps the rules as upstream ships them
- * instead of adding a cross-rule deduplicator: in the common block-body form the two reports are
- * two fixes the user has to make anyway, and the one same-node case is cleared by `valid-expect`'s
- * own autofix. `test/agent-skills-vitest-set.test.js` measures exactly which shapes overlap.
+ * `valid-expect` owns that assertion and `valid-expect-in-promise` holds its report (see
+ * `coordinateReports`), so the concise-arrow form `fetch(u).then((r) => expect(r).resolves.toBe(y))`
+ * is one finding whose one fix clears it, while the block-body form reports two different nodes
+ * with two fixes and keeps both. `test/agent-skills-vitest-set.test.js` measures exactly which shapes
+ * overlap.
  *
  * No other rule from the plugin is turned on. Its `recommended` config would also enable the skip
  * rules, which are their own slice (#49), and this set adds nothing to oxlint or Jest: one engine
@@ -68,8 +70,100 @@ const loadPlugin = (from) => createRequire(from)('@vitest/eslint-plugin');
 /** Where `@vitest/eslint-plugin` resolves from `from`, without loading it. */
 const providerFile = (from) => createRequire(from).resolve('@vitest/eslint-plugin');
 
-/** The upstream rule list this set turns on: focus, then the two async-assertion rules. */
-export const UPSTREAM_RULES = ['no-focused-tests', 'valid-expect', 'valid-expect-in-promise'];
+/** The upstream rule list this set turns on: focus, then the two async-assertion rules. It is
+ * private: the public config below is what a consumer sees, and the test asserts the rule keys
+ * against its own literal roster rather than reading them back from this list. */
+const UPSTREAM_RULES = ['no-focused-tests', 'valid-expect', 'valid-expect-in-promise'];
+
+/**
+ * The role a rule plays when both async rules can see one assertion. `valid-expect` is the owner:
+ * it is the one with the fix, and awaiting the chain clears both reports. `valid-expect-in-promise`
+ * holds its report until the owner has reported.
+ */
+const ASYNC_RULE_ROLE = { 'valid-expect': 'owner', 'valid-expect-in-promise': 'held' };
+
+/**
+ * Report-level coordination between the two async rules, which is what keeps one assertion with one
+ * owner. The concise arrow `fetch(u).then((r) => expect(r).resolves.toBe(y))` is a floating chain
+ * (`valid-expect-in-promise`) whose body is also an unawaited assertion (`valid-expect`). The two
+ * rules report different nodes that start at the same offset, and one `valid-expect` fix — await the
+ * chain — clears both, so this is one finding: the owner keeps it, and the held report whose node
+ * starts where an owned report's node starts is dropped. A block body reports the chain and the
+ * inner assertion at different starts, each with its own fix, so both stay; an assignment reports
+ * the declarator and the chain at different starts, so both stay.
+ *
+ * The owner reports from `Program:exit`, so the held reports are released from `Program:exit` too.
+ * The set lists the owner first, which is the order ESLint registers the two `Program:exit`
+ * listeners in, so the owner has reported before the held reports are released. If the owner is
+ * disabled nothing is owned and every held report is released.
+ *
+ * The registry is keyed by the file's `SourceCode`, one per file per lint run, so a second file, a
+ * repeated `verify`, and an autofix pass each start empty.
+ */
+const reportOwnership = new WeakMap();
+
+/** The per-`SourceCode` ownership state: the owner's node starts, and the held reports. */
+function ownershipFor(sourceCode) {
+	let state = reportOwnership.get(sourceCode);
+	if (!state) {
+		state = { ownedStarts: new Set(), held: [] };
+		reportOwnership.set(sourceCode, state);
+	}
+	return state;
+}
+
+/** Where a report's node starts: the position the two rules share when they report one assertion. */
+function nodeStart(descriptor) {
+	const start = descriptor.node?.range?.[0];
+	if (start !== undefined) return start;
+	const loc = descriptor.loc?.start ?? descriptor.node?.loc?.start;
+	return loc ? `loc:${loc.line}:${loc.column}` : null;
+}
+
+/**
+ * The rule with the coordination its role needs, layered outside `defineRule` so the owner records
+ * only reports the branch gate kept, and with no role the rule is untouched (the focus rule).
+ */
+function coordinateReports(role, rule) {
+	if (!role) return rule;
+	return {
+		...rule,
+		create(context) {
+			const state = ownershipFor(context.sourceCode);
+			const report = context.report.bind(context);
+
+			if (role === 'owner') {
+				const owning = Object.create(context, {
+					report: {
+						value: (descriptor) => {
+							const start = nodeStart(descriptor);
+							if (start !== null) state.ownedStarts.add(start);
+							report(descriptor);
+						},
+					},
+				});
+				return rule.create(owning);
+			}
+
+			const holding = Object.create(context, {
+				report: { value: (descriptor) => state.held.push(descriptor) },
+			});
+			const listeners = rule.create(holding);
+			const upstreamExit = listeners['Program:exit'];
+			return {
+				...listeners,
+				'Program:exit'(node) {
+					upstreamExit?.(node);
+					for (const descriptor of state.held) {
+						const start = nodeStart(descriptor);
+						if (start === null || !state.ownedStarts.has(start)) report(descriptor);
+					}
+					state.held = [];
+				},
+			};
+		},
+	};
+}
 
 /** The loaded plugin with this copy's rules wrapped like every other set. */
 function pluginFrom(vitestPlugin) {
@@ -80,10 +174,13 @@ function pluginFrom(vitestPlugin) {
 				const upstream = vitestPlugin.rules[name];
 				return [
 					name,
-					defineRule({
-						...upstream,
-						meta: { ...upstream.meta, docs: { ...upstream.meta.docs, url: `${DOCS}#${name}` } },
-					}),
+					coordinateReports(
+						ASYNC_RULE_ROLE[name],
+						defineRule({
+							...upstream,
+							meta: { ...upstream.meta, docs: { ...upstream.meta.docs, url: `${DOCS}#${name}` } },
+						}),
+					),
 				];
 			}),
 		),

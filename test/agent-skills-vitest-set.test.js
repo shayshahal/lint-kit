@@ -19,7 +19,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Linter } from 'eslint';
 import tsParser from '@typescript-eslint/parser';
-import vitest, { DEFAULT_FILES, UPSTREAM_RULES, config } from '../tools/eslint/vitest.mjs';
+import vitest, { DEFAULT_FILES, config } from '../tools/eslint/vitest.mjs';
 import errorHandling from '../tools/eslint/error-handling.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-kit-vitest-set-'));
@@ -42,14 +42,20 @@ function lint(code, filename, options, extra = []) {
 	return messages;
 }
 
+/**
+ * The public rule roster this set ships, spelled out here so the assertion does not read it back
+ * from the implementation. The production list is private; this literal is the independent check.
+ */
+const RULES = ['vitest/no-focused-tests', 'vitest/valid-expect', 'vitest/valid-expect-in-promise'];
+
 test('the set turns on the maintained focus and async-assertion rules, at error', () => {
 	const [entry] = config();
-	assert.deepEqual(Object.keys(vitest.plugin.rules), [...UPSTREAM_RULES]);
 	assert.deepEqual(
-		Object.keys(entry.rules),
-		UPSTREAM_RULES.map((name) => `vitest/${name}`),
+		Object.keys(vitest.plugin.rules).map((name) => `vitest/${name}`),
+		RULES,
 	);
-	for (const name of UPSTREAM_RULES) assert.equal(entry.rules[`vitest/${name}`], 'error', name);
+	assert.deepEqual(Object.keys(entry.rules), RULES);
+	for (const id of RULES) assert.equal(entry.rules[id], 'error', id);
 	assert.equal(entry.plugins.vitest.rules['no-focused-tests'].meta.fixable, 'code');
 	assert.equal(entry.plugins.vitest.rules['valid-expect'].meta.fixable, 'code');
 	assert.deepEqual(DEFAULT_FILES, ['**/*.test.*', '**/*.spec.*']);
@@ -160,8 +166,9 @@ const ASYNC_ALLOWED = [
 		'an expect imported from another library',
 		"import { expect } from 'some-other-lib';\ntest('x', () => { expect(fetch('u')).resolves.toBe('y'); });",
 	],
-	// An async test that needs no await is not a finding: there is no blanket "await in every async test".
-	['an async test with no async assertion', "test('x', async () => { await sleep(1); });"],
+	// An async test that needs no await is not a finding: there is no blanket "await in every async
+	// test". This async callback contains no `await` at all and is still allowed.
+	['an async test with no await', "test('x', async () => { runs(); });"],
 	['a synchronous test with no assertion', "test('x', () => { runs(); });"],
 	// The rule accepts the callback `done` form; the pinned runner deprecates it, so the runner
 	// fixture (test/agent-skills-vitest-runner.test.js) proves it is not a passing shape.
@@ -188,34 +195,60 @@ test('the async rules are syntactic: a helper or a reassigned alias is not resol
 	for (const code of opaque) assert.deepEqual(lint(code, 'src/a.test.js'), [], code);
 });
 
-test('measured overlap: the two async rules report one chain in two shapes', () => {
-	// A floating chain whose callback body is a single async assertion is owned by
-	// valid-expect-in-promise, and valid-expect reports the chain as well. The plugin's own
-	// recommended config pairs the two rules, so the set keeps the upstream pairing.
-	const block = lint("test('x', () => { fetch('u').then((r) => { expect(r).resolves.toBe('y'); }); });", 'src/a.test.js');
-	assert.deepEqual(block.map((m) => m.ruleId).sort(), ['vitest/valid-expect', 'vitest/valid-expect-in-promise']);
-	// The two point at different nodes, and each needs its own fix: valid-expect's autofix awaits
-	// the inner assertion and leaves the outer chain floating.
-	const blockFixed = new Linter({ configType: 'flat' }).verifyAndFix(
-		"test('x', () => { fetch('u').then((r) => { expect(r).resolves.toBe('y'); }); });",
-		[PARSER, ...config()],
-		'src/a.test.js',
+test('measured overlap: the concise form is one owned finding, the block form two', () => {
+	// Block body: the floating chain (valid-expect-in-promise) and the inner assertion
+	// (valid-expect) are different nodes with different fixes, so both reports stay.
+	const blockCode = "test('x', () => { fetch('u').then((r) => { expect(r).resolves.toBe('y'); }); });";
+	const block = lint(blockCode, 'src/a.test.js');
+	assert.deepEqual(
+		block.map((m) => `${m.ruleId}@${m.line}:${m.column}`).sort(),
+		['vitest/valid-expect@1:44', 'vitest/valid-expect-in-promise@1:19'].sort(),
 	);
+	// valid-expect's autofix awaits the inner assertion and leaves the outer chain floating, so the
+	// two fixes are genuinely independent and the promise rule's report remains.
+	const blockFixed = new Linter({ configType: 'flat' }).verifyAndFix(blockCode, [PARSER, ...config()], 'src/a.test.js');
 	assert.deepEqual(blockFixed.messages.map((m) => m.ruleId), ['vitest/valid-expect-in-promise']);
 
-	// In the concise-arrow form the assertion is returned to the chain, and both rules point at the
-	// same node; valid-expect's fix (await the chain) clears both, so no separate dedup is added.
-	const concise = lint("test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });", 'src/a.test.js');
-	assert.deepEqual(
-		concise.map((m) => `${m.ruleId}@${m.line}:${m.column}`).sort(),
-		['vitest/valid-expect-in-promise@1:19', 'vitest/valid-expect@1:19'].sort(),
-	);
-	const conciseFixed = new Linter({ configType: 'flat' }).verifyAndFix(
-		"test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });",
-		[PARSER, ...config()],
-		'src/a.test.js',
-	);
+	// Concise arrow: the two rules report nodes at the same start, and one valid-expect fix — await
+	// the chain — clears both. The owner keeps the single finding and the held report is dropped.
+	const conciseCode = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	const concise = lint(conciseCode, 'src/a.test.js');
+	assert.deepEqual(concise.map((m) => `${m.ruleId}@${m.line}:${m.column}`), ['vitest/valid-expect@1:19']);
+	const conciseFixed = new Linter({ configType: 'flat' }).verifyAndFix(conciseCode, [PARSER, ...config()], 'src/a.test.js');
 	assert.deepEqual(conciseFixed.messages, []);
+	assert.equal(conciseFixed.output, "test('x', async () => { await fetch('u').then((r) => expect(r).resolves.toBe('y')); });");
+});
+
+test('the owner keeps the finding, and the held report is not stale across runs or files', () => {
+	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	// A repeated verify of the same file, and the same code under another filename, both start from
+	// empty: the ownership registry lives on the file's SourceCode, not in module state.
+	for (const file of ['src/a.test.js', 'src/a.test.js', 'src/b.test.js']) {
+		assert.deepEqual(lint(concise, file).map((m) => m.ruleId), ['vitest/valid-expect'], file);
+	}
+	// With the owner off, the promise rule still reports the same assertion instead of staying
+	// silent, and its own entry is the one that survives.
+	assert.deepEqual(
+		lint(concise, 'src/a.test.js', { rules: { 'vitest/valid-expect': 'off' } }).map((m) => m.ruleId),
+		['vitest/valid-expect-in-promise'],
+	);
+});
+
+test('the surviving report carries its own rule and severity', () => {
+	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	// The owner's entry decides the severity of the one surviving finding: a warn owner is a warn,
+	// not an error reintroduced by the held rule.
+	assert.deepEqual(
+		lint(concise, 'src/a.test.js', { rules: { 'vitest/valid-expect': 'warn' } }).map((m) => [m.ruleId, m.severity]),
+		[['vitest/valid-expect', 1]],
+	);
+	// With the owner disabled there is no override to inherit: the held report uses its own entry.
+	assert.deepEqual(
+		lint(concise, 'src/a.test.js', {
+			rules: { 'vitest/valid-expect': 'off', 'vitest/valid-expect-in-promise': 'warn' },
+		}).map((m) => [m.ruleId, m.severity]),
+		[['vitest/valid-expect-in-promise', 1]],
+	);
 });
 
 test('tests inside and outside src/ are checked, and an application path is not', () => {

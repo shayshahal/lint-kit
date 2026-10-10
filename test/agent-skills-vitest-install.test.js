@@ -261,6 +261,18 @@ test('a missing maintained plugin fails the check instead of skipping it', async
 	assert.doesNotMatch(run.stdout, /no-focused-tests/, 'a config that could not load reports no rule');
 });
 
+test('the installed ESLint reports the concise floating chain once, through its owner', async () => {
+	// The concise form is the shape both async rules see; the installed config must keep one owner
+	// for it, not the duplicate upstream pairing. The owner is `valid-expect`, the rule with the fix.
+	const dir = consumer('installed-concise');
+	await init(dir, '--sets', 'vitest');
+	fs.writeFileSync(
+		path.join(dir, 'test/outside.test.js'),
+		"import { expect, test } from 'vitest';\ntest('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });\n",
+	);
+	assert.deepEqual(installedMessages(dir, 'test/outside.test.js'), [['vitest/valid-expect', 2]]);
+});
+
 test('the installed hook checks an outside-src test (real lefthook)', async () => {
 	// A real repository, not project()'s .git/HEAD: git stages files and lefthook reads the index.
 	const dir = path.join(TMP, 'hook-repo');
