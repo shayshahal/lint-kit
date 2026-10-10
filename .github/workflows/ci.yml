@@ -29,4 +29,7 @@ jobs:
         working-directory: python
       - run: uv run pytest -q
         working-directory: python
+      # the secret-scanning tests run the real, pinned Gitleaks: this downloads the release asset,
+      # verifies the recorded checksum and caches it, so the tests never skip on a missing tool
+      - run: node test/gitleaks-binary.js
       - run: pnpm test
