@@ -36,6 +36,32 @@ runs it) and the Python structure check. A step that already runs the same tool 
 left alone, and a repository that already runs `fallow audit` in a command keeps it and gets no
 script.
 
+## Secret scanning (`secret-scanning`)
+
+Never selected from a dependency — a `gitleaks` entry in a project changes nothing — so a
+repository asks for it with `--sets secret-scanning`, and a later run keeps it on. The set is
+repository-wide, not per project: it copies `tools/security/gitleaks-check.mjs`,
+`gitleaks-report.mjs` and `gitleaks-check.md` and writes the selected config, and needs no project
+dependency (the command uses Node built-ins only).
+
+| Config shape | Handling |
+| --- | --- |
+| `lefthook.yml` / `lefthook.yaml` | One repository-root pre-push command, `node tools/security/gitleaks-check.mjs --base <resolved>` (branch mode: the merge-base commit range plus the working tree). The base is the installer's usual one (`--base`, an existing step's base, lefthook's pre-push `files`, `origin/HEAD`, else `origin/main`). It fails the push on an introduced finding and on any failure to run — a missing or wrong-version Gitleaks, an invalid config, a timeout — never a skipped success. The step carries no `root`, because the command refuses a source that is not the Git root. |
+| A pre-push step that already scans secrets (its own `gitleaks` command) | Left exactly as found; the run prints the copied command to add instead. |
+| No lefthook config | Nothing is wired; the run prints the pre-push step to add. |
+| `tools/security/gitleaks.toml` already present | Left byte-for-byte. Reviewed exceptions live there; a re-run copies the command, report reader and docs again but never rewrites or broadens this config. |
+| A root `package.json` | Gains the separate remediation script `secret-scanning:history` (`node tools/security/gitleaks-check.mjs --mode history`). |
+
+The scanner is **not installed**: the command uses `gitleaks` on `PATH` or `--gitleaks <path>`,
+refuses any version but 8.30.1, and never downloads. Exact provisioning steps, with the recorded
+SHA-256 per platform, are in the copied `tools/security/gitleaks-check.md`. A platform with no
+recorded asset, or a repository whose policy needs different exceptions, is a manual action, not
+a silent substitution. Offline, an already-provisioned binary is passed with `--gitleaks`; with
+none, the command exits 2 and the push is blocked. The initial/history audit is separate from the
+push and is remediation, not a branch gate. Writing the hook does not install a required check or
+change any forge protection: the local hook is feedback only, and CI must run the command from a
+trusted revision with a trusted tool and config.
+
 ## Baseline selection
 
 The branch a structure step compares against, in order:
