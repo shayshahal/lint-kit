@@ -16,6 +16,7 @@ the repository owns the copies, and only whoever runs `init` needs access here.
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
 | `error-handling` | ESLint | catch blocks (and promise `.catch()`) that drop the error, only log it, return a fixed default, or turn it into a string |
 | `prose` | ESLint | inflated vocabulary in comments, and `//` comments above an export or a member that should be JSDoc (opt-in) |
+| `vitest` | ESLint | `test.only` / `it.only` / `describe.only` left in the project's tests, which silently skip everything else (opt-in) |
 | `slop-patterns` | oxlint | a named function whose whole body forwards its arguments to another function, and two assertions in a row that discard a type |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
@@ -72,9 +73,10 @@ project's folder (`eslint-admin`, `svelte-check-shop`).
   root's `tools/` anyway. Without a config, the project gets a `.oxlintrc.json`. There is no
   lefthook step either: a repository that runs oxlint already has one.
 - **lefthook**: when the repository has a `lefthook.yml`, pre-commit steps run ESLint on staged
-  `src/` files, flake8 (FAP) on the app package, `check-deps` when `pyproject.toml` changes, and
-  `ruff check`. The ESLint and ruff steps are skipped when a step already runs that tool for the
-  project. Globs follow `glob_matcher`: under `doublestar` they are `dir/**/*.py`.
+  `src/` files — and, when the `vitest` set is installed, on the `*.test.*` / `*.spec.*` files
+  anywhere in the project — flake8 (FAP) on the app package, `check-deps` when `pyproject.toml`
+  changes, and `ruff check`. The ESLint and ruff steps are skipped when a step already runs that
+  tool for the project. Globs follow `glob_matcher`: under `doublestar` they are `dir/**/*.py`.
 - **typecheck**: pre-push steps, since a type checker needs the whole project, not the staged
   files: `svelte-kit sync && svelte-check --tsgo` for each Svelte project, `uv run pyright` for
   each Python one. `--tsgo` needs TypeScript 7 next to the 6 svelte-check loads Svelte with, so
@@ -110,9 +112,10 @@ another repository.
 
 ## ESLint sets
 
-All five expect the Svelte and TypeScript parsers to be set up (eslint-plugin-svelte's
-recommended config, `@typescript-eslint/parser`), and default to `src/**` with tests, specs and
-stories left out. The options, in `eslint.rules.js`:
+All six expect the Svelte and TypeScript parsers to be set up (eslint-plugin-svelte's
+recommended config, `@typescript-eslint/parser`). The five application sets default to `src/**`
+with tests, specs and stories left out; `vitest` is the opposite — it checks the tests themselves,
+`*.test.*` and `*.spec.*` inside or outside `src/`. The options, in `eslint.rules.js`:
 
 ```js
 import svelteSkills from './tools/eslint/svelte-skills.mjs';
@@ -120,6 +123,7 @@ import untranslatedText from './tools/eslint/untranslated-text.mjs';
 import tailwindPatterns, { classRule } from './tools/eslint/tailwind-patterns.mjs';
 import errorHandling from './tools/eslint/error-handling.mjs';
 import prose from './tools/eslint/prose.mjs';
+import vitest from './tools/eslint/vitest.mjs';
 
 export default [
 	...svelteSkills.config({ ignores: ['src/legacy/**'] }),
@@ -140,18 +144,30 @@ export default [
 	}),
 	...errorHandling.config(),
 	...prose.config({ inspection: 'branch' }), // opt-in: ask for it with --sets prose
+	...vitest.config({ inspection: 'branch' }), // opt-in: ask for it with --sets vitest
 ];
 ```
 
 `svelteSkills.config()` also turns on three eslint-plugin-svelte rules: `valid-compile` with
 warnings, `require-each-key` and `prefer-style-directive`. The plugins are exported too
 (`svelteSkills.plugin`, `untranslatedText.plugin`, `tailwindPatterns.plugin`,
-`errorHandling.plugin`) for wiring rules one by one.
+`errorHandling.plugin`, `vitest.plugin`) for wiring rules one by one.
 
-`prose` is the one ESLint set `init` never picks from a project's dependencies: ask for it with
-`--sets prose`, and it stays on a re-run. `no-jargon` reports 7 findings over the same 791-file
-monorepo (6 of them in generated SDK files) and `prefer-jsdoc` 203, every one autofixed. Both
-rules and the words they know are in [tools/eslint/prose.md](tools/eslint/prose.md).
+`prose` and `vitest` are the two ESLint sets `init` never picks from a project's dependencies:
+ask for prose with `--sets prose`, vitest with `--sets vitest`, and each stays on a re-run.
+`no-jargon` reports 7 findings over the same 791-file monorepo (6 of them in generated SDK files)
+and `prefer-jsdoc` 203, every one autofixed. Both rules and the words they know are in
+[tools/eslint/prose.md](tools/eslint/prose.md).
+
+`vitest` needs a project that depends on Vitest. It checks `*.test.*` and `*.spec.*` files
+anywhere in the project, inside or outside `src/`, for `test.only()`, `it.only()` and
+`describe.only()` — a focused test makes the runner skip every other test in the file, and the
+suite still passes. The check is `@vitest/eslint-plugin`'s `vitest/no-focused-tests`, at error;
+the set turns on no other rule from that plugin (async and skip are their own slices), and a
+locally bound `test`, a `fit`/`fdescribe` Jest name, or a `test.only` imported from another
+library passes. `init` adds `@vitest/eslint-plugin@1.6.27` and routes the test files to the
+pre-commit ESLint step; a repository that already runs its own ESLint command keeps it and the
+run says what to add. Only Vitest is supported.
 
 `eslint --fix` rewrites what has one right answer: `class:` directives into the class attribute,
 `{@const}` into `$derived`, `throw error()` into `error()`, `$derived(() => …)` into

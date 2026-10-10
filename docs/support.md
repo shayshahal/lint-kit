@@ -34,7 +34,10 @@ installed and the run says so. pre-commit gets eslint, flake8 (FAP), the FastAPI
 and ruff; pre-push gets svelte-check / pyright, fallow (as a script, so a deletion-only push still
 runs it) and the Python structure check. A step that already runs the same tool for the project is
 left alone, and a repository that already runs `fallow audit` in a command keeps it and gets no
-script.
+script. When the `vitest` set is installed, the eslint step also matches the project's
+`*.test.*` / `*.spec.*` files, wherever they are, so tests outside `src/` are checked; an upgrade
+that adds the set widens the step a previous run wrote. A repository whose own command runs ESLint
+keeps it, and the run names the pattern to add.
 
 ## Baseline selection
 
@@ -51,7 +54,8 @@ The branch a structure step compares against, in order:
 
 A fresh install copies `tools/`, writes or patches the configs and adds the dev dependencies. An
 upgrade refreshes the copies, repairs a registered plugin that lacks the vendored ignore pattern,
-and leaves user configs and steps as they are. A repeat run changes nothing.
+widens an ESLint step it wrote for a newly added `vitest` set, and leaves user configs and steps
+as they are. A repeat run changes nothing.
 
 ## Unsupported shapes
 
