@@ -40,6 +40,9 @@ const DOCS = new URL('./vitest.md', import.meta.url).href;
  */
 const loadPlugin = (from) => createRequire(from)('@vitest/eslint-plugin');
 
+/** Where `@vitest/eslint-plugin` resolves from `from`, without loading it. */
+const providerFile = (from) => createRequire(from).resolve('@vitest/eslint-plugin');
+
 /** The loaded plugin with this copy's one rule wrapped like every other set. */
 function pluginFrom(vitestPlugin) {
 	const upstream = vitestPlugin.rules['no-focused-tests'];
@@ -55,15 +58,51 @@ function pluginFrom(vitestPlugin) {
 }
 
 /**
+ * One canonical plugin per resolved provider. ESLint refuses to merge two config entries that
+ * declare the same plugin name with two different objects, so a `config()` call that wraps the
+ * loaded plugin afresh each time would break the two compatible shapes: two `vitest.config()`
+ * calls, and a generated `vitest.config({ from })` beside a hand-written `vitest.plugin`. The key
+ * is the file the provider resolves to, so every anchor inside one project shares the wrapper and
+ * two installs — a workspace root's and a member's — never do.
+ */
+const canonical = new Map();
+
+/** The file this module's own anchor resolves to, or null where the shared copy has no plugin. */
+let ownFile;
+function ownProviderFile() {
+	if (ownFile !== undefined) return ownFile;
+	try {
+		ownFile = providerFile(import.meta.url);
+	} catch (error) {
+		// A workspace member whose plugin lives in its own node_modules is the expected shape: the
+		// shared copy resolves nothing. A different failure is real and must not be swallowed.
+		if (error?.code !== 'MODULE_NOT_FOUND') throw error;
+		ownFile = null;
+	}
+	return ownFile;
+}
+
+/** The canonical plugin for a config anchored at `from`; the module's own anchor is `plugin`. */
+function pluginFor(from) {
+	const file = providerFile(from);
+	const known = canonical.get(file);
+	if (known) return known;
+	const wrapped = file === ownProviderFile() ? plugin : pluginFrom(loadPlugin(from));
+	canonical.set(file, wrapped);
+	return wrapped;
+}
+
+/**
  * The plugin for a config that spreads rules one by one. It resolves from this module's own
  * location — where `init` copied `tools/` — and is built on first access, so importing this module
  * where the plugin is absent does not load it. A generated `eslint.rules.js` uses `config({ from })`
- * for its own project instead.
+ * for its own project instead, and reaches this same object when it is the same install.
  */
+let ownRules;
 export const plugin = {
 	meta: { name: 'vitest' },
 	get rules() {
-		return pluginFrom(loadPlugin(import.meta.url)).rules;
+		return (ownRules ??= pluginFrom(loadPlugin(import.meta.url)).rules);
 	},
 };
 
@@ -80,7 +119,7 @@ export function config({ from = import.meta.url, files = DEFAULT_FILES, ignores 
 			name: 'vitest',
 			files,
 			ignores,
-			plugins: { vitest: pluginFrom(vitestPlugin) },
+			plugins: { vitest: pluginFor(from) },
 			languageOptions: { globals: vitestPlugin.environments.env.globals },
 			...settings(inspection),
 			rules: {

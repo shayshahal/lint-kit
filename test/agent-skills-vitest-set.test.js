@@ -14,13 +14,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Linter } from 'eslint';
 import tsParser from '@typescript-eslint/parser';
 import vitest, { DEFAULT_FILES, config } from '../tools/eslint/vitest.mjs';
 import errorHandling from '../tools/eslint/error-handling.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-kit-vitest-set-'));
+/** This checkout's shared rules folder, the copy `init` would make in a consuming repository. */
+const TOOLS = fileURLToPath(new URL('../tools/eslint/', import.meta.url));
 after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 /** The parser setup the init command writes, so the set is exercised on the files it meets. */
@@ -160,6 +162,93 @@ test("one project's plugin never resolves from a sibling project", () => {
 	const b = isolatedPlugin(path.join(TMP, 'sibling-b'), 'b');
 	assert.equal(config({ from: a })[0].plugins.vitest.rules['no-focused-tests'].meta.marker, 'a');
 	assert.equal(config({ from: b })[0].plugins.vitest.rules['no-focused-tests'].meta.marker, 'b');
+});
+
+// ── one plugin identity per resolved provider ──────────────────────────────────
+
+/** The messages ESLint reports for a focused test under `configs`, through the real flat config. */
+function focused(configs) {
+	const messages = new Linter({ configType: 'flat' }).verify("test.only('x', () => {});", configs, 'a.test.js');
+	return messages.map((m) => [m.ruleId, m.severity]);
+}
+
+test('two config() calls for one provider stay mergeable, and the later override still applies', () => {
+	const [first] = config({ inspection: 'full' });
+	const [second] = config({ inspection: 'full', rules: { 'vitest/no-focused-tests': 'warn' } });
+	assert.equal(first.plugins.vitest, second.plugins.vitest, 'the provider must have one wrapper');
+	// Pre-fix this threw `Cannot redefine plugin "vitest"`; a focused test must still be one finding,
+	// at the severity the later entry asked for.
+	assert.deepEqual(focused([first, second]), [['vitest/no-focused-tests', 1]]);
+});
+
+test('the public plugin and a config() entry are one object', () => {
+	assert.equal(config()[0].plugins.vitest, vitest.plugin);
+	// The rules are built once per provider, not on every getter access.
+	assert.equal(vitest.plugin.rules, vitest.plugin.rules);
+	const messages = focused([
+		{ files: ['**/*.test.js'], plugins: { vitest: vitest.plugin } },
+		...config({ inspection: 'full' }),
+	]);
+	assert.deepEqual(messages, [['vitest/no-focused-tests', 2]]);
+});
+
+test("a generated root config's own anchor reaches the public plugin", () => {
+	// `init` writes `from: import.meta.url` into <project>/eslint.rules.js; from the shared
+	// tools/eslint/ copy that is a different URL, but it is the same install, so one identity.
+	const from = new URL('../eslint.rules.js', import.meta.url);
+	assert.equal(config({ from })[0].plugins.vitest, vitest.plugin);
+	const messages = focused([
+		{ files: ['**/*.test.js'], plugins: { vitest: vitest.plugin } },
+		...config({ from, inspection: 'full' }),
+	]);
+	assert.deepEqual(messages, [['vitest/no-focused-tests', 2]]);
+});
+
+test('every anchor in one project shares a wrapper; two installs never do', () => {
+	const dir = path.join(TMP, 'anchors');
+	isolatedPlugin(dir, 'own');
+	const rules = pathToFileURL(path.join(dir, 'eslint.rules.js'));
+	const configFile = pathToFileURL(path.join(dir, 'eslint.config.js'));
+	assert.equal(config({ from: rules })[0].plugins.vitest, config({ from: configFile })[0].plugins.vitest);
+	assert.equal(config({ from: rules })[0].plugins.vitest.rules, config({ from: rules })[0].plugins.vitest.rules);
+	const other = isolatedPlugin(path.join(TMP, 'anchors-other'), 'other');
+	assert.notEqual(config({ from: rules })[0].plugins.vitest, config({ from: other })[0].plugins.vitest);
+	assert.equal(config({ from: other })[0].plugins.vitest.rules['no-focused-tests'].meta.marker, 'other');
+});
+
+/** A copy of the maintained module at `root`, the shared copy a consuming repository gets. */
+async function copiedAt(root) {
+	const tools = path.join(root, 'tools', 'eslint');
+	fs.mkdirSync(tools, { recursive: true });
+	for (const file of ['inspection.mjs', 'vitest.mjs', 'vitest.md'])
+		fs.copyFileSync(path.join(TOOLS, file), path.join(tools, file));
+	return import(pathToFileURL(path.join(tools, 'vitest.mjs')).href);
+}
+
+test('a workspace member resolves its own plugin while the shared copy has none', async () => {
+	const copied = await copiedAt(path.join(TMP, 'workspace-no-root-plugin'));
+	// Importing the shared copy is inert: the root has no plugin, and none is loaded yet.
+	assert.equal(copied.plugin.meta.name, 'vitest');
+	const from = isolatedPlugin(path.join(TMP, 'workspace-no-root-plugin', 'apps', 'web'), 'member');
+	const sibling = isolatedPlugin(path.join(TMP, 'workspace-no-root-plugin', 'apps', 'admin'), 'admin');
+	// The member's own plugin is found, and a sibling's is never reached.
+	assert.equal(copied.config({ from })[0].plugins.vitest.rules['no-focused-tests'].meta.marker, 'member');
+	assert.equal(copied.config({ from: sibling })[0].plugins.vitest.rules['no-focused-tests'].meta.marker, 'admin');
+	assert.notEqual(copied.config({ from })[0].plugins.vitest, copied.config({ from: sibling })[0].plugins.vitest);
+	// The public plugin has no plugin to load, so using it fails loudly rather than reporting nothing.
+	assert.throws(() => copied.plugin.rules, (error) => error.code === 'MODULE_NOT_FOUND');
+});
+
+test('an unexpected failure resolving the shared copy is not swallowed', async () => {
+	const root = path.join(TMP, 'workspace-unexpected-root');
+	const copied = await copiedAt(root);
+	// The root has a package by that name, but it exports no `require` condition: the discovery of
+	// the shared copy's identity must rethrow, not treat every failure as "no plugin here".
+	const pkg = path.join(root, 'node_modules', '@vitest', 'eslint-plugin');
+	fs.mkdirSync(pkg, { recursive: true });
+	fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: '@vitest/eslint-plugin', version: '1.6.27', exports: { '.': { import: './index.mjs' } } }));
+	const from = isolatedPlugin(path.join(root, 'apps', 'web'), 'member');
+	assert.throws(() => copied.config({ from }), (error) => error.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED');
 });
 
 // ── branch attribution, in a real repository outside this checkout ──────────────
