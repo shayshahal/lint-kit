@@ -300,7 +300,9 @@ is not embedded in the generated shell command; `init` prints the step to add by
 
 **CI.** The local hook is feedback only. A required check needs CI to run the command from a
 **trusted revision**, with the tool and config in trusted paths, before the untrusted checkout
-executes. This is a sample to adapt, not a workflow `init` installs:
+executes. Start with a source checkout containing full history (`fetch-depth: 0` in
+`actions/checkout`), so a branch and an advanced main still have a discoverable merge-base.
+This Linux x64 sample is a snippet to adapt, not a protected workflow `init` installs:
 
 ```yaml
 - name: Provision the pinned Gitleaks and the trusted command in temp paths
@@ -311,7 +313,7 @@ executes. This is a sample to adapt, not a workflow `init` installs:
       https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
     echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum -c -
     tar -xzf /tmp/gitleaks.tar.gz -C /tmp
-    git fetch --depth=1 origin main
+    git fetch origin main
     git rev-parse FETCH_HEAD > /tmp/trusted-rev
     trusted="$(cat /tmp/trusted-rev)"
     for f in gitleaks-check.mjs gitleaks-report.mjs gitleaks.toml; do
