@@ -100,10 +100,14 @@ repository-relative file, 1-based call start and the SHA-256 of the call's exact
 source, with trimmed `reason`/`owner` and an inclusive UTC `expires`. The `vitest/no-disabled-tests`
 rule drops a report a live entry with the matching fingerprint excuses and forces one whose
 fingerprint changed or lapsed, even on an inherited line; it never re-derives a title, so dynamic
-and duplicate titles stay distinct. The separate non-file-filtered pre-push
+and duplicate titles stay distinct. The separate pre-push
 `tools/eslint/check-quarantine-ledger.mjs` is the primary owner of whole-ledger structural validity
 and expiry, so a docs-only, deletion-only or no-test-selected push still validates every entry; a
-missing ledger is clean, a present-but-bad or expired one fails. Enrollment is manual and opaque
+missing ledger is clean, a present-but-bad or expired one fails, and an unresolvable Git root is
+exit 2 (unavailable) rather than a clean absence. The document is exactly `{version, entries}` (an
+unknown top-level key such as `APPROVED-BY` is not a capability and invalidates it), and reading is
+fail closed — a symlink, directory, path outside the root, unreadable file or invalid UTF-8 grants
+nothing. Enrollment is manual and opaque
 (`{"id":"test-quarantine","source":"test-quarantine.json","format":"opaque"}`); no field or issue
 link is an approval, and the clock is the production UTC clock with no public as-of knob.
 

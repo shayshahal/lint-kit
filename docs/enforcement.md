@@ -18,6 +18,7 @@ A finding fails the commit or push.
 | `pyright` (Python projects) | pre-push | pyright exits 1 |
 | fallow `"error"` rules: dead code the branch introduced | pre-push (script) | `fallow audit` exits 1 |
 | `structure_check.py`: a new / crossed complexity, new duplication, a new import cycle | pre-push | exits 1 |
+| `check-quarantine-ledger.mjs`: a malformed, non-regular, undecodable or expired `test-quarantine.json` (when the `vitest` set is installed) | pre-push (script) | exits 1, or 2 when the Git root it needs cannot be resolved |
 
 A blocking check is only ever charged for what the branch introduced. The structure tools compare
 with the merge-base of the branch and its base, and fallow reports an inherited finding as

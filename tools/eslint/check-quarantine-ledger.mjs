@@ -8,13 +8,14 @@
  * source: can the ledger run at all, and is every entry still live? It never reads a test file,
  * so a valid entry pointing at no remaining skip still has to be structurally valid and unexpired.
  *
+ *   unresolvable repo    -> exit 2, no clean/absent verdict (a bad CWD, no Git, or Git failing)
  *   absent optional file  -> exit 0 (no exceptions; not an error)
  *   present but malformed -> exit 1, naming only the problem code
  *   any expired entry      -> exit 1, naming each location and its expiry date
  *   every entry valid      -> exit 0
  *
  * Output is metadata only: a repository-relative location, a status and a date. An entry's reason,
- * owner and source are never printed, and neither is raw JSON parser output.
+ * owner and source are never printed, and neither is raw JSON parser output or a Git error.
  *
  * The lifecycle verdict has one owner: this check. The `vitest/no-disabled-tests` rule reuses the
  * same format module to drop a report an entry excuses, and keeps the upstream diagnostic
@@ -27,9 +28,9 @@ import { fileURLToPath } from 'node:url';
 import {
 	QUARANTINE_LEDGER_FILENAME,
 	currentUtcDate,
-	gitRootOf,
 	isQuarantineEntryExpired,
 	readQuarantineLedger,
+	resolveGitRoot,
 } from './quarantine-ledger.mjs';
 
 /**
@@ -37,8 +38,18 @@ import {
  * metadata-only output. No entry reason, owner or source text is ever placed in `lines`.
  */
 export function checkQuarantineLedger({ cwd = process.cwd(), now = new Date() } = {}) {
-	const root = gitRootOf(cwd);
-	const ledger = readQuarantineLedger(root);
+	// The structural check needs a repository. An unresolved root is not an absent ledger: without
+	// it the command cannot say anything about every entry, so it exits 2 rather than reporting a
+	// clean push it never validated.
+	const resolved = resolveGitRoot(cwd);
+	if (resolved.status !== 'found') {
+		const why = resolved.status === 'no-repository' ? 'no Git repository here' : 'the Git root could not be resolved';
+		return {
+			code: 2,
+			lines: [`${QUARANTINE_LEDGER_FILENAME}: unavailable (${why}); every entry was not validated`],
+		};
+	}
+	const ledger = readQuarantineLedger(resolved.root);
 	if (ledger.status === 'absent') {
 		return { code: 0, lines: [`${QUARANTINE_LEDGER_FILENAME}: absent; no quarantine exceptions`] };
 	}

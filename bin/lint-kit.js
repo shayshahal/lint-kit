@@ -121,6 +121,16 @@ function writeHookScript(repo, hook, name, body) {
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	write(file, body);
 }
+/** Whether anything occupies `target`, including a dangling symlink `existsSync` reports as free. */
+function pathPresent(target) {
+	try {
+		fs.lstatSync(target);
+		return true;
+	} catch (error) {
+		if (error?.code === 'ENOENT') return false;
+		return true; // an unreadable path is not ours to claim
+	}
+}
 const say = (msg) => console.log(msg);
 const posix = (p) => p.replace(/\\/g, '/');
 /** `to` relative to `from`, with slashes; '.' for the same folder. */
@@ -1254,17 +1264,19 @@ function writeStructure(repo, projects, doc, base, args) {
 const quarantineScriptBody = () => `#!/usr/bin/env bash\nset -e\nnode ${QUARANTINE_COMMAND}\n`;
 
 /**
- * Wire the repository-wide ledger validator as a non-file-filtered pre-push script. A lefthook
- * `commands` step is filtered by the push's changed files, so a docs-only, deletion-only or
- * no-test-selected push could skip it; a `scripts` entry is not filtered. It is added only when
- * the name is free and no command already runs the validator, so a repository's own hook or an
- * orphan `.lefthook/pre-push/` file is never overwritten or claimed. Returns how it was handled.
+ * Wire the repository-wide ledger validator as a pre-push script. A lefthook `commands` step is
+ * filtered only when it carries a glob/files filter: a real fixture showed an unfiltered
+ * `{ run }` command still executes on a deletion-only push, while a filtered one does not. A
+ * `scripts` entry is always unfiltered, so it runs whatever the push changed. It is added only
+ * when the name is free and no command already runs the validator, and a path that is already
+ * present — including a dangling symlink `existsSync` would miss — is never overwritten or claimed
+ * (writing through the link could land outside the repository). Returns how it was handled.
  */
 function wireQuarantineScript(repo, doc) {
 	if (doc.hasIn([QUARANTINE_HOOK, 'scripts', QUARANTINE_SCRIPT])) return 'kept';
 	const commands = doc.getIn([QUARANTINE_HOOK, 'commands'])?.toJSON() ?? {};
 	if (Object.values(commands).some((step) => /check-quarantine-ledger\.mjs/.test(step?.run ?? ''))) return 'kept';
-	if (fs.existsSync(path.join(repo, '.lefthook', QUARANTINE_HOOK, QUARANTINE_SCRIPT))) return 'kept';
+	if (pathPresent(path.join(repo, '.lefthook', QUARANTINE_HOOK, QUARANTINE_SCRIPT))) return 'kept';
 	if (!doc.hasIn([QUARANTINE_HOOK, 'scripts'])) doc.setIn([QUARANTINE_HOOK, 'scripts'], doc.createNode({}));
 	const scripts = doc.getIn([QUARANTINE_HOOK, 'scripts']);
 	if (scripts.flow && !scripts.items.length) scripts.flow = false;

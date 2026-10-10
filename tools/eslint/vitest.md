@@ -150,20 +150,27 @@ An unconditional skip is excused only by one entry in the repository-root `test-
 - `expires` is an inclusive UTC date; the entry is valid through the end of that day. An expired
   or structurally invalid entry is never accepted (fail closed, no exception).
 
-There is no approval field. A malformed, unreadable or duplicated ledger grants nothing at all,
-and an unknown field makes the whole ledger invalid. The fingerprint, not a stored approval, is
-what a reviewer sees change.
+There is no approval field. A malformed, unreadable or duplicated ledger grants nothing at all;
+the document is exactly `{version, entries}`, so an unknown field — top-level (`APPROVED-BY`) or in
+an entry — makes the whole ledger invalid. Reading is fail closed too: the ledger must be a regular
+file inside the repository root, decoded as strict UTF-8. A symlink (dangling or not), a directory,
+a path that resolves outside the root, an unreadable path or a byte sequence that is not valid
+UTF-8 is invalid, never a clean absence. The fingerprint, not a stored approval, is what a reviewer
+sees change.
 
 ### The repository-wide check
 
 The rule excuses a skip where it lints; the separate `check-quarantine-ledger.mjs` validates the
 **whole ledger** — structural validity and expiry for every entry — independently of which files a
-change touches. `init --sets vitest` wires it as a non-file-filtered pre-push script
+change touches. `init --sets vitest` wires it as a pre-push script
 (`test-quarantine.sh`, or prints the complete body when the repository has no lefthook), so a
 docs-only, deletion-only or no-test-selected push still validates every entry. A missing ledger is
 clean; a present-but-bad or expired one fails even when no test file is in the push. It prints a
 location, a status and a date only — never an entry's reason, owner or source, and never a raw JSON
-parser error.
+parser error. The check needs a Git repository to find the ledger: run outside one (or with a bad
+working directory, no Git, or a failed Git call) it exits 2 as unavailable rather than reporting a
+clean push it never validated. The ESLint rule keeps the conservative opposite — no resolvable root
+means no waivers, so it reports the skips it cannot excuse.
 
 ### Enrollment
 

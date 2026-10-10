@@ -72,10 +72,10 @@ import path from 'node:path';
 import { defineRule, isEligible, settings } from './inspection.mjs';
 import {
 	currentUtcDate,
-	gitRootOf,
 	hashSourceCallText,
 	isQuarantineEntryExpired,
 	readQuarantineLedger,
+	resolveGitRoot,
 } from './quarantine-ledger.mjs';
 
 /** Files the rules apply to: the project's tests wherever they live. */
@@ -298,9 +298,13 @@ function quarantineRule(upstream, gated) {
 		...gated,
 		create(context) {
 			const report = context.report.bind(context);
-			const root = gitRootOf(context.cwd);
+			// A rule that cannot find the repository root keeps conservative detection: no root means
+			// no ledger and therefore no waivers, never a clean run. The repository-wide CLI is the
+			// surface that fails loudly when the root is unresolved (see check-quarantine-ledger.mjs).
+			const rootResult = resolveGitRoot(context.cwd);
+			const root = rootResult.status === 'found' ? rootResult.root : null;
 			const file = root ? quarantineFile(context, root) : null;
-			const ledger = readQuarantineLedger(root);
+			const ledger = root ? readQuarantineLedger(root) : { status: 'absent' };
 			const entries = file && ledger.status === 'valid' ? ledger.entries.filter((entry) => entry.file === file) : [];
 			if (entries.length === 0) {
 				// No ledger entry for this file: the ordinary branch gate, unchanged.
@@ -326,11 +330,14 @@ function quarantineRule(upstream, gated) {
 								(candidate) => candidate.line === identity.line && candidate.column === identity.column,
 							);
 							if (entry) {
+								// The entry owns this site whether or not it still excuses it. Mark it located before
+								// deciding, so an expired or stale waiver at its own call cannot then force an unrelated
+								// duplicate elsewhere in the file through the moved-call pass below.
+								consumed.add(`${entry.line}:${entry.column}`);
 								if (entry.sourceCallSha256 !== identity.sourceCallSha256 || isQuarantineEntryExpired(entry, today)) {
 									report(descriptor);
 									return;
 								}
-								consumed.add(`${entry.line}:${entry.column}`);
 								return; // a live entry excuses this call
 							}
 							if (isEligible(context, descriptor)) {

@@ -35,7 +35,10 @@ copied once to the root's `tools/`. Folders starting with `.`, and `node_modules
 Hook steps need a `lefthook.yml` or `lefthook.yaml`; without one, typecheck and structure are not
 installed and the run says so. pre-commit gets eslint, flake8 (FAP), the FastAPI dependency check
 and ruff; pre-push gets svelte-check / pyright, fallow (as a script, so a deletion-only push still
-runs it) and the Python structure check. A step that already runs the same tool for the project is
+runs it) and the Python structure check. When the `vitest` set is installed, the pre-push hook also
+gets a `test-quarantine.sh` script that validates every `test-quarantine.json` entry independently
+of the changed files, so a docs-only, deletion-only or no-test-selected push still checks the
+ledger. A step that already runs the same tool for the project is
 left alone, and a repository that already runs `fallow audit` in a command keeps it and gets no
 script. When the `vitest` set is installed, the eslint step also matches the project's
 `*.test.*` / `*.spec.*` files, wherever they are, so tests outside `src/` are checked; an upgrade

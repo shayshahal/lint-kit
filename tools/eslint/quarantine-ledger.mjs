@@ -13,7 +13,11 @@
  * `reason` and `owner` are free text, trimmed and non-empty. `expires` is an inclusive UTC
  * calendar date; an entry is valid through the end of that day. The module never logs an entry's
  * reason, owner or source: callers get metadata (location, hash, status, date) only, and a
- * malformed or unreadable ledger grants no exception at all (fail closed).
+ * malformed or unreadable ledger grants no exception at all (fail closed). The document is exactly
+ * `{version, entries}`: an unknown top-level key makes the whole ledger invalid, so a hand-added
+ * approval field cannot smuggle a capability in. Reading is fail closed too — the ledger must be a
+ * regular file inside the repository root, decoded as strict UTF-8; a symlink (dangling or not), a
+ * directory, an unreadable path or an invalid byte sequence is invalid, never a clean absence.
  *
  * This module owns the format and the lifecycle (structural validity and expiry). The ESLint
  * `vitest/no-disabled-tests` rule reuses it to decide one report; the CLI beside it
@@ -21,7 +25,7 @@
  * test file is in a push. Neither is a general exception system.
  */
 
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { realpathSync } from 'node:fs';
@@ -35,6 +39,9 @@ export const SOURCE_CALL_HASH_ALGORITHM = 'sha256';
 
 /** The exact fields one entry may carry; an unknown or missing field makes the ledger invalid. */
 const ENTRY_FIELDS = ['file', 'line', 'column', 'sourceCallSha256', 'reason', 'owner', 'expires'];
+
+/** The exact fields the document may carry; an unknown top-level key is not an approval field. */
+const DOCUMENT_FIELDS = ['version', 'entries'];
 
 const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -119,6 +126,11 @@ export function parseQuarantineLedger(text) {
 		return { status: 'invalid', problem: 'not-json' };
 	}
 	if (!isPlainObject(document)) return { status: 'invalid', problem: 'not-object' };
+	// The document schema is exact: an unknown top-level key (for example `APPROVED-BY`) is not a
+	// capability and makes the whole ledger invalid rather than being ignored.
+	const documentKeys = Object.keys(document);
+	if (documentKeys.length !== DOCUMENT_FIELDS.length || !DOCUMENT_FIELDS.every((field) => field in document))
+		return { status: 'invalid', problem: 'unknown-document-field' };
 	if (document.version !== 1) return { status: 'invalid', problem: 'bad-version' };
 	if (!Array.isArray(document.entries)) return { status: 'invalid', problem: 'bad-entries' };
 	const entries = [];
@@ -135,20 +147,42 @@ export function parseQuarantineLedger(text) {
 }
 
 /**
- * Read the ledger at `gitRoot`. A missing optional file is `absent` (no exceptions, not an
- * error); an unreadable one is `invalid` and grants nothing.
+ * Read the ledger at `gitRoot`. Only a missing regular file is `absent` (no exceptions, not an
+ * error). Every other shape fails closed and grants nothing: a directory or other non-regular
+ * node, a symlink (a dangling link is a present-but-unusable file, not an absent one), a path that
+ * resolves outside the repository root through a parent link, an unreadable path, and bytes that
+ * are not valid UTF-8. `problem` is a short code; the raw path, bytes and parser output are never
+ * returned or logged.
  */
 export function readQuarantineLedger(gitRoot) {
 	if (!gitRoot) return { status: 'absent' };
-	let text;
+	const ledgerPath = path.join(gitRoot, QUARANTINE_LEDGER_FILENAME);
+	let stats;
 	try {
-		text = fs.readFileSync(path.join(gitRoot, QUARANTINE_LEDGER_FILENAME), 'utf8');
+		stats = fs.lstatSync(ledgerPath);
 	} catch (error) {
 		if (error?.code === 'ENOENT') return { status: 'absent' };
 		return { status: 'invalid', problem: 'unreadable' };
 	}
+	// `lstat` sees the link itself, so a symlink is never followed to read bytes outside the root.
+	if (!stats.isFile()) return { status: 'invalid', problem: 'not-regular-file' };
+	if (!isInsideRoot(ledgerPath, gitRoot)) return { status: 'invalid', problem: 'outside-root' };
+	let bytes;
+	try {
+		bytes = fs.readFileSync(ledgerPath);
+	} catch {
+		return { status: 'invalid', problem: 'unreadable' };
+	}
+	let text;
+	try {
+		text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+	} catch {
+		return { status: 'invalid', problem: 'bad-encoding' };
+	}
 	return parseQuarantineLedger(text);
 }
+
+const gitRoots = new Map();
 
 /** A path as the filesystem spells it, so an 8.3 short name and Git's long name compare. */
 function canonical(target) {
@@ -159,22 +193,47 @@ function canonical(target) {
 	}
 }
 
-const gitRoots = new Map();
-
-/** The Git repository root containing `cwd`, in canonical form, or null when there is none. */
-export function gitRootOf(cwd) {
-	if (gitRoots.has(cwd)) return gitRoots.get(cwd);
-	let root = null;
+/** Whether `target` resolves to a path inside the already-canonical `root`, without following
+ *  anything outside it. A `realpath` failure is not inside. */
+function isInsideRoot(target, root) {
+	let real;
 	try {
-		const toplevel = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-			cwd,
-			encoding: 'utf8',
-			stdio: ['ignore', 'pipe', 'ignore'],
-		}).trim();
-		root = toplevel ? canonical(toplevel) : null;
+		real = realpathSync.native(target);
 	} catch {
-		root = null;
+		return false;
 	}
-	gitRoots.set(cwd, root);
-	return root;
+	const relative = path.relative(root, real);
+	return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/**
+ * The Git repository root containing `cwd`, as one of three outcomes. `no-repository` is an
+ * expected answer (Git ran and said there is no repository here); `unavailable` means the question
+ * could not be asked at all (Git missing, a bad `cwd`, or an unexpected Git failure). A caller
+ * that only needs the root path uses `found`; a caller that must not turn an unresolved root into
+ * a clean ledger distinguishes the other two.
+ *
+ * Only a `found` result is cached. A cached `null` would freeze "no repository here yet" and hide
+ * a root that appears later in the same process.
+ */
+export function resolveGitRoot(cwd) {
+	const cached = gitRoots.get(cwd);
+	if (cached !== undefined) return { status: 'found', root: cached };
+	const result = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+		cwd,
+		encoding: 'utf8',
+		stdio: ['ignore', 'pipe', 'pipe'],
+	});
+	if (result.error) return { status: 'unavailable', problem: 'git-unavailable' };
+	if (result.status === 0) {
+		const toplevel = result.stdout.trim();
+		if (!toplevel) return { status: 'unavailable', problem: 'no-toplevel' };
+		const root = canonical(toplevel);
+		gitRoots.set(cwd, root);
+		return { status: 'found', root };
+	}
+	// Git reports "not a git repository" with exit 128; that is the expected negative answer. Any
+	// other failure is a context problem the caller must surface, not an absent ledger.
+	if (result.status === 128 && /not a git repository/i.test(result.stderr ?? '')) return { status: 'no-repository' };
+	return { status: 'unavailable', problem: 'git-failed' };
 }

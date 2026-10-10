@@ -506,6 +506,33 @@ test('an orphan pre-push script of the same name is preserved, not overwritten o
 	assert.match(said.join('\n'), /a pre-push step for test-quarantine\.json is left as it is/);
 });
 
+test('a dangling symlink at the script path is preserved and never written through', async (t) => {
+	// `existsSync` is false for a dangling link, so a naive install would follow it and write
+	// outside the repository. Presence must come from `lstat`, which sees the link itself.
+	const dir = consumer('quarantine-dangling');
+	const target = path.join(ISOLATED, 'dangling-target.sh');
+	fs.rmSync(target, { force: true });
+	fs.mkdirSync(path.join(dir, '.lefthook', 'pre-push'), { recursive: true });
+	try {
+		fs.symlinkSync(target, path.join(dir, '.lefthook', 'pre-push', 'test-quarantine.sh'), 'file');
+	} catch {
+		t.skip('this platform cannot create a file symlink without elevation');
+		return;
+	}
+	const said = [];
+	const log = console.log;
+	console.log = (...args) => said.push(args.join(' '));
+	try {
+		assert.equal(await main(['init', '--no-install', '--cwd', dir, '--sets', 'vitest']), 0);
+	} finally {
+		console.log = log;
+	}
+	assert.equal(fs.existsSync(target), false, 'the link target was not created outside the repository');
+	assert.equal(fs.lstatSync(path.join(dir, '.lefthook/pre-push/test-quarantine.sh')).isSymbolicLink(), true);
+	assert.equal(hooks(dir)['pre-push']?.scripts?.['test-quarantine.sh'], undefined);
+	assert.match(said.join('\n'), /a pre-push step for test-quarantine\.json is left as it is/);
+});
+
 test('a repository already running the validator keeps its own command', async () => {
 	const own = 'pre-push:\n  commands:\n    ledger:\n      run: node tools/eslint/check-quarantine-ledger.mjs\n';
 	const dir = consumer('quarantine-own-command', { 'lefthook.yml': own });

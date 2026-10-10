@@ -259,6 +259,75 @@ test('missing and invalid ledgers are distinct: absent grants nothing but is not
 	assert.equal(checkQuarantineLedger({ cwd: dir }).code, 0);
 });
 
+test('an unknown top-level document field is not an approval and invalidates the ledger', () => {
+	const dir = repo('document-field');
+	const code = "test.skip('a', () => {});";
+	writeLedgerText(dir, `${JSON.stringify({ version: 1, entries: [entry()], 'APPROVED-BY': 'self' })}\n`);
+	assert.equal(skipMessages(dir, code, 'a.test.js').length, 1);
+	const result = checkQuarantineLedger({ cwd: dir });
+	assert.equal(result.code, 1);
+	assert.match(result.lines.join('\n'), /invalid \(unknown-document-field\)/);
+	// The documented `{version, entries}` document still excuses the call.
+	writeLedger(dir, [entry()]);
+	assert.deepEqual(skipMessages(dir, code, 'a.test.js'), []);
+});
+
+test('an invalid UTF-8 byte in the ledger fails closed instead of reporting a valid entry', () => {
+	const dir = repo('invalid-utf8');
+	const document = `${JSON.stringify({ version: 1, entries: [entry()] })}\n`;
+	const [before, after] = document.split('flaky against the real payments API');
+	fs.writeFileSync(ledgerFile(dir), Buffer.concat([Buffer.from(before), Buffer.from([0xff]), Buffer.from(after)]));
+	const result = checkQuarantineLedger({ cwd: dir });
+	assert.equal(result.code, 1);
+	assert.match(result.lines.join('\n'), /invalid \(bad-encoding\)/);
+	// No replacement character, reason or raw byte leaks into the metadata-only output.
+	assert.doesNotMatch(result.lines.join('\n'), /\uFFFD|flaky|replacement/i);
+	assert.equal(skipMessages(dir, "test.skip('a', () => {});", 'a.test.js').length, 1);
+});
+
+test('a symlinked, dangling or non-regular ledger fails closed and is never called absent', (t) => {
+	const dir = repo('ledger-node-type');
+	const outside = path.join(TMP, 'ledger-outside.json');
+	fs.writeFileSync(outside, `${JSON.stringify({ version: 1, entries: [entry()] })}\n`);
+	try {
+		fs.symlinkSync(outside, ledgerFile(dir), 'file');
+	} catch {
+		t.skip('this platform cannot create a file symlink without elevation');
+		return;
+	}
+	// A live entry behind a symlink is not followed: the link is not a regular ledger file.
+	const linked = checkQuarantineLedger({ cwd: dir });
+	assert.equal(linked.code, 1);
+	assert.match(linked.lines.join('\n'), /invalid \(not-regular-file\)/);
+	assert.equal(skipMessages(dir, "test.skip('a', () => {});", 'a.test.js').length, 1);
+	fs.rmSync(ledgerFile(dir), { force: true });
+	// A dangling link is present and unusable, not an absent optional file.
+	fs.symlinkSync(path.join(TMP, 'missing-ledger.json'), ledgerFile(dir), 'file');
+	const dangling = checkQuarantineLedger({ cwd: dir });
+	assert.equal(dangling.code, 1);
+	assert.match(dangling.lines.join('\n'), /invalid \(not-regular-file\)/);
+	fs.rmSync(ledgerFile(dir), { force: true });
+	// A directory named like the ledger is not absent either.
+	fs.mkdirSync(ledgerFile(dir));
+	assert.equal(checkQuarantineLedger({ cwd: dir }).code, 1);
+});
+
+test('the validator refuses an unresolvable repository context instead of a clean absent ledger', () => {
+	const outside = path.join(TMP, 'no-git');
+	fs.mkdirSync(outside, { recursive: true });
+	fs.writeFileSync(
+		path.join(outside, 'test-quarantine.json'),
+		`${JSON.stringify({ version: 1, entries: [entry({ expires: '2000-01-01' })] })}\n`,
+	);
+	const cli = spawnSync(process.execPath, [VALIDATOR], { cwd: outside, encoding: 'utf8' });
+	assert.equal(cli.status, 2, `${cli.stdout}\n${cli.stderr}`);
+	assert.match(cli.stdout, /unavailable/);
+	assert.doesNotMatch(cli.stdout, /absent/);
+	// The API outcome matches the CLI, and a bad working directory is unavailable too.
+	assert.equal(checkQuarantineLedger({ cwd: outside }).code, 2);
+	assert.equal(checkQuarantineLedger({ cwd: path.join(outside, 'missing') }).code, 2);
+});
+
 // ── expiry boundary through the production clock ──────────────────────────────────
 
 test('expiry is inclusive through its UTC day, and forces the report the next day', (t) => {
@@ -315,6 +384,50 @@ test('branch: moving a skip breaks the old entry and needs a reviewed ledger upd
 	assert.deepEqual(skipMessages(dir, code, 'test/moved.test.js', branch).map((m) => m.line), [3]);
 	writeLedger(dir, [entry({ file: 'test/moved.test.js', line: 3, sourceCallSha256: sha256("test.skip('moved', () => {})") })]);
 	assert.deepEqual(skipMessages(dir, code, 'test/moved.test.js', branch), []);
+});
+
+test('branch: a moved call on a Git-unchanged line is still forced by its entry fingerprint', () => {
+	// The old entry is unconsumed because the call left its position; the call now sits on a line
+	// Git still treats as context, so only the fingerprint pass can charge it. This is the path an
+	// entry that owns its own site must not spoof for a duplicate elsewhere.
+	const callText = "test.skip('moved2', () => {})";
+	const dir = repo('moved-unchanged', { 'a.test.js': `${callText};\nconst after = 1;\n` });
+	git(dir, 'checkout', '-qb', 'feature');
+	const moved = `const before = 1;\n${callText};\nconst after = 1;\n`;
+	fs.writeFileSync(path.join(dir, 'a.test.js'), moved);
+	git(dir, 'add', '-A');
+	git(dir, 'commit', '-qm', 'move the call down');
+	const branch = { inspection: { mode: 'branch', base: 'main' } };
+	writeLedger(dir, [entry({ line: 1, sourceCallSha256: sha256(callText) })]);
+	assert.deepEqual(skipMessages(dir, moved, 'a.test.js', branch).map((m) => m.line), [2]);
+	writeLedger(dir, [entry({ line: 2, sourceCallSha256: sha256(callText) })]);
+	assert.deepEqual(skipMessages(dir, moved, 'a.test.js', branch), []);
+});
+
+test('an expired or stale entry at one duplicate call does not force an identical call elsewhere', () => {
+	const callText = "test.skip('dup2', () => {})";
+	const code = `${callText};\n${callText};\n`;
+	const dir = repo('duplicate-waiver', { 'a.test.js': code });
+	const branch = { inspection: { mode: 'branch', base: 'main' } };
+	// Both calls are inherited, so without a matching entry the second stays baseline-exempt. The
+	// first entry is expired: it forces only its own line, never the duplicate.
+	writeLedger(dir, [entry({ line: 1, sourceCallSha256: sha256(callText), expires: '2000-01-01' })]);
+	assert.deepEqual(skipMessages(dir, code, 'a.test.js', branch).map((m) => m.line), [1]);
+	// A stale fingerprint at the first call likewise forces only that call.
+	writeLedger(dir, [entry({ line: 1, sourceCallSha256: '0'.repeat(64) })]);
+	assert.deepEqual(skipMessages(dir, code, 'a.test.js', branch).map((m) => m.line), [1]);
+	// A live matching entry excuses the first call and leaves the duplicate inherited and exempt.
+	writeLedger(dir, [entry({ line: 1, sourceCallSha256: sha256(callText) })]);
+	assert.deepEqual(skipMessages(dir, code, 'a.test.js', branch), []);
+});
+
+test('with no Git root the rule grants no waivers rather than a clean run', () => {
+	const dir = path.join(TMP, 'no-git-lint');
+	fs.mkdirSync(dir, { recursive: true });
+	assert.equal(checkQuarantineLedger({ cwd: dir }).code, 2);
+	// Even a live-looking ledger is unreadable without a root: the rule reports the skip.
+	fs.writeFileSync(ledgerFile(dir), `${JSON.stringify({ version: 1, entries: [entry()] })}\n`);
+	assert.equal(skipMessages(dir, "test.skip('a', () => {});", 'a.test.js', { inspection: 'full' }).length, 1);
 });
 
 test('full inspection with a live ledger suppresses an inherited skip too', () => {
