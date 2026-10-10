@@ -1,0 +1,17 @@
+# lint-kit's selected Gitleaks configuration: the bundled default rule set, plus the narrow
+# exceptions for values lint-kit's own fixtures and documentation use as placeholders.
+#
+# `gitleaks-check.mjs` passes this file with `--config`, which takes precedence over
+# `GITLEAKS_CONFIG`, `GITLEAKS_CONFIG_TOML` and a `.gitleaks.toml` in the scanned repository, and it
+# refuses a source `.gitleaksignore` outright. Add reviewed exceptions here, not in the repository
+# being scanned, and keep each one as narrow as the value it excuses.
+title = "lint-kit secret scanning"
+minVersion = "v8.30.1"
+
+# The upstream default rules (aws-access-token, github-pat, generic-api-key, private-key, ...).
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "lint-kit's documented dummy value: a placeholder written into generated fixtures and documentation, never a credential. A different value under the same assignment is still reported."
+regexes = ['''9f4c2b7e1a8d6f3c5e0b9a2d7c4f1e8b''']
