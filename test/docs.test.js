@@ -7,9 +7,10 @@ import tailwindPatterns from '../tools/eslint/tailwind-patterns.mjs';
 import untranslatedText from '../tools/eslint/untranslated-text.mjs';
 import errorHandling from '../tools/eslint/error-handling.mjs';
 import prose from '../tools/eslint/prose.mjs';
+import vitest from '../tools/eslint/vitest.mjs';
 
 test('every rule links to a section of the docs copied beside it', () => {
-	for (const plugin of [svelteSkills.plugin, untranslatedText.plugin, tailwindPatterns.plugin, errorHandling.plugin, prose.plugin])
+	for (const plugin of [svelteSkills.plugin, untranslatedText.plugin, tailwindPatterns.plugin, errorHandling.plugin, prose.plugin, vitest.plugin])
 		for (const [name, rule] of Object.entries(plugin.rules)) {
 			const url = new URL(rule.meta.docs.url);
 			assert.equal(url.protocol, 'file:', `${name} links outside the repository`);

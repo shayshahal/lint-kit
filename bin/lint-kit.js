@@ -5,7 +5,7 @@
  * tools' own config.
  *
  *   npx github:shayshahal/lint-kit init [--sets svelte-skills,untranslated-text,tailwind-patterns,
- *                                        error-handling,prose,fastapi,typecheck,structure]
+ *                                        error-handling,prose,vitest,fastapi,typecheck,structure]
  *                                        [--yes] [--no-install] [--base <branch>] [--cwd <dir>]
  *
  * Projects: in a monorepo, the members of the JS workspace (pnpm-workspace.yaml, or "workspaces"
@@ -40,6 +40,7 @@ export const SETS = {
 	'tailwind-patterns': { kind: 'eslint', about: 'Tailwind / shadcn class conventions (vh, transition-all, dark:, dialog titles)' },
 	'error-handling': { kind: 'eslint', about: 'catch blocks that drop, only log, or stringify the error' },
 	prose: { kind: 'eslint', about: 'inflated vocabulary in comments, and // comments that should be JSDoc (ask for it)' },
+	vitest: { kind: 'eslint', about: 'focused tests (test.only / describe.only) in the project tests (Vitest, ask for it)' },
 	'slop-patterns': { kind: 'oxlint', about: 'a function that only forwards its arguments, and assertions that discard a type (oxlint)' },
 	fastapi: { kind: 'python', about: 'FastAPI rules ruff lacks, as a flake8 plugin (FAP001-017)' },
 	typecheck: { kind: 'typecheck', about: 'svelte-check --tsgo and pyright before each push (lefthook)' },
@@ -57,13 +58,29 @@ const ESLINT_FOR = {
 	// Fits any project with an ESLint config: prose rules read comments, not code. Never selected
 	// on its own — `OPT_IN` keeps a set of opinions out of a default install.
 	prose: () => true,
+	// Runner-specific: the rule reads Vitest's API, so it belongs in a project that runs Vitest.
+	// Like prose it is never selected on its own, even in a project that depends on Vitest.
+	vitest: (deps) => 'vitest' in deps,
 };
 /**
  * Sets a dependency never selects: they are a taste, so a repository asks for them by name and
  * keeps them on a re-run. `detect` only offers one that is already installed.
  */
-const OPT_IN = new Set(['prose']);
+const OPT_IN = new Set(['prose', 'vitest']);
 const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', '@typescript-eslint/parser'];
+/**
+ * A set's copied module can import a package the shared parser setup does not: the vitest set
+ * loads `@vitest/eslint-plugin`, which the consumer then owns. Pinned to the version the support
+ * matrix froze ([#40](docs/agent-skills-first-release-support.md)); a project that already has
+ * the package keeps its own version, and `writeEslint` says so when that version is another one.
+ */
+const VITEST_PLUGIN_PIN = '1.6.27';
+const ESLINT_PEERS_FOR = { vitest: [`@vitest/eslint-plugin@${VITEST_PLUGIN_PIN}`] };
+
+/** Every devDependency the chosen ESLint sets need, without duplicates. */
+export function eslintPeers(sets) {
+	return [...new Set([...ESLINT_PEERS, ...sets.flatMap((s) => ESLINT_PEERS_FOR[s] ?? [])])];
+}
 /** The JS project dependency each oxlint set is for. */
 const OXLINT_FOR = {
 	'slop-patterns': (deps) => 'oxlint' in deps,
@@ -344,6 +361,7 @@ const ESLINT_NAMES = {
 	'tailwind-patterns': 'tailwindPatterns',
 	'error-handling': 'errorHandling',
 	prose: 'prose',
+	vitest: 'vitest',
 };
 /**
  * What init writes for every ESLint set: a rule reports only the lines the branch added since the
@@ -372,6 +390,12 @@ ${INSPECTION}
 	}),`,
 	prose: () => `	...prose.config({
 ${INSPECTION}
+	}),`,
+	vitest: () => `	...vitest.config({
+${INSPECTION}
+		// The project's own config: the maintained plugin resolves from here, not from the shared
+		// tools/eslint/ copy, which is what lets an isolated pnpm workspace member find it.
+		from: import.meta.url,
 	}),`,
 };
 
@@ -451,7 +475,12 @@ function eslintSetsFor(project, sets) {
 function writeEslint(repo, project, wanted, args) {
 	const own = path.join(project.dir, ESLINT_RULES);
 	const previous = read(own);
-	if (args.install) addJs(project, ESLINT_PEERS);
+	// The set is verified against the frozen pin. A version the project already has is left alone,
+	// so name it rather than let the run imply the installed one was tested (#47).
+	const have = project.deps['@vitest/eslint-plugin'];
+	if (wanted.includes('vitest') && have && have !== VITEST_PLUGIN_PIN)
+		say(`→ ${where(project)}: @vitest/eslint-plugin@${have} is left as it is; the vitest set is verified against ${VITEST_PLUGIN_PIN}, so check this version by hand.`);
+	if (args.install) addJs(project, eslintPeers(wanted));
 	const next = rulesConfig(wanted, rel(project.dir, path.join(repo, 'tools', 'eslint')).replace(/^(?!\.)/, './'));
 	if (previous !== null && previous !== next) {
 		write(`${own}.bak`, previous);
@@ -847,6 +876,20 @@ const lefthookRoot = (r) => (r ? `${posix(r).replace(/\/?$/, '/')}` : '');
 const everywhere = (doc, dir, pattern) =>
 	doc.get('glob_matcher') === 'doublestar' ? `${dir}**/${pattern}` : `${dir}${pattern}`;
 
+/** The test files the vitest set checks: `*.test.*` / `*.spec.*` under the project at any depth. */
+const testPattern = (doc, dir) => everywhere(doc, dir, '*.{test,spec}.*');
+
+/**
+ * The globs the ESLint pre-commit step matches. Application code under src/ is what every set
+ * lints; vitest's rule lives on test files, which sit outside src/ as often as inside it, so a
+ * project that wires it routes those patterns to the same step. One pattern stays a string, as
+ * before; two become the array lefthook ORs.
+ */
+const eslintGlob = (doc, dir, withTests) => {
+	const app = everywhere(doc, `${dir}src/`, '*.{js,ts,svelte}');
+	return withTests ? [app, testPattern(doc, dir)] : app;
+};
+
 /**
  * Add a step to `hook` unless one of that name is there (a re-run keeps the user's edits), or a
  * step already runs the same tool for this project (`runs`): one whose root is the project's, or
@@ -862,6 +905,25 @@ function addStep(doc, hook, name, value, runs, only) {
 	const commands = doc.getIn([hook, 'commands']);
 	if (commands.flow && !commands.items.length) commands.flow = false;
 	doc.setIn([hook, 'commands', name], doc.createNode(value));
+}
+
+/**
+ * Add a newly wired vitest set's test patterns to the ESLint step an earlier install wrote. Only
+ * a step whose `run` is exactly what init writes is touched, so a repository's own ESLint command
+ * keeps its policy; then the caller reports the manual step instead. Returns whether the named
+ * step is in the wanted shape.
+ */
+function widenEslintStep(doc, name, glob, run) {
+	const step = doc.getIn(['pre-commit', 'commands', name]);
+	if (!step) return false;
+	const plain = step.toJSON();
+	if (plain?.run !== run) return false;
+	const wanted = Array.isArray(glob) ? glob : [glob];
+	const existing = Array.isArray(plain.glob) ? plain.glob : plain.glob === undefined ? [] : [plain.glob];
+	if (wanted.every((p) => existing.includes(p))) return true;
+	const added = wanted.filter((p) => !existing.includes(p));
+	doc.setIn(['pre-commit', 'commands', name, 'glob'], doc.createNode([...existing, ...added]));
+	return true;
 }
 
 /** Add a lefthook script unless its file is already there, or a command already runs the tool.
@@ -1202,6 +1264,10 @@ export async function main(argv = process.argv.slice(2)) {
 		.map((p) => ({ p, wanted: eslintSetsFor(p, sets) }))
 		.filter(({ wanted }) => wanted.length);
 	const eslintSets = Object.keys(ESLINT_FOR).filter((s) => linted.some(({ wanted }) => wanted.includes(s)));
+	// A runner-specific set no project can run is never claimed as wired: eslint.rules.js only gains
+	// what a project fits, so a run that leaves vitest out everywhere must say so instead of "done".
+	if (sets.includes('vitest') && !eslintSets.includes('vitest'))
+		say('→ vitest was asked for but no project took it: an ESLint project (a Svelte dependency or an ESLint config) that depends on vitest is needed. Add vitest, or wire the set by hand.');
 	const oxlinted = oxlintProjects(projects)
 		.map((p) => ({ p, wanted: oxlintSetsFor(p, sets) }))
 		.filter(({ wanted }) => wanted.length);
@@ -1221,10 +1287,17 @@ export async function main(argv = process.argv.slice(2)) {
 	const wired = fastapi.map((py) => writeFastapi(repo, py, args));
 	const hooked = editLefthook(repo, (doc) => {
 		const eslintNames = stepNames('eslint', linted.map(({ p }) => p));
-		for (const { p } of linted) {
+		for (const { p, wanted } of linted) {
 			const dir = lefthookRoot(p.rel);
-			const step = { glob: everywhere(doc, `${dir}src/`, '*.{js,ts,svelte}'), ...(dir ? { root: dir } : {}), run: `${p.exec} eslint {staged_files}` };
-			addStep(doc, 'pre-commit', eslintNames.get(p), step, /\beslint\b/, linted.length === 1);
+			const name = eslintNames.get(p);
+			const run = `${p.exec} eslint {staged_files}`;
+			const glob = eslintGlob(doc, dir, wanted.includes('vitest'));
+			addStep(doc, 'pre-commit', name, { glob, ...(dir ? { root: dir } : {}), run }, /\beslint\b/, linted.length === 1);
+			// An earlier install's step keeps its name and its glob; widen it so the set's test files are
+			// checked too. When the step is not ours to touch (a repository's own ESLint command), say the
+			// manual step rather than leave the tests outside src/ out of the hook.
+			if (wanted.includes('vitest') && !widenEslintStep(doc, name, glob, run))
+				say(`→ ${where(p)}: the step that runs ESLint for this project was left alone; add ${testPattern(doc, dir)} to it so the vitest tests outside src/ are checked.`);
 		}
 		stepsFastapi(doc, wired);
 		if (sets.includes('typecheck')) say(`✔ lefthook.yml: typecheck before each push in ${writeTypecheck(projects, doc, args).join(', ') || 'no project'}`);
