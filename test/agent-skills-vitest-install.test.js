@@ -210,19 +210,31 @@ test('--no-install preserves the consumer package.json and an ESLint config it a
 	assert.match(text(dir, 'eslint.config.js'), /import toolRules from '\.\/eslint\.rules\.js';/);
 });
 
-test('the installed ESLint reports an outside-src focused test exactly once', async () => {
-	const dir = consumer('installed');
-	await init(dir, '--sets', 'vitest');
+/** Lint one file through the installed config in a fresh process, returning [ruleId, severity] pairs. */
+function installedMessages(dir, file) {
 	// A new process, because ESLint caches the config module it imported and this file also lints
 	// another consumer.
 	const script = `import { ESLint } from 'eslint';
-const [r] = await new ESLint({ cwd: ${JSON.stringify(dir)} }).lintFiles([${JSON.stringify(path.join(dir, 'test/outside.test.js'))}]);
+const [r] = await new ESLint({ cwd: ${JSON.stringify(dir)} }).lintFiles([${JSON.stringify(path.join(dir, file))}]);
 console.log(JSON.stringify(r.messages.map((m) => [m.ruleId, m.severity])));
 `;
-	const messages = JSON.parse(
-		execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd: ROOT, encoding: 'utf8' }),
+	return JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd: ROOT, encoding: 'utf8' }));
+}
+
+test('the installed ESLint reports an outside-src focused test exactly once', async () => {
+	const dir = consumer('installed');
+	await init(dir, '--sets', 'vitest');
+	assert.deepEqual(installedMessages(dir, 'test/outside.test.js'), [['vitest/no-focused-tests', 2]]);
+});
+
+test('the installed ESLint reports an outside-src unawaited assertion exactly once', async () => {
+	const dir = consumer('installed-async');
+	await init(dir, '--sets', 'vitest');
+	fs.writeFileSync(
+		path.join(dir, 'test/outside.test.js'),
+		"import { expect, test } from 'vitest';\ntest('x', () => { expect(fetch('u')).resolves.toBe('y'); });\n",
 	);
-	assert.deepEqual(messages, [['vitest/no-focused-tests', 2]]);
+	assert.deepEqual(installedMessages(dir, 'test/outside.test.js'), [['vitest/valid-expect', 2]]);
 });
 
 test('a missing maintained plugin fails the check instead of skipping it', async () => {
@@ -247,6 +259,18 @@ test('a missing maintained plugin fails the check instead of skipping it', async
 	assert.notEqual(run.status, 0, 'a missing plugin must not exit 0');
 	assert.match(`${run.stdout}\n${run.stderr}`, /@vitest\/eslint-plugin/);
 	assert.doesNotMatch(run.stdout, /no-focused-tests/, 'a config that could not load reports no rule');
+});
+
+test('the installed ESLint reports the concise floating chain once, through its owner', async () => {
+	// The concise form is the shape both async rules see; the installed config must keep one owner
+	// for it, not the duplicate upstream pairing. The owner is `valid-expect`, the rule with the fix.
+	const dir = consumer('installed-concise');
+	await init(dir, '--sets', 'vitest');
+	fs.writeFileSync(
+		path.join(dir, 'test/outside.test.js'),
+		"import { expect, test } from 'vitest';\ntest('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });\n",
+	);
+	assert.deepEqual(installedMessages(dir, 'test/outside.test.js'), [['vitest/valid-expect', 2]]);
 });
 
 test('the installed hook checks an outside-src test (real lefthook)', async () => {
