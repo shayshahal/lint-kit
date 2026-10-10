@@ -3,11 +3,17 @@
  * policy-guard: reports an unapproved change to an enrolled checker configuration.
  *
  * A repository declares the checker files the first release watches in `lint-kit.policy.json`
- * (strict JSON, read only from the resolved `--trusted-ref` commit). This command diffs the
+ * (strict JSON, read only from the resolved `--trusted-ref` commit). This command takes the
  * source change since the merge-base of `--base` and `--target`, intersects it with those
  * enrolled paths, and reports each enrolled path whose target bytes differ from the trusted
  * snapshot. It parses no checker format: an enrolled file is an opaque path, and a change to it
  * needs human review rather than a guessed verdict.
+ *
+ * The source change is always Git object-to-object: `git diff <mergeBase> <target>`. In
+ * `working-tree` mode the working tree is read directly for every enrolled path and compared with
+ * the merge-base object, and untracked status comes from `ls-files` metadata. The guard never
+ * asks Git to diff the filesystem, so a repository clean filter cannot hide a mutation and no
+ * filter command runs.
  *
  * Two baselines stay separate. The source baseline is the merge-base of `--base` and `--target`;
  * the trusted baseline is the commit named by `--trusted-ref`, selected outside the branch. The
@@ -56,15 +62,25 @@ const CHANGE_KIND = {
 class PolicyGuardError extends Error {}
 
 /**
+ * Literal pathspecs for every Git call, so a filename holding `[`, `?` or `*` is matched as
+ * itself and not as a pattern. The ambient `GIT_GLOB_PATHSPECS`/`GIT_NOGLOB_PATHSPECS` settings
+ * are removed because they conflict with forcing literal matching.
+ */
+const GIT_ENV = { ...process.env, GIT_LITERAL_PATHSPECS: '1' };
+delete GIT_ENV.GIT_GLOB_PATHSPECS;
+delete GIT_ENV.GIT_NOGLOB_PATHSPECS;
+
+/**
  * Runs one Git command in `repo` and returns its stdout. Throws PolicyGuardError on a non-zero
  * exit, so every caller fails closed with exit 2 instead of treating a Git failure as clean.
  */
 function runGit(repo, args, encoding = 'utf8') {
 	try {
-		return execFileSync('git', args, {
+		return execFileSync('git', ['--literal-pathspecs', ...args], {
 			cwd: repo,
 			encoding,
 			stdio: ['ignore', 'pipe', 'pipe'],
+			env: GIT_ENV,
 			maxBuffer: 64 * 1024 * 1024,
 		});
 	} catch (error) {
@@ -76,10 +92,11 @@ function runGit(repo, args, encoding = 'utf8') {
 /** The working-tree root of `cwd`, or exit 2 when `cwd` is not inside a Git repository. */
 function resolveRepositoryRoot(cwd) {
 	try {
-		return execFileSync('git', ['rev-parse', '--show-toplevel'], {
+		return execFileSync('git', ['--literal-pathspecs', 'rev-parse', '--show-toplevel'], {
 			cwd,
 			encoding: 'utf8',
 			stdio: ['ignore', 'pipe', 'pipe'],
+			env: GIT_ENV,
 		}).trim();
 	} catch {
 		throw new PolicyGuardError(`--cwd ${cwd} is not inside a Git repository`);
@@ -125,16 +142,15 @@ function parseNameStatus(raw) {
 }
 
 /**
- * The source change since `mergeBase`, as a path -> kind map. `--name-status -M -z` is the only
- * lossless parse: a status token, then the path, NUL-separated, with raw UTF-8 names. A second
- * revision means committed-only; omitting it compares the merge-base to the working tree.
- * `--no-ext-diff --no-textconv` stop a repository diff driver from hiding a change.
+ * The source change between two commits, as a path -> kind map. `--name-status -M -z` is the
+ * only lossless parse: a status token, then the path, NUL-separated, with raw UTF-8 names. Both
+ * arguments are commits, so Git never reads the filesystem and never runs a clean filter;
+ * `--no-ext-diff --no-textconv` also stop a repository diff driver from hiding a change.
  */
 function readChangedPaths(repo, mergeBase, targetSha) {
-	const args = ['diff', '--no-ext-diff', '--no-textconv', '--name-status', '-M', '-z', '--end-of-options', mergeBase];
-	if (targetSha !== null) args.push(targetSha);
-	args.push('--');
-	return parseNameStatus(runGit(repo, args));
+	return parseNameStatus(
+		runGit(repo, ['diff', '--no-ext-diff', '--no-textconv', '--name-status', '-M', '-z', '--end-of-options', mergeBase, targetSha, '--']),
+	);
 }
 
 /**
@@ -160,8 +176,8 @@ function normalizePolicyPath(value, label) {
 	}
 	if (value.includes('\0')) throw new PolicyGuardError(`${label} must not contain a NUL byte`);
 	const slashed = value.replaceAll('\\', '/');
-	if (slashed.startsWith('/') || /^[A-Za-z]:\//.test(slashed)) {
-		throw new PolicyGuardError(`${label} must be repository-relative, not absolute`);
+	if (slashed.startsWith('/') || /^[A-Za-z]:/.test(slashed)) {
+		throw new PolicyGuardError(`${label} must be repository-relative, not absolute or drive-relative`);
 	}
 	const segments = slashed.split('/').filter((segment) => segment !== '' && segment !== '.');
 	if (segments.length === 0 || segments.includes('..')) {
@@ -264,8 +280,31 @@ function readCommitBlob(repo, commitSha, relativePath) {
 	return runGit(repo, ['cat-file', 'blob', sha], null);
 }
 
+/**
+ * Rejects a symbolic link or junction in any parent component of `relativePath`, so an enrolled
+ * path cannot be followed out of the repository through a linked directory. The leaf itself is
+ * checked by `readWorktreeFile`.
+ */
+function assertNoSymlinkParents(repo, relativePath) {
+	const segments = relativePath.split('/');
+	let current = repo;
+	for (const segment of segments.slice(0, -1)) {
+		current = path.join(current, segment);
+		let stats;
+		try {
+			stats = fs.lstatSync(current);
+		} catch (error) {
+			if (error.code === 'ENOENT') return;
+			throw new PolicyGuardError(`cannot inspect ${relativePath}: ${error.message}`);
+		}
+		if (stats.isSymbolicLink()) throw new PolicyGuardError(`${relativePath} has a symbolic link in its path`);
+		if (!stats.isDirectory()) return;
+	}
+}
+
 /** The raw bytes of an enrolled path in the working tree, or null when it is absent. */
 function readWorktreeFile(repo, relativePath) {
+	assertNoSymlinkParents(repo, relativePath);
 	const absolute = path.join(repo, ...relativePath.split('/'));
 	let stats;
 	try {
@@ -277,6 +316,25 @@ function readWorktreeFile(repo, relativePath) {
 	if (stats.isSymbolicLink()) throw new PolicyGuardError(`${relativePath} is a symbolic link in the working tree`);
 	if (!stats.isFile()) throw new PolicyGuardError(`${relativePath} is not a regular file in the working tree`);
 	return fs.readFileSync(absolute);
+}
+
+/**
+ * The working-tree source change: every enrolled path whose raw bytes differ from the merge-base
+ * object, plus the raw bytes read. This reads files directly and never asks Git to diff the
+ * filesystem, so a repository clean filter cannot hide a mutation and no filter command runs. A
+ * path whose raw bytes equal the merge-base object is unchanged and is not added.
+ */
+function readWorkingTreeSourceChanges(repo, mergeBase, enrolledPaths) {
+	const changes = new Map();
+	const rawBytes = new Map();
+	for (const relativePath of enrolledPaths) {
+		const raw = readWorktreeFile(repo, relativePath);
+		rawBytes.set(relativePath, raw);
+		const atMergeBase = readCommitBlob(repo, mergeBase, relativePath);
+		if (sameBytes(raw, atMergeBase)) continue;
+		changes.set(relativePath, raw === null ? 'deleted' : atMergeBase === null ? 'added' : 'modified');
+	}
+	return { changes, rawBytes };
 }
 
 function sameBytes(left, right) {
@@ -300,9 +358,10 @@ function reportFindings(options, findings, changes, enrolled) {
 
 /**
  * The whole check: resolve the three commits, read the enrollment from the trusted commit only,
- * diff the source change, and report enrolled paths whose target bytes diverge from the trusted
- * snapshot. A change whose target bytes already match the trusted snapshot is not a new
- * unapproved change.
+ * take the object-to-object source change, and report enrolled paths whose target bytes diverge
+ * from the trusted snapshot. In working-tree mode the target bytes are the raw working-tree bytes,
+ * and untracked and raw-source candidates augment the committed change. A change whose target
+ * bytes already match the trusted snapshot is not a new unapproved change.
  */
 function runPolicyGuard(options) {
 	const repo = resolveRepositoryRoot(options.cwd);
@@ -322,17 +381,23 @@ function runPolicyGuard(options) {
 	}
 	const enrolled = parseEnrollmentPolicy(policyBytes.toString('utf8'), policyPath);
 	const mergeBase = findMergeBase(repo, targetSha, baseSha);
-	const changes = readChangedPaths(repo, mergeBase, options.mode === 'committed' ? targetSha : null);
+	const changes = readChangedPaths(repo, mergeBase, targetSha);
+	let workingTreeBytes = null;
 	if (options.mode === 'working-tree') {
-		for (const [relativePath, kind] of readUntrackedEnrolled(repo, enrolled)) {
+		const sourceChanges = readWorkingTreeSourceChanges(repo, mergeBase, enrolled);
+		for (const [relativePath, kind] of sourceChanges.changes) {
 			if (!changes.has(relativePath)) changes.set(relativePath, kind);
+		}
+		workingTreeBytes = sourceChanges.rawBytes;
+		for (const [relativePath, kind] of readUntrackedEnrolled(repo, enrolled)) {
+			changes.set(relativePath, kind);
 		}
 	}
 	const findings = [];
 	for (const relativePath of [...enrolled].sort()) {
 		if (!changes.has(relativePath)) continue;
 		const targetBytes =
-			options.mode === 'committed' ? readCommitBlob(repo, targetSha, relativePath) : readWorktreeFile(repo, relativePath);
+			options.mode === 'committed' ? readCommitBlob(repo, targetSha, relativePath) : workingTreeBytes.get(relativePath);
 		const trustedBytes = readCommitBlob(repo, trustedSha, relativePath);
 		if (sameBytes(targetBytes, trustedBytes)) continue;
 		findings.push({ path: relativePath, change: changes.get(relativePath) });

@@ -96,10 +96,11 @@ function guardArgs(overrides = {}) {
 	];
 }
 
-function guard(dir, args, cwd = dir) {
+function guard(dir, args, { cwd = dir, env } = {}) {
 	const result = spawnSync(process.execPath, [path.join(dir, 'tools', 'policy', 'policy-guard.mjs'), ...args], {
 		cwd,
 		encoding: 'utf8',
+		env: env ? { ...process.env, ...env } : process.env,
 	});
 	return { code: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
@@ -260,7 +261,7 @@ test('committed: running from a subdirectory still resolves the repository', () 
 	branch(dir);
 	write(dir, '.fallowrc.json', '{"b":2}\n');
 	commit(dir, 'change');
-	const result = guard(dir, guardArgs(), path.join(dir, 'sub'));
+	const result = guard(dir, guardArgs(), { cwd: path.join(dir, 'sub') });
 	assert.equal(result.code, 1, result.stderr);
 	assert.match(result.stdout, /enrolled-change: \.fallowrc\.json/);
 });
@@ -270,7 +271,7 @@ test('--cwd selects the repository', () => {
 	branch(dir);
 	write(dir, '.fallowrc.json', '{"b":2}\n');
 	commit(dir, 'change');
-	const result = guard(dir, guardArgs({ extra: ['--cwd', dir] }), os.tmpdir());
+	const result = guard(dir, guardArgs({ extra: ['--cwd', dir] }), { cwd: os.tmpdir() });
 	assert.equal(result.code, 1, result.stderr);
 });
 
@@ -516,4 +517,73 @@ test('a symlinked enrolled path in the working tree fails with 2 rather than bei
 	const result = guard(dir, guardArgs({ mode: 'working-tree' }));
 	assert.equal(result.code, 2, result.stderr);
 	assert.match(result.stderr, /symbolic link/);
+});
+
+// ── snapshot boundary corrections ────────────────────────────────────────────────
+
+test('working-tree: a clean filter cannot hide a weakened enrolled file', () => {
+	const dir = project('filter-hide');
+	branch(dir);
+	const marker = path.join(dir, 'filter-ran');
+	// The branch configures the filter after the baseline commit, as a branch could. Git only
+	// runs it when a command converts the file; the guard reads raw bytes and objects, so the
+	// filter never runs and the weakened content is still reported.
+	write(
+		dir,
+		'hide-filter.cjs',
+		`const fs = require('node:fs');\nfs.writeFileSync(${JSON.stringify(marker)}, 'ran');\nprocess.stdout.write('{"health":{"maxCognitive":25}}\n');\n`,
+	);
+	write(dir, '.gitattributes', '.fallowrc.json filter=hide\n');
+	git(dir, 'config', 'filter.hide.clean', 'node hide-filter.cjs');
+	write(dir, '.fallowrc.json', '{"health":{"maxCognitive":999}}\n');
+	const result = guard(dir, guardArgs({ mode: 'working-tree' }));
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-change: \.fallowrc\.json/);
+	assert.equal(fs.existsSync(marker), false);
+});
+
+test('working-tree: an enrolled path behind a linked parent directory fails with 2', (t) => {
+	const dir = project('linked-parent', {
+		enrollments: [opaque('linked', 'linked/secret.json')],
+		files: { 'keep.txt': 'x\n' },
+	});
+	branch(dir);
+	const outside = path.join(TMP, 'linked-parent-outside');
+	fs.mkdirSync(outside, { recursive: true });
+	write(TMP, 'linked-parent-outside/secret.json', '{}\n');
+	try {
+		fs.symlinkSync(outside, path.join(dir, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+	} catch {
+		t.skip('this platform cannot create a directory link');
+		return;
+	}
+	const result = guard(dir, guardArgs({ mode: 'working-tree' }));
+	assert.equal(result.code, 2, result.stderr);
+	assert.match(result.stderr, /symbolic link in its path/);
+});
+
+test('a drive-relative path fails with 2 on every platform', () => {
+	const dir = project('drive-relative');
+	branch(dir);
+	assert.equal(guard(dir, guardArgs({ policy: 'C:outside.json' })).code, 2);
+	const enrolled = project('drive-relative-source', {
+		enrollments: [opaque('drive', 'C:outside.json')],
+		files: { '.fallowrc.json': '{}\n' },
+	});
+	branch(enrolled);
+	assert.equal(guard(enrolled, guardArgs()).code, 2);
+});
+
+test('working-tree: a bracketed filename is matched literally, not as a pattern', () => {
+	const dir = project('brackets', {
+		enrollments: [opaque('bracket', 'config[1].json')],
+		files: { 'config[1].json': '{"a":1}\n', 'config1.json': '{"a":2}\n' },
+	});
+	branch(dir);
+	write(dir, 'config[1].json', '{"a":2}\n');
+	// GIT_GLOB_PATHSPECS would let `config[1].json` match the similar `config1.json`; the guard
+	// forces literal matching, so it compares the intended file and reports it.
+	const result = guard(dir, guardArgs({ mode: 'working-tree' }), { env: { GIT_GLOB_PATHSPECS: '1' } });
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-change: config\[1\]\.json/);
 });

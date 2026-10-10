@@ -1,12 +1,13 @@
 # policy-guard
 
-Reports an unapproved change to an enrolled checker configuration. `init` copies this file into
-`tools/policy/policy-guard.mjs`; the guard reads only Git objects and files, imports and executes
-no repository code, and parses no checker format — an enrolled file is an opaque path whose
-divergence from the trusted snapshot needs human review.
+Reports an unapproved change to an enrolled checker configuration. The command is available as a
+copied file at `tools/policy/policy-guard.mjs` — installer wiring that copies it during `init` is
+deferred (#43), so today it is copied or run manually. The guard reads only Git objects and
+files, imports and executes no repository code, and parses no checker format — an enrolled file
+is an opaque path whose divergence from the trusted snapshot needs human review.
 
 A repository declares the files the first release watches in `lint-kit.policy.json`. The guard
-diffs the source change since the merge-base of `--base` and `--target`, keeps the paths that are
+takes the source change since the merge-base of `--base` and `--target`, keeps the paths that are
 enrolled, and reports each one whose target bytes differ from the trusted snapshot. A change whose
 target bytes already match the trusted snapshot is not a new unapproved change.
 
@@ -27,14 +28,17 @@ node tools/policy/policy-guard.mjs \
 | `--target <ref>` | Required. The source snapshot under review, resolved to a commit. In `working-tree` mode it must be `HEAD`. |
 | `--trusted-ref <ref>` | Required. The approved snapshot, selected outside the branch. The enrollment is read from this commit only; it is never defaulted to `HEAD`, the target or the working tree. |
 | `--policy <path>` | Required. Repository-relative enrollment file, read from the resolved `--trusted-ref` commit. The file is enrolled automatically, so changing it needs review. |
-| `--mode committed\|working-tree` | Required. `committed` diffs the merge-base to the target commit; `working-tree` diffs the merge-base to the working tree and adds in-scope untracked files. |
+| `--mode committed\|working-tree` | Required. `committed` compares the merge-base to the target commit; `working-tree` compares the merge-base to the target commit and additionally reads the working tree directly, adding in-scope untracked files and raw working-tree changes. |
 | `--cwd <dir>` | Optional. The repository to inspect; defaults to the current directory. |
 
 Refs are resolved with `git rev-parse --verify --end-of-options '<ref>^{commit}'`, so a ref such
 as `--octopus` or `--output=file` fails with exit `2` and never becomes a Git option or writes a
-file. Git discovery runs with `--no-ext-diff --no-textconv`, and changed paths are parsed from
-`git diff --name-status -M -z` output, which is NUL-safe for Unicode, space and leading-dash
-names.
+file. Git discovery runs with `--no-ext-diff --no-textconv --literal-pathspecs`, and changed paths
+are parsed from `git diff --name-status -M -z` output, which is NUL-safe for Unicode, space and
+leading-dash names. `working-tree` never asks Git to diff the filesystem: the committed change is
+object-to-object, untracked status comes from `ls-files` metadata, and every enrolled path is read
+raw and compared with its merge-base object. A repository clean filter therefore cannot hide a
+mutation, and no filter command runs.
 
 ## Exit codes
 
@@ -93,10 +97,12 @@ approval field is read.
 - `working-tree` mode compares the enrolled file's raw working-tree bytes with the trusted blob,
   and `--target` must be `HEAD`. A consumer whose checkout rewrites line endings (`core.autocrlf`)
   can therefore see an enrolled path reported when the committed content already matches the
-  trusted snapshot; the result is fail-closed review, not a false clean.
-- `working-tree` mode inspects the working tree relative to the merge-base, so an enrolled change
-  committed and then reverted in the working tree is not reported by this mode. CI runs
-  `committed` mode.
+  trusted snapshot. This is deliberate conservative review — reading raw bytes is what stops a
+  clean filter from hiding a mutation — not a false clean. A consumer that wants no such review
+  should pin `* text=auto eol=lf` in `.gitattributes`.
+- `working-tree` mode reads the working tree directly for every enrolled path, so an enrolled
+  change committed and then reverted in the working tree still has its committed form in the
+  object-to-object change and is compared against the trusted snapshot. CI runs `committed` mode.
 - No `pre-commit`/index mode, semantic value comparison, installer wiring or CI approval
   integration. Those are separate issues.
 - Tested on Git `2.54.0` and the pinned Node 22 on Windows; CI also runs Ubuntu, which this local
