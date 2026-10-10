@@ -379,7 +379,11 @@ function isolatedPlugin(dir, marker) {
 		`module.exports = {
 	meta: { name: 'vitest', marker: ${JSON.stringify(marker)} },
 	environments: { env: { globals: { test: true } } },
-	rules: { 'no-focused-tests': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) } },
+	rules: {
+		'no-focused-tests': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) },
+		'valid-expect': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) },
+		'valid-expect-in-promise': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) },
+	},
 };
 `,
 	);
