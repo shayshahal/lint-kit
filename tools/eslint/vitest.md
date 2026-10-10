@@ -15,6 +15,11 @@ the merge-base with its base (`init` writes it); `inspection.mjs` beside this fi
 It also takes `files` and `ignores` for a project that keeps its tests elsewhere, and `rules` to
 change the rule's entry.
 
+The generated `eslint.rules.js` calls `vitest.config({ from: import.meta.url })`. `from` is where
+the maintained plugin is resolved from, so a pnpm workspace member finds the plugin in its own
+`node_modules` even though `tools/eslint/` is copied once at the repository root. It defaults to
+this module's own location, which is what a config that spreads `vitest.plugin` directly uses.
+
 ## no-focused-tests
 
 `test.only()`, `it.only()` and `describe.only()`, including the imported-alias forms

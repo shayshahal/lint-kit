@@ -18,7 +18,7 @@
  * unchanged: they keep their own `files` and `ignores`.
  */
 
-import vitestPlugin from '@vitest/eslint-plugin';
+import { createRequire } from 'node:module';
 import { defineRule, settings } from './inspection.mjs';
 
 /** Files the rule applies to: the project's tests wherever they live. */
@@ -29,29 +29,58 @@ export const DEFAULT_IGNORES = [];
 
 const DOCS = new URL('./vitest.md', import.meta.url).href;
 
-const upstream = vitestPlugin.rules['no-focused-tests'];
+/**
+ * The maintained plugin, loaded from the project that owns the set rather than from this shared
+ * copy. `tools/eslint/` is one folder for every project in a repository and may sit outside all of
+ * them, so a bare `import` would resolve `@vitest/eslint-plugin` from the wrong place: in an
+ * isolated pnpm workspace the member's `node_modules` holds the plugin and the root's does not, so
+ * the whole ESLint run would fail to load this module. `createRequire(from)` resolves it the way a
+ * file beside the project's `eslint.rules.js` would — that project's `node_modules` first — and
+ * the caller decides `from`, so it never reaches a sibling project.
+ */
+const loadPlugin = (from) => createRequire(from)('@vitest/eslint-plugin');
 
-/** The upstream rule, with this copy's documentation link, narrowed to the branch's lines. */
-const noFocusedTests = defineRule({
-	...upstream,
-	meta: { ...upstream.meta, docs: { ...upstream.meta.docs, url: `${DOCS}#no-focused-tests` } },
-});
+/** The loaded plugin with this copy's one rule wrapped like every other set. */
+function pluginFrom(vitestPlugin) {
+	const upstream = vitestPlugin.rules['no-focused-tests'];
+	return {
+		meta: { name: 'vitest' },
+		rules: {
+			'no-focused-tests': defineRule({
+				...upstream,
+				meta: { ...upstream.meta, docs: { ...upstream.meta.docs, url: `${DOCS}#no-focused-tests` } },
+			}),
+		},
+	};
+}
 
-export const plugin = { meta: { name: 'vitest' }, rules: { 'no-focused-tests': noFocusedTests } };
+/**
+ * The plugin for a config that spreads rules one by one. It resolves from this module's own
+ * location — where `init` copied `tools/` — and is built on first access, so importing this module
+ * where the plugin is absent does not load it. A generated `eslint.rules.js` uses `config({ from })`
+ * for its own project instead.
+ */
+export const plugin = {
+	meta: { name: 'vitest' },
+	get rules() {
+		return pluginFrom(loadPlugin(import.meta.url)).rules;
+	},
+};
 
 /**
  * One flat-config entry: the focused-test rule at error on the project's tests. Vitest's globals
  * are declared so a project that uses them without importing (globals: true) is analyzed too;
  * they declare names, they enable no rule.
- * @param {{ files?: string[], ignores?: string[], inspection?: 'full' | 'branch' | { mode: 'branch', base: string }, rules?: Record<string, import('eslint').Linter.RuleEntry> }} [options] - `inspection` narrows the rule to the lines the branch added (see inspection.mjs); `rules` overrides the rule's entry.
+ * @param {{ from?: string | URL, files?: string[], ignores?: string[], inspection?: 'full' | 'branch' | { mode: 'branch', base: string }, rules?: Record<string, import('eslint').Linter.RuleEntry> }} [options] - `from` is where the maintained plugin resolves from: a generated `eslint.rules.js` passes `import.meta.url`, so the plugin comes from the project that owns the config and not the shared `tools/` copy. `inspection` narrows the rule to the lines the branch added (see inspection.mjs); `rules` overrides the rule's entry.
  */
-export function config({ files = DEFAULT_FILES, ignores = [], inspection, rules: overrides = {} } = {}) {
+export function config({ from = import.meta.url, files = DEFAULT_FILES, ignores = [], inspection, rules: overrides = {} } = {}) {
+	const vitestPlugin = loadPlugin(from);
 	return [
 		{
 			name: 'vitest',
 			files,
 			ignores,
-			plugins: { vitest: plugin },
+			plugins: { vitest: pluginFrom(vitestPlugin) },
 			languageOptions: { globals: vitestPlugin.environments.env.globals },
 			...settings(inspection),
 			rules: {

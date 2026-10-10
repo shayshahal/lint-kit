@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { Linter } from 'eslint';
 import tsParser from '@typescript-eslint/parser';
 import vitest, { DEFAULT_FILES, config } from '../tools/eslint/vitest.mjs';
@@ -122,6 +123,43 @@ test('config() names its entry, writes the mode as a setting, and takes rule ove
 	const [overridden] = config({ files: ['e2e/**/*.e2e.ts'], rules: { 'vitest/no-focused-tests': 'warn' } });
 	assert.deepEqual(overridden.files, ['e2e/**/*.e2e.ts']);
 	assert.equal(overridden.rules['vitest/no-focused-tests'], 'warn');
+});
+
+// ── where the maintained plugin resolves from ─────────────────────────────────
+
+/** A stand-in for `@vitest/eslint-plugin` in `dir`'s own node_modules, tagged so a test can tell
+ *  which project the set loaded it from. The real pinned plugin is exercised in the install tests;
+ *  this is about resolution, and a project whose plugin comes from anywhere else is the bug. */
+function isolatedPlugin(dir, marker) {
+	const pkg = path.join(dir, 'node_modules', '@vitest/eslint-plugin');
+	fs.mkdirSync(pkg, { recursive: true });
+	fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: '@vitest/eslint-plugin', version: '1.6.27', main: 'index.cjs' }));
+	fs.writeFileSync(
+		path.join(pkg, 'index.cjs'),
+		`module.exports = {
+	meta: { name: 'vitest', marker: ${JSON.stringify(marker)} },
+	environments: { env: { globals: { test: true } } },
+	rules: { 'no-focused-tests': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) } },
+};
+`,
+	);
+	return pathToFileURL(path.join(dir, 'eslint.rules.js'));
+}
+
+test('config({ from }) loads the plugin from the project that owns the config', () => {
+	const from = isolatedPlugin(path.join(TMP, 'anchor'), 'anchor');
+	const [entry] = config({ from });
+	assert.equal(entry.plugins.vitest.rules['no-focused-tests'].meta.marker, 'anchor');
+	assert.equal(entry.languageOptions.globals.test, true);
+	// The default still resolves the real plugin from this checkout, so root config usage works.
+	assert.notEqual(config()[0].plugins.vitest.rules['no-focused-tests'].meta.marker, 'anchor');
+});
+
+test("one project's plugin never resolves from a sibling project", () => {
+	const a = isolatedPlugin(path.join(TMP, 'sibling-a'), 'a');
+	const b = isolatedPlugin(path.join(TMP, 'sibling-b'), 'b');
+	assert.equal(config({ from: a })[0].plugins.vitest.rules['no-focused-tests'].meta.marker, 'a');
+	assert.equal(config({ from: b })[0].plugins.vitest.rules['no-focused-tests'].meta.marker, 'b');
 });
 
 // ── branch attribution, in a real repository outside this checkout ──────────────

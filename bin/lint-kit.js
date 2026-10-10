@@ -72,9 +72,10 @@ const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', 
  * A set's copied module can import a package the shared parser setup does not: the vitest set
  * loads `@vitest/eslint-plugin`, which the consumer then owns. Pinned to the version the support
  * matrix froze ([#40](docs/agent-skills-first-release-support.md)); a project that already has
- * the package keeps its own version.
+ * the package keeps its own version, and `writeEslint` says so when that version is another one.
  */
-const ESLINT_PEERS_FOR = { vitest: ['@vitest/eslint-plugin@1.6.27'] };
+const VITEST_PLUGIN_PIN = '1.6.27';
+const ESLINT_PEERS_FOR = { vitest: [`@vitest/eslint-plugin@${VITEST_PLUGIN_PIN}`] };
 
 /** Every devDependency the chosen ESLint sets need, without duplicates. */
 export function eslintPeers(sets) {
@@ -392,6 +393,9 @@ ${INSPECTION}
 	}),`,
 	vitest: () => `	...vitest.config({
 ${INSPECTION}
+		// The project's own config: the maintained plugin resolves from here, not from the shared
+		// tools/eslint/ copy, which is what lets an isolated pnpm workspace member find it.
+		from: import.meta.url,
 	}),`,
 };
 
@@ -471,6 +475,11 @@ function eslintSetsFor(project, sets) {
 function writeEslint(repo, project, wanted, args) {
 	const own = path.join(project.dir, ESLINT_RULES);
 	const previous = read(own);
+	// The set is verified against the frozen pin. A version the project already has is left alone,
+	// so name it rather than let the run imply the installed one was tested (#47).
+	const have = project.deps['@vitest/eslint-plugin'];
+	if (wanted.includes('vitest') && have && have !== VITEST_PLUGIN_PIN)
+		say(`→ ${where(project)}: @vitest/eslint-plugin@${have} is left as it is; the vitest set is verified against ${VITEST_PLUGIN_PIN}, so check this version by hand.`);
 	if (args.install) addJs(project, eslintPeers(wanted));
 	const next = rulesConfig(wanted, rel(project.dir, path.join(repo, 'tools', 'eslint')).replace(/^(?!\.)/, './'));
 	if (previous !== null && previous !== next) {

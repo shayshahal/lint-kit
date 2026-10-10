@@ -144,7 +144,7 @@ export default [
 	}),
 	...errorHandling.config(),
 	...prose.config({ inspection: 'branch' }), // opt-in: ask for it with --sets prose
-	...vitest.config({ inspection: 'branch' }), // opt-in: ask for it with --sets vitest
+	...vitest.config({ inspection: 'branch', from: import.meta.url }), // opt-in: ask for it with --sets vitest
 ];
 ```
 
@@ -167,7 +167,11 @@ the set turns on no other rule from that plugin (async and skip are their own sl
 locally bound `test`, a `fit`/`fdescribe` Jest name, or a `test.only` imported from another
 library passes. `init` adds `@vitest/eslint-plugin@1.6.27` and routes the test files to the
 pre-commit ESLint step; a repository that already runs its own ESLint command keeps it and the
-run says what to add. Only Vitest is supported.
+run says what to add. Only Vitest is supported. The set resolves the plugin from the config's own
+folder (`from: import.meta.url`), so a pnpm workspace member whose `node_modules` holds the plugin
+works even though `tools/eslint/` is copied once at the repository root. An
+`@vitest/eslint-plugin` the project already has is left alone: a version other than the verified
+1.6.27 is untested, and the run does not claim otherwise.
 
 `eslint --fix` rewrites what has one right answer: `class:` directives into the class attribute,
 `{@const}` into `$derived`, `throw error()` into `error()`, `$derived(() => …)` into

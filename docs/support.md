@@ -24,8 +24,11 @@ ignore the config's whole directory. Those cases keep their deliberate omission.
 
 Root projects, pnpm / npm workspace members, and Python projects (`pyproject.toml` with a
 `[project]` table). A nested project's specifier is project-relative, and its ignore pattern is
-omitted when it cannot safely name the root's `tools/`. Folders starting with `.`, and
-`node_modules`, `dist` and `build`, are skipped.
+omitted when it cannot safely name the root's `tools/`. The `vitest` set resolves
+`@vitest/eslint-plugin` from the project's own config (`from: import.meta.url`), so a workspace
+member that holds the plugin in its own `node_modules` is checked even though the rule module is
+copied once to the root's `tools/`. Folders starting with `.`, and `node_modules`, `dist` and
+`build`, are skipped.
 
 ## Hooks
 
@@ -54,6 +57,7 @@ The branch a structure step compares against, in order:
 
 A fresh install copies `tools/`, writes or patches the configs and adds the dev dependencies. An
 upgrade refreshes the copies, repairs a registered plugin that lacks the vendored ignore pattern,
+rewrites a `vitest` config written before the plugin anchor (`from: import.meta.url`) was added,
 widens an ESLint step it wrote for a newly added `vitest` set, and leaves user configs and steps
 as they are. A repeat run changes nothing.
 

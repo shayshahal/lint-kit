@@ -9,8 +9,9 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +24,10 @@ const LEFTHOOK = path.join(ROOT, 'node_modules', '.bin', process.platform === 'w
 // Inside the repo, so the generated configs resolve eslint and its plugins from its node_modules.
 const TMP = path.join(ROOT, 'test', '.tmp-vitest-install');
 fs.rmSync(TMP, { recursive: true, force: true });
+// Outside the repo, so nothing resolves through the checkout's node_modules: what a generated
+// config finds here is what the project owns (or fails to).
+const ISOLATED = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-kit-vitest-outside-'));
+after(() => fs.rmSync(ISOLATED, { recursive: true, force: true }));
 after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 /** A repository (it has a .git) made of `files`. Each fixture gets its own folder. */
@@ -79,6 +84,21 @@ test('vitest is opt-in: --yes never selects it, --sets vitest installs it and a 
 	assert.deepEqual(['eslint.rules.js', 'lefthook.yml'].map((f) => text(dir, f)), once);
 });
 
+test('the generated config anchors the plugin to the project, and an older generated one is repaired', async () => {
+	const dir = consumer('anchor');
+	await init(dir, '--sets', 'vitest');
+	assert.match(text(dir, 'eslint.rules.js'), /from: import\.meta\.url/);
+	// A config written before the anchor was added: the set was wired without it. A repeat run
+	// repairs it — keeping the previous file — instead of leaving a config that cannot resolve
+	// the plugin in a workspace member.
+	const older = text(dir, 'eslint.rules.js').replace(/\t\tfrom: import\.meta\.url,\n/, '');
+	fs.writeFileSync(path.join(dir, 'eslint.rules.js'), older);
+	fs.rmSync(path.join(dir, 'eslint.rules.js.bak'), { force: true });
+	await init(dir, '--yes');
+	assert.match(text(dir, 'eslint.rules.js'), /from: import\.meta\.url/);
+	assert.equal(text(dir, 'eslint.rules.js.bak'), older);
+});
+
 test('the peer is installed only for the set whose module imports it', () => {
 	assert.deepEqual(eslintPeers(['svelte-skills']), [
 		'eslint',
@@ -109,6 +129,8 @@ test('the eslint step routes the test files outside src/ to ESLint', async () =>
 	await init(mono, '--sets', 'vitest');
 	assert.deepEqual(eslintStep(mono).glob, ['apps/admin/src/**/*.{js,ts,svelte}', 'apps/admin/**/*.{test,spec}.*']);
 	assert.equal(eslintStep(mono).root, 'apps/admin/');
+	// The member's own config anchors the plugin where the member installed it, not at the root.
+	assert.match(text(mono, 'apps/admin/eslint.rules.js'), /from: import\.meta\.url/);
 });
 
 test('an install without vitest keeps the single application glob', async () => {
@@ -163,6 +185,21 @@ test('asking for vitest without the runner says so instead of claiming success',
 	assert.equal(fs.existsSync(path.join(dir, 'tools/eslint/vitest.mjs')), false);
 });
 
+test('an existing plugin at another version is named, not reported as verified', async () => {
+	const dir = consumer('other-version', {
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5', vitest: '4.1.11', '@vitest/eslint-plugin': '1.5.0' } }),
+	});
+	const said = [];
+	const log = console.log;
+	console.log = (...args) => said.push(args.join(' '));
+	try {
+		assert.equal(await main(['init', '--no-install', '--cwd', dir, '--sets', 'vitest']), 0);
+	} finally {
+		console.log = log;
+	}
+	assert.match(said.join('\n'), /@vitest\/eslint-plugin@1\.5\.0 is left as it is; the vitest set is verified against 1\.6\.27/);
+});
+
 test('--no-install preserves the consumer package.json and an ESLint config it already had', async () => {
 	const config = "export default [{ rules: { 'no-var': 'error' } }];\n";
 	const dir = consumer('preserve', { 'eslint.config.js': config });
@@ -186,6 +223,30 @@ console.log(JSON.stringify(r.messages.map((m) => [m.ruleId, m.severity])));
 		execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd: ROOT, encoding: 'utf8' }),
 	);
 	assert.deepEqual(messages, [['vitest/no-focused-tests', 2]]);
+});
+
+test('a missing maintained plugin fails the check instead of skipping it', async () => {
+	// The project is outside the repository and has no node_modules, so `@vitest/eslint-plugin`
+	// cannot resolve from anywhere: the run must fail, not quietly report nothing.
+	const dir = path.join(ISOLATED, 'no-peer');
+	fs.mkdirSync(path.join(dir, 'test'), { recursive: true });
+	fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+	fs.writeFileSync(path.join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+	fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module', devDependencies: { svelte: '^5', vitest: '4.1.11' } }));
+	fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), '');
+	fs.writeFileSync(path.join(dir, 'lefthook.yml'), 'pre-commit:\n  commands: {}\n');
+	// A config that spreads only the copied rules, so the missing plugin — not a parser — is the failure.
+	fs.writeFileSync(path.join(dir, 'eslint.config.js'), "import toolRules from './eslint.rules.js';\nexport default [...toolRules];\n");
+	fs.writeFileSync(path.join(dir, 'test/outside.test.js'), "import { test } from 'vitest';\ntest.only('outside', () => {});\n");
+	await init(dir, '--sets', 'vitest');
+
+	const run = spawnSync(process.execPath, [path.join(ROOT, 'node_modules', 'eslint', 'bin', 'eslint.js'), 'test/outside.test.js'], {
+		cwd: dir,
+		encoding: 'utf8',
+	});
+	assert.notEqual(run.status, 0, 'a missing plugin must not exit 0');
+	assert.match(`${run.stdout}\n${run.stderr}`, /@vitest\/eslint-plugin/);
+	assert.doesNotMatch(run.stdout, /no-focused-tests/, 'a config that could not load reports no rule');
 });
 
 test('the installed hook checks an outside-src test (real lefthook)', async () => {
