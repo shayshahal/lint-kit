@@ -283,6 +283,26 @@ test('the release does not depend on the order the two producers are registered'
 	);
 });
 
+test('reversed producers release independent reports through their original rule contexts', () => {
+	const [entry] = config({ inspection: 'full' });
+	const reversed = {
+		...entry,
+		rules: { 'vitest/valid-expect-in-promise': 'warn', 'vitest/valid-expect': 'error' },
+	};
+	const linter = new Linter({ configType: 'flat' });
+	const reports = (code) => linter.verify(code, [reversed], 'src/a.test.js')
+		.map((message) => [message.ruleId, message.severity])
+		.sort((left, right) => left[0].localeCompare(right[0]));
+	assert.deepEqual(
+		reports("test('x', () => { fetch('u').then((r) => { expect(r).toBe('y'); }); });"),
+		[['vitest/valid-expect-in-promise', 1]],
+	);
+	assert.deepEqual(
+		reports("test('x', () => { fetch('u').then((r) => { expect(r).resolves.toBe('y'); }); });"),
+		[['vitest/valid-expect', 2], ['vitest/valid-expect-in-promise', 1]],
+	);
+});
+
 test('the owner keeps the finding, and the held report is not stale across runs or files', () => {
 	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
 	// A repeated verify of the same file, and the same code under another filename, each start from

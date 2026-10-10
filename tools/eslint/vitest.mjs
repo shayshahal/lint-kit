@@ -171,9 +171,9 @@ function coordinateReports(role, rule) {
 				if (finished) return;
 				finished = true;
 				if (--state.pending > 0) return;
-				for (const descriptor of state.held) {
-					const root = reportRoot(descriptor);
-					if (root === null || !state.ownedRoots.has(root)) report(descriptor);
+				for (const held of state.held) {
+					const root = reportRoot(held.descriptor);
+					if (root === null || !state.ownedRoots.has(root)) held.report(held.descriptor);
 				}
 				state.held = [];
 				reportOwnership.delete(context.sourceCode);
@@ -182,7 +182,7 @@ function coordinateReports(role, rule) {
 			const listeners =
 				role === 'owner'
 					? rule.create(Object.create(context, { report: { value: own } }))
-					: rule.create(Object.create(context, { report: { value: (descriptor) => state.held.push(descriptor) } }));
+					: rule.create(Object.create(context, { report: { value: (descriptor) => state.held.push({ descriptor, report }) } }));
 			const upstreamExit = listeners['Program:exit'];
 			return {
 				...listeners,
