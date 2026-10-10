@@ -18,6 +18,13 @@ A finding fails the commit or push.
 | `pyright` (Python projects) | pre-push | pyright exits 1 |
 | fallow `"error"` rules: dead code the branch introduced | pre-push (script) | `fallow audit` exits 1 |
 | `structure_check.py`: a new / crossed complexity, new duplication, a new import cycle | pre-push | exits 1 |
+| policy guard: an unapproved change to an enrolled checker configuration (opt-in) | pre-push (script) | the guard exits 1 |
+
+The policy guard is opt-in: `init --sets policy-guard` installs its pre-push script, which reports
+an unapproved change to an enrolled checker configuration. That local hook is feedback, not
+authorization. A required CI check runs the same command from a trusted ref and blocks exit `1`
+and `2`; writing the hook installs no required check and no forge protection, and that CI wiring is
+not installed here.
 
 A blocking check is only ever charged for what the branch introduced. The structure tools compare
 with the merge-base of the branch and its base, and fallow reports an inherited finding as

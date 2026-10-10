@@ -20,6 +20,7 @@ the repository owns the copies, and only whoever runs `init` needs access here.
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
 | `structure` | fallow, `structure_check.py` | lefthook pre-push steps that fail when a branch adds complexity, duplication, an import cycle or dead code its base did not have, and never on what was already there ([docs](docs/structure.md)) |
+| `policy-guard` | policy-guard | an opt-in pre-push guard that reports an unapproved change to enrolled checker configuration; the local hook is feedback, not CI authorization |
 
 Each ESLint rule links to its section in the `.md` copied beside it in `tools/eslint/` (editors
 show the link with the message); the FAP rules are listed in `tools/python/fastapi_rules.py`'s
@@ -105,7 +106,7 @@ The supported config shapes and the fallback for anything else are in
 to add, never reported as wired.
 
 Options: `--sets svelte-skills,fastapi` and `--yes` skip the questions, `--no-install` writes
-files only, `--base <branch>` names the branch structure compares with, `--cwd <dir>` runs it on
+files only, `--base <branch>` names the branch structure and the policy guard compare with, `--cwd <dir>` runs it on
 another repository.
 
 ## ESLint sets
@@ -278,6 +279,66 @@ FAP001 follows calls through your own sync helpers across modules, so it indexes
 once per run. Common libraries (bcrypt, boto3, pandas, openpyxl, reportlab, requests, Pillow,
 sync redis / pymongo…) come classified; `python tools/python/fastapi_rules.py check-deps` fails
 while a `[project.dependencies]` entry is classified nowhere, so adding a library means deciding.
+
+## policy-guard
+
+`init --sets policy-guard` installs the opt-in policy guard: a copied command that reports a change
+to an enrolled checker configuration. No dependency selects it — ask for it by name, and it stays
+on a re-run. It copies `tools/policy/policy-guard.mjs` and its README into the repository, writes
+one `lint-kit.policy.json`, and wires one repository-root pre-push script.
+
+```json
+{
+	"version": 1,
+	"enrollments": [
+		{ "id": "tools/policy/policy-guard.mjs", "source": "tools/policy/policy-guard.mjs", "format": "opaque" },
+		{
+			"id": ".fallowrc.json",
+			"source": ".fallowrc.json",
+			"format": "jsonc",
+			"adapter": "fallow-jsonc",
+			"identities": [
+				{ "id": "health.maxCognitive", "unit": "score", "direction": "max" },
+				{ "id": "health.maxCrap", "unit": "score", "direction": "max" },
+				{ "id": "rules", "unit": "severity-map", "direction": "min" },
+				{ "id": "ignorePatterns", "unit": "glob-list", "direction": "subset" }
+			]
+		}
+	]
+}
+```
+
+The manifest links to the checker's own file; it stores no threshold, severity or ignore list. An
+enrollment's `id` is its source path, so two configs a slug would fold together (`apps/a-b` and
+`apps/a_b`) stay distinct. A fresh install enrolls only what it can verify: the copied guard
+`opaque`, each real `.fallowrc.json` with only the identities it provably has, and
+`tools/python/structure_check.py` `opaque` when present. A Fallow shape with no adapter is
+protected `opaque` without evaluation; a config that is not a regular UTF-8 file is left unchanged
+and enrolled nowhere, or protected `opaque` when it is only its bytes that are not UTF-8. A repeat
+never rewrites or broadens an existing manifest.
+
+The generated script runs `node tools/policy/policy-guard.mjs --base <resolved> --target HEAD
+--trusted-ref <resolved> --policy lint-kit.policy.json --mode working-tree`. It is a script, not a
+file-filtered command, so a deletion-only push still runs it. An existing command is recognised
+only when it has no file filter (a command with a `glob` or `files` filter is skipped when a push
+leaves no matching file, so that shape is a manual action); the step must be exactly
+`{ runner: bash }` with the exact generated body, and an orphan file of that name is left
+byte-for-byte unless it is that exact body. working-tree mode judges partial staging by the
+working tree, not the index. The trusted ref is explicit and never defaulted to `HEAD`; a fresh
+enrollment must be reviewed and landed at that ref before the local guard can run, and until then
+it exits `2`, not clean.
+
+The `jsonc` adapter needs `jsonc-parser` `3.3.1` resolvable from the repository root, where the
+copied command lives: a dependency in one workspace member does not resolve there. `init` adds
+`jsonc-parser@3.3.1` to a root `package.json`; a repository without one or `--no-install` is a
+manual action. A different declared version is preserved as it is: the copied guard does not check
+the declared version and loads the parser only when a parsed enrollment needs it, so that version
+is untested here. A missing parser (needed to compare a parsed enrollment) exits `2`.
+
+The local hook is **feedback, not authorization**. Required CI runs the same command from a
+trusted ref and blocks exit `1` and `2`; that wiring is not installed by `init`, and writing the
+hook installs no required check or branch protection. See [docs/support.md](docs/support.md) and
+[tools/policy/README.md](tools/policy/README.md).
 
 ## Develop
 
