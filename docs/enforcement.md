@@ -23,8 +23,13 @@ A finding fails the commit or push.
 The policy guard is opt-in: `init --sets policy-guard` installs its pre-push script, which reports
 an unapproved change to an enrolled checker configuration. That local hook is feedback, not
 authorization. A required CI check runs the same command from a trusted ref and blocks exit `1`
-and `2`; writing the hook installs no required check and no forge protection, and that CI wiring is
-not installed here.
+and `2`; writing the hook installs no required check and no forge protection, and this repository
+installs no CI protection. A manual template (`tools/policy/policy-guard-ci.yml`, copied but not
+activated) runs the guard from the protected base revision and reads the pull request only as Git
+data, but the enforced check depends on external protections — a protected base branch and this
+exact workflow bound as a required check through a ruleset required-workflows entry or an
+equivalent trusted source. A job name alone is not a unique check identity, so enforcement is not
+claimed before those protections are present.
 
 A blocking check is only ever charged for what the branch introduced. The structure tools compare
 with the merge-base of the branch and its base, and fallow reports an inherited finding as

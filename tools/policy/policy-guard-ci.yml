@@ -1,0 +1,59 @@
+# Template: run the policy guard from a trusted revision (#44).
+#
+# This file is shipped as guidance, NOT installed or activated. Copy it to
+# `.github/workflows/policy-guard.yml` by hand, and only after a maintainer has done the two
+# external setup actions in `tools/policy/README.md`, "Trusted CI": the base branch is protected,
+# and this exact workflow is bound as a required check (a ruleset required-workflows entry or an
+# equivalent trusted check binding). A job or workflow name alone is not a unique check identity:
+# a pull request can add a same-named workflow, so without that binding a green "policy-guard"
+# reported by the branch can be spoofed.
+#
+# The workflow runs `pull_request_target`, so the workflow file itself is taken from the protected
+# base branch, and it checks out the PR's base commit. The pull request is fetched by commit id as
+# data by `tools/policy/policy-guard-ci.mjs`; no PR file is checked out or executed. Permissions
+# are `contents: read` only, so a PR cannot obtain write or secret access through this job.
+name: policy-guard
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  policy-guard:
+    name: policy-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the trusted base revision, never the pull request
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Use the frozen Node runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.3"
+
+      # The guard reads a parsed enrollment with the frozen jsonc-parser 3.3.1. Provision it from
+      # the trusted base revision's own frozen lockfile, never from the pull request. `init --sets
+      # policy-guard` adds jsonc-parser 3.3.1 to the root package.json. Replace the command with
+      # your repository's frozen-lockfile install if it does not use pnpm; do not install from the
+      # PR's package.json or lockfile.
+      - name: Provision the frozen parser from the trusted revision only
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Run the trusted policy guard against the pull request
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRUSTED_SHA: ${{ github.event.pull_request.base.sha }}
+          POLICY_PATH: lint-kit.policy.json
+        run: node tools/policy/policy-guard-ci.mjs

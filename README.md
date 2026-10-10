@@ -284,8 +284,10 @@ while a `[project.dependencies]` entry is classified nowhere, so adding a librar
 
 `init --sets policy-guard` installs the opt-in policy guard: a copied command that reports a change
 to an enrolled checker configuration. No dependency selects it — ask for it by name, and it stays
-on a re-run. It copies `tools/policy/policy-guard.mjs` and its README into the repository, writes
-one `lint-kit.policy.json`, and wires one repository-root pre-push script.
+on a re-run. It copies `tools/policy/policy-guard.mjs`, the trusted-CI helper
+`tools/policy/policy-guard-ci.mjs` and the manual template `tools/policy/policy-guard-ci.yml` into
+the repository, writes one `lint-kit.policy.json`, and wires one repository-root pre-push script.
+It writes no workflow and activates no check.
 
 ```json
 {
@@ -336,8 +338,13 @@ the declared version and loads the parser only when a parsed enrollment needs it
 is untested here. A missing parser (needed to compare a parsed enrollment) exits `2`.
 
 The local hook is **feedback, not authorization**. Required CI runs the same command from a
-trusted ref and blocks exit `1` and `2`; that wiring is not installed by `init`, and writing the
-hook installs no required check or branch protection. See [docs/support.md](docs/support.md) and
+trusted ref and blocks exit `1` and `2`. `init` also copies a manual template
+(`tools/policy/policy-guard-ci.yml`) that runs the guard from the protected base revision and reads
+the pull request only as Git data, but it is not activated and installs no check: the enforced
+check depends on external protections (a protected base branch and this exact workflow bound as a
+required check through a ruleset required-workflows entry or an equivalent trusted source). Writing
+the hook installs no required check or branch protection, and a job name alone is not a unique
+check identity. See [docs/support.md](docs/support.md) and
 [tools/policy/README.md](tools/policy/README.md).
 
 ## Develop

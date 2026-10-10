@@ -1201,7 +1201,7 @@ const POLICY_MANIFEST = 'lint-kit.policy.json';
 /** The pre-push script name. A script is not file-filtered, so a deletion-only push still runs it. */
 const POLICY_SCRIPT = 'policy-guard.sh';
 /** The copies that are tool code, refreshed on upgrade; README.md is the command's own doc. */
-const POLICY_TOOLS = ['policy/policy-guard.mjs', 'policy/README.md'];
+const POLICY_TOOLS = ['policy/policy-guard.mjs', 'policy/policy-guard-ci.mjs', 'policy/policy-guard-ci.yml', 'policy/README.md'];
 /** A branch ref is only embedded in the generated script when it is a plain ref. */
 const POLICY_SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 /**
@@ -1617,8 +1617,9 @@ export async function main(argv = process.argv.slice(2)) {
 		);
 	}
 	if (policy) {
-		say(`→ policy-guard: local output is feedback, not authorization; required CI must run ${POLICY_MANIFEST} from a trusted ref and block exit 1 and 2 (protected CI wiring is #44, not installed here)`);
+		say(`→ policy-guard: local output is feedback, not authorization; required CI must run ${POLICY_MANIFEST} from a trusted ref and block exit 1 and 2 (the shipped template is manual and not activated)`);
 		say(`→ policy-guard: the enrollment must be reviewed and landed at the trusted ref before the local guard can run; until then it exits 2, not clean`);
+		say('→ policy-guard: tools/policy/policy-guard-ci.yml is a manual template; it is not activated and no workflow is written. Copy it to .github/workflows/ only after enabling the external protections in tools/policy/README.md, Trusted CI.');
 	}
 	say('done');
 	return 0;

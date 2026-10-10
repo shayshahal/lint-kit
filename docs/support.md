@@ -38,8 +38,11 @@ that already runs `fallow audit` in a command keeps it and gets no script.
 
 ## Policy guard (`policy-guard`)
 
-Opt-in. `init` copies `tools/policy/policy-guard.mjs` and its README, writes one
-`lint-kit.policy.json`, and wires one repository-root pre-push script.
+Opt-in. `init` copies `tools/policy/policy-guard.mjs`, the trusted-CI helper
+`tools/policy/policy-guard-ci.mjs` and the manual template `tools/policy/policy-guard-ci.yml` into
+`tools/policy/`, writes one `lint-kit.policy.json`, and wires one repository-root pre-push script.
+It writes no `.github/workflows/` file and activates no check; the template is copied by hand to
+`.github/workflows/` only after the maintainer enables the external protections.
 
 | Config shape | Handling |
 | --- | --- |
@@ -67,6 +70,13 @@ Protected and deferred: the first release protects the copied guard as a whole, 
 Fallow JSONC source by its declared identities, and `tools/python/structure_check.py` whole.
 YAML/TOML checker adapters (Python thresholds in `pyproject.toml`, `.flake8`, ruff) are deferred;
 those files are not enrolled.
+
+Trusted CI: the shipped `tools/policy/policy-guard-ci.yml` template runs the guard from the
+protected base revision and reads the pull request only as Git data. It is a manual candidate: no
+workflow is written by `init`, and the template alone does not enforce anything. The maintained
+protection is external — a protected base branch and this exact workflow bound as a required check
+through a ruleset required-workflows entry or an equivalent trusted source; the job name alone is
+not a unique check identity. See `tools/policy/README.md`, "Trusted CI".
 
 ## Baseline selection
 
