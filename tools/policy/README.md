@@ -1,11 +1,11 @@
 # policy-guard
 
 Reports an unapproved change to an enrolled checker configuration. The command is available as a
-copied file at `tools/policy/policy-guard.mjs` — installer wiring that copies it during `init` is
-deferred (#43), so today it is copied or run manually. The guard reads only Git objects and
-files, and imports and executes no repository code. An `opaque` enrollment is protected as a
-whole path, while a `jsonc` enrollment is read with `jsonc-parser` and compared by the declared
-identity's direction.
+copied file at `tools/policy/policy-guard.mjs`: the opt-in `policy-guard` `init` set copies it and
+the `lint-kit.policy.json` enrollment it reads, or it can be copied and run by hand. The guard
+reads only Git objects and files, and imports and executes no repository code. An `opaque`
+enrollment is protected as a whole path, while a `jsonc` enrollment is read with `jsonc-parser`
+and compared by the declared identity's direction.
 
 A repository declares the files the first release watches in `lint-kit.policy.json`. The guard
 takes the source change since the merge-base of `--base` and `--target`, keeps the paths that are
@@ -142,11 +142,35 @@ policy-guard: enrolled-weakened: health.maxCognitive raised from 25 to 40 (a max
 - `working-tree` mode reads the working tree directly for every enrolled path, so an enrolled
   change committed and then reverted in the working tree still has its committed form in the
   object-to-object change and is compared against the trusted snapshot. CI runs `committed` mode.
-- No `pre-commit`/index mode, installer wiring or CI approval integration. Those are separate
-  issues.
+- No `pre-commit`/index mode or CI approval integration. `working-tree` mode is what the installed
+  pre-push script runs, so partial staging is judged by the working tree, not the index. Protected
+  CI wiring is a separate issue (#44), and no local run is authorization.
 - Numeric floor identities (a `min` numeric threshold such as a coverage percentage) are **not**
   supported: the frozen Fallow format has no such identity, so no floor key is fabricated. The
   `min` direction is exercised by the `rules` severity floors. YAML/TOML checker adapters remain
   deferred, and an `opaque` enrollment still protects those files.
 - Tested on Git `2.54.0` and the pinned Node 22 on Windows; CI also runs Ubuntu, which this local
   run does not prove.
+
+## Installed by `init`
+
+`init --sets policy-guard` copies this command and its README into `tools/policy/`, writes a single
+`lint-kit.policy.json`, wires one repository-root pre-push script, and provisions the parser the
+`jsonc` adapter needs. What that set can and cannot do:
+
+- The script is a shell script, not a file-filtered command, so a deletion-only push still runs it.
+  It runs `--mode working-tree` with an explicit `--base` and `--trusted-ref`, and exits `2` (never
+  clean) when the trusted enrollment, the base or the parser is missing.
+- The generated manifest enrolls only what a fresh install can verify: the copied command as
+  `opaque`, each real Fallow JSONC source with only the identities it provably has, and each copied
+  checker/config source the release protects whole as `opaque`. A repeat never rewrites or broadens
+  an existing manifest; an enrollment edit is a reviewed policy change.
+- The `jsonc` adapter loads `jsonc-parser` `3.3.1` from the repository root, because the command
+  lives at `tools/policy/`. A dependency in a single workspace member does not resolve there.
+  `init` adds `jsonc-parser@3.3.1` to a root `package.json`; a repository without one, an
+  unsupported declared version, or `--no-install` is a manual action, and the guard exits `2` until
+  the parser is available.
+- A fresh enrollment must be reviewed and landed at the trusted ref before the local guard can run;
+  until then the guard exits `2`. The local hook is feedback, not authorization: required CI must
+  run the same command from a trusted ref and block exit `1` and `2`. That CI wiring is not
+  installed here.
