@@ -13,9 +13,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { fallowConfig } from '../bin/lint-kit.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TOOL_SOURCE = path.join(ROOT, 'tools', 'policy', 'policy-guard.mjs');
+const JSONC_PARSER_SOURCE = path.join(ROOT, 'node_modules', 'jsonc-parser');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-kit-policy-guard-'));
 after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
@@ -52,19 +54,34 @@ function installTool(dir) {
 	return target;
 }
 
+/**
+ * The parser the copied guard resolves from its own location, as an installed consumer would
+ * have it. `node_modules` is kept out of the fixture's Git tree through its local exclude, so a
+ * later `git add -A` cannot make the dependency look like a source change.
+ */
+function installJsoncParser(dir) {
+	const target = path.join(dir, 'node_modules', 'jsonc-parser');
+	fs.mkdirSync(path.dirname(target), { recursive: true });
+	fs.cpSync(JSONC_PARSER_SOURCE, target, { recursive: true, dereference: true });
+	fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), 'node_modules/\n');
+}
+
 const policy = (enrollments) => `${JSON.stringify({ version: 1, enrollments }, null, 2)}\n`;
 const opaque = (id, source) => ({ id, source, format: 'opaque' });
 const jsonc = (id, source, identities) => ({ id, source, format: 'jsonc', adapter: 'fallow-jsonc', identities });
 
 /** A repository with the tool, a trusted policy on `main`, and one base commit. */
-function project(name, { policy: policyText, enrollments, files } = {}) {
+function project(name, { policy: policyText, enrollments, files, parser } = {}) {
 	const dir = repository(name);
 	installTool(dir);
-	write(dir, 'lint-kit.policy.json', policyText ?? policy(enrollments ?? [opaque('fallow', '.fallowrc.json')]));
+	const text = policyText ?? policy(enrollments ?? [opaque('fallow', '.fallowrc.json')]);
+	write(dir, 'lint-kit.policy.json', text);
 	for (const [relativePath, content] of Object.entries(files ?? { '.fallowrc.json': '{"health":{"maxCognitive":25}}\n' })) {
 		write(dir, relativePath, content);
 	}
 	commit(dir, 'base');
+	// A parsed enrollment needs the dependency; an opaque-only repository must not be given one.
+	if (parser ?? text.includes('fallow-jsonc')) installJsoncParser(dir);
 	return dir;
 }
 
@@ -586,4 +603,432 @@ test('working-tree: a bracketed filename is matched literally, not as a pattern'
 	const result = guard(dir, guardArgs({ mode: 'working-tree' }), { env: { GIT_GLOB_PATHSPECS: '1' } });
 	assert.equal(result.code, 1, result.stderr);
 	assert.match(result.stdout, /enrolled-change: config\[1\]\.json/);
+});
+
+// ── fallow-jsonc semantic comparison ─────────────────────────────────────────────
+
+const FALLOW_IDENTITIES = [
+	{ id: 'health.maxCognitive', unit: 'score', direction: 'max' },
+	{ id: 'health.maxCrap', unit: 'score', direction: 'max' },
+	{ id: 'rules', unit: 'severity-map', direction: 'min' },
+	{ id: 'ignorePatterns', unit: 'glob-list', direction: 'subset' },
+];
+
+const raised = (config, from, to) => config.replace(`"maxCognitive": ${from}`, `"maxCognitive": ${to}`);
+
+/** A repository whose trusted policy parses the real installer `.fallowrc.json` through the adapter. */
+function fallowProject(name, { files, policy: policyText } = {}) {
+	return project(name, {
+		policy: policyText ?? policy([jsonc('fallow', '.fallowrc.json', FALLOW_IDENTITIES)]),
+		files: { '.fallowrc.json': fallowConfig(['tools/**']), ...files },
+	});
+}
+
+function revise(dir, text, message = 'revise the fallow config') {
+	write(dir, '.fallowrc.json', text);
+	commit(dir, message);
+}
+
+test('jsonc: the installer config parses through its comments and schema URL', () => {
+	const dir = fallowProject('jsonc-installer');
+	branch(dir);
+	// The real `.fallowrc.json` carries `//` comments and a `$schema` URL; a regex comment
+	// stripper would corrupt the URL. A tighter ceiling read from that file is silent.
+	revise(dir, raised(fallowConfig(['tools/**']), 25, 20));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, result.stderr);
+	assert.match(result.stdout, /no unapproved enrolled change since main/);
+});
+
+test('jsonc: raising maxCognitive 25 -> 40 requires approval', () => {
+	const dir = fallowProject('jsonc-max-raised');
+	branch(dir);
+	revise(dir, raised(fallowConfig(['tools/**']), 25, 40));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-change: \.fallowrc\.json/);
+	assert.match(result.stdout, /enrolled-weakened: health\.maxCognitive raised from 25 to 40/);
+	assert.match(result.stdout, /max ceiling must not rise/);
+});
+
+test('jsonc: raising a 10 ceiling to 20 requires approval', () => {
+	const dir = fallowProject('jsonc-max-10-20', { files: { '.fallowrc.json': raised(fallowConfig(['tools/**']), 25, 10) } });
+	branch(dir);
+	revise(dir, raised(fallowConfig(['tools/**']), 25, 20));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-weakened: health\.maxCognitive raised from 10 to 20/);
+});
+
+test('jsonc: raising maxCrap requires approval', () => {
+	const dir = fallowProject('jsonc-crap-raised');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']).replace('"maxCrap": 100000', '"maxCrap": 200000'));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-weakened: health\.maxCrap raised from 100000 to 200000/);
+});
+
+test('jsonc: lowering a ceiling is silent', () => {
+	const dir = fallowProject('jsonc-crap-lowered');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']).replace('"maxCrap": 100000', '"maxCrap": 80000'));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, result.stderr);
+});
+
+test('jsonc: downgrading a rule severity requires approval', () => {
+	const dir = fallowProject('jsonc-severity-down');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']).replace('"unused-dev-dependencies": "error"', '"unused-dev-dependencies": "warn"'));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-weakened: rules lowered unused-dev-dependencies from error to warn/);
+});
+
+test('jsonc: turning a rule off requires approval', () => {
+	const dir = fallowProject('jsonc-severity-off');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']).replace('"unused-dev-dependencies": "error"', '"unused-dev-dependencies": "off"'));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /unused-dev-dependencies from error to off/);
+});
+
+test('jsonc: upgrading a rule severity is silent', () => {
+	const dir = fallowProject('jsonc-severity-up');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']).replace('"unused-exports": "warn"', '"unused-exports": "error"'));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, result.stderr);
+});
+
+test('jsonc: enabling an off rule is silent', () => {
+	const dir = fallowProject('jsonc-severity-enable');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']).replace('"unused-component-props": "off"', '"unused-component-props": "error"'));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, result.stderr);
+});
+
+test('jsonc: removing a protected rule requires approval', () => {
+	const dir = fallowProject('jsonc-rule-removed');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']).replace('"unused-types": "warn",\n', ''));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-weakened: rules removed rule unused-types/);
+});
+
+test('jsonc: adding a weaker rule setting requires approval', () => {
+	const dir = fallowProject('jsonc-rule-added-off');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']).replace('"unused-exports": "warn",', '"unused-exports": "warn",\n"brand-new-check": "off",'));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-weakened: rules added rule brand-new-check at off/);
+});
+
+test('jsonc: adding an error rule is silent', () => {
+	const dir = fallowProject('jsonc-rule-added-error');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']).replace('"unused-exports": "warn",', '"unused-exports": "warn",\n"brand-new-check": "error",'));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, result.stderr);
+});
+
+test('jsonc: adding an ignore pattern requires approval', () => {
+	const dir = fallowProject('jsonc-ignore-added');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**', '**']));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-weakened: ignorePatterns added ignore "\*\*"/);
+});
+
+test('jsonc: removing an ignore pattern is silent', () => {
+	const dir = fallowProject('jsonc-ignore-removed', { files: { '.fallowrc.json': fallowConfig(['tools/**', 'legacy/**']) } });
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, result.stderr);
+});
+
+test('jsonc: replacing an ignore glob with a narrower one requires approval', () => {
+	const dir = fallowProject('jsonc-ignore-replaced');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/src/**']));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-weakened: ignorePatterns added ignore "tools\/src\/\*\*"/);
+});
+
+test('jsonc: reordering an unchanged ignore set is silent', () => {
+	const dir = fallowProject('jsonc-ignore-reorder', { files: { '.fallowrc.json': fallowConfig(['a/**', 'b/**']) } });
+	branch(dir);
+	revise(dir, fallowConfig(['b/**', 'a/**']));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, result.stderr);
+});
+
+test('jsonc: a change outside the enrolled identities requires approval', () => {
+	const dir = fallowProject('jsonc-outside');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']).replace('fallow-rs/fallow/main/schema.json', 'example.com/schema.json'));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-unrecognized: a value changed outside the enrolled identities/);
+});
+
+test('jsonc: a comment change is not silently dropped after parsing', () => {
+	const dir = fallowProject('jsonc-comment');
+	branch(dir);
+	revise(dir, fallowConfig(['tools/**']).replace('// Reported, not failing.', '// reported, not failing'));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-unrecognized: a comment changed/);
+});
+
+test('jsonc: a supported tightening across identities is silent', () => {
+	const dir = fallowProject('jsonc-tighten-all');
+	branch(dir);
+	revise(
+		dir,
+		fallowConfig(['tools/**']).replace('"maxCognitive": 25', '"maxCognitive": 20').replace('"unused-exports": "warn"', '"unused-exports": "error"'),
+	);
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, result.stderr);
+});
+
+test('jsonc: a missing or wrong-typed value fails with 2', () => {
+	const cases = {
+		missing: '{"rules":{},"ignorePatterns":[]}\n',
+		stringScore: '{"health":{"maxCognitive":"25","maxCrap":100000},"rules":{},"ignorePatterns":[]}\n',
+		badSeverity: '{"health":{"maxCognitive":25,"maxCrap":100000},"rules":{"unused-types":"fatal"},"ignorePatterns":[]}\n',
+		badGlob: '{"health":{"maxCognitive":25,"maxCrap":100000},"rules":{},"ignorePatterns":[3]}\n',
+		arrayRules: '{"health":{"maxCognitive":25,"maxCrap":100000},"rules":[],"ignorePatterns":[]}\n',
+	};
+	for (const [name, target] of Object.entries(cases)) {
+		const dir = fallowProject(`jsonc-malformed-${name}`);
+		branch(dir);
+		revise(dir, target);
+		const result = guard(dir, guardArgs());
+		assert.equal(result.code, 2, `${name}: ${result.stdout}${result.stderr}`);
+	}
+});
+
+test('jsonc: arbitrary executable config is never evaluated', () => {
+	const marker = path.join(TMP, 'fallow-evaluated');
+	const dir = fallowProject('jsonc-sideeffect');
+	branch(dir);
+	write(dir, '.fallowrc.json', `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(marker)}, 'x');\n`);
+	commit(dir, 'js expression');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 2, result.stderr);
+	assert.equal(fs.existsSync(marker), false);
+});
+
+test('jsonc: an unknown identity id fails with 2', () => {
+	const dir = project('jsonc-unknown-id', {
+		policy: policy([jsonc('fallow', '.fallowrc.json', [{ id: 'health.maxWeird', unit: 'score', direction: 'max' }])]),
+		files: { '.fallowrc.json': fallowConfig(['tools/**']) },
+	});
+	branch(dir);
+	assert.equal(guard(dir, guardArgs()).code, 2);
+});
+
+test('jsonc: a forged direction for a known identity fails with 2', () => {
+	const dir = project('jsonc-forged-direction', {
+		policy: policy([jsonc('fallow', '.fallowrc.json', [{ id: 'health.maxCognitive', unit: 'score', direction: 'min' }])]),
+		files: { '.fallowrc.json': fallowConfig(['tools/**']) },
+	});
+	branch(dir);
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 2, result.stderr);
+	assert.match(result.stderr, /direction for health\.maxCognitive must be max/);
+});
+
+test('jsonc: a wrong unit for a known identity fails with 2', () => {
+	const dir = project('jsonc-wrong-unit', {
+		policy: policy([jsonc('fallow', '.fallowrc.json', [{ id: 'rules', unit: 'score', direction: 'min' }])]),
+		files: { '.fallowrc.json': fallowConfig(['tools/**']) },
+	});
+	branch(dir);
+	assert.equal(guard(dir, guardArgs()).code, 2);
+});
+
+test('jsonc: a missing jsonc-parser fails with 2, not an uncaught exit', () => {
+	const dir = project('jsonc-no-parser', {
+		policy: policy([jsonc('fallow', '.fallowrc.json', FALLOW_IDENTITIES)]),
+		files: { '.fallowrc.json': fallowConfig(['tools/**']) },
+		parser: false,
+	});
+	branch(dir);
+	revise(dir, raised(fallowConfig(['tools/**']), 25, 40));
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 2, `${result.stdout}${result.stderr}`);
+	assert.match(result.stderr, /jsonc-parser/);
+});
+
+test('opaque: an opaque enrollment never needs the jsonc parser', () => {
+	const dir = project('opaque-no-parser', {
+		enrollments: [opaque('python-structure', 'tools/python/structure_check.py')],
+		files: { 'tools/python/structure_check.py': 'print(1)\n' },
+		parser: false,
+	});
+	branch(dir);
+	write(dir, 'tools/python/structure_check.py', 'print(2)\n');
+	commit(dir, 'change checker');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-change: tools\/python\/structure_check\.py/);
+});
+
+test('jsonc: a branch cannot redirect a ceiling by rewriting its enrollment', () => {
+	const dir = fallowProject('jsonc-policy-tamper');
+	branch(dir);
+	revise(dir, raised(fallowConfig(['tools/**']), 25, 40));
+	write(
+		dir,
+		'lint-kit.policy.json',
+		policy([jsonc('fallow', '.fallowrc.json', [{ id: 'health.maxCognitive', unit: 'score', direction: 'min' }])]),
+	);
+	commit(dir, 'tamper');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-change: lint-kit\.policy\.json/);
+	assert.match(result.stdout, /enrolled-weakened: health\.maxCognitive raised from 25 to 40/);
+});
+
+test('jsonc: the trusted snapshot is independent of the source base', () => {
+	const dir = fallowProject('jsonc-trusted-separate');
+	branch(dir, 'approved');
+	revise(dir, raised(fallowConfig(['tools/**']), 25, 40));
+	git(dir, 'checkout', '-q', 'main');
+	branch(dir, 'feature');
+	revise(dir, raised(fallowConfig(['tools/**']), 25, 40));
+	assert.equal(guard(dir, guardArgs({ trustedRef: 'approved' })).code, 0);
+	assert.equal(guard(dir, guardArgs({ trustedRef: 'main' })).code, 1);
+});
+
+test('a guarded checker and a parsed config are both reported', () => {
+	const dir = project('mixed-enrollments', {
+		policy: policy([jsonc('fallow', '.fallowrc.json', FALLOW_IDENTITIES), opaque('structure', 'tools/python/structure_check.py')]),
+		files: { '.fallowrc.json': fallowConfig(['tools/**']), 'tools/python/structure_check.py': 'print(1)\n' },
+	});
+	branch(dir);
+	revise(dir, raised(fallowConfig(['tools/**']), 25, 40));
+	write(dir, 'tools/python/structure_check.py', 'print(2)\n');
+	commit(dir, 'weaken both');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-change: \.fallowrc\.json/);
+	assert.match(result.stdout, /enrolled-change: tools\/python\/structure_check\.py/);
+});
+
+test('jsonc: the enrollment file itself is always an opaque review', () => {
+	const dir = fallowProject('jsonc-policy-only');
+	branch(dir);
+	write(dir, 'lint-kit.policy.json', policy([jsonc('fallow', '.fallowrc.json', FALLOW_IDENTITIES), opaque('extra', 'extra.json')]));
+	commit(dir, 'enroll more');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-change: lint-kit\.policy\.json/);
+});
+
+test('a test rename stays advisory and makes no coverage claim', () => {
+	const dir = fallowProject('jsonc-test-rename');
+	branch(dir);
+	write(dir, 'test/old.test.js', "test('a', () => {});\n");
+	commit(dir, 'add test');
+	git(dir, 'mv', 'test/old.test.js', 'test/new.test.js');
+	commit(dir, 'rename test');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, result.stderr);
+	assert.match(result.stdout, /non-enrolled file\(s\) changed \(advisory\)/);
+	assert.doesNotMatch(result.stdout, /coverage/);
+});
+
+// ── strict UTF-8 decoding of the raw bytes before JSONC/enrollment parsing ────────
+
+/** Concatenates UTF-8 string pieces and raw byte pieces into one Buffer. */
+const concatBytes = (...pieces) => Buffer.concat(pieces.map((piece) => (typeof piece === 'string' ? Buffer.from(piece, 'utf8') : piece)));
+
+const UTF8_REPLACEMENT_BYTE = Buffer.from([0xff]);
+const UTF8_LITERAL_REPLACEMENT_CHAR = Buffer.from([0xef, 0xbf, 0xbd]);
+const UTF8_BYTE_ORDER_MARK = Buffer.from([0xef, 0xbb, 0xbf]);
+
+/** A complete fallow config with `schema` in `$schema` and `maxCognitive` as the one ceiling. */
+const fallowBytes = (schema, maxCognitive) =>
+	concatBytes(`{"$schema":"${schema}","health":{"maxCognitive":${maxCognitive},"maxCrap":100000},"rules":{"unused-types":"warn"},"ignorePatterns":[]}\n`);
+
+test('jsonc: an invalid byte in the target is not read as a literal U+FFFD', () => {
+	const trusted = concatBytes('{"$schema":"', UTF8_LITERAL_REPLACEMENT_CHAR, '","health":{"maxCognitive":25,"maxCrap":100000},"rules":{"unused-types":"warn"},"ignorePatterns":[]}\n');
+	const target = concatBytes('{"$schema":"', UTF8_REPLACEMENT_BYTE, '","health":{"maxCognitive":25,"maxCrap":100000},"rules":{"unused-types":"warn"},"ignorePatterns":[]}\n');
+	const dir = fallowProject('jsonc-invalid-target', { files: { '.fallowrc.json': trusted } });
+	branch(dir);
+	write(dir, '.fallowrc.json', target);
+	commit(dir, 'invalid byte outside an enrolled value');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 2, `${result.stdout}${result.stderr}`);
+	assert.match(result.stderr, /\.fallowrc\.json is not valid UTF-8 at --target/);
+});
+
+test('jsonc: an invalid byte in the trusted snapshot fails with 2', () => {
+	const trusted = concatBytes('{"$schema":"', UTF8_REPLACEMENT_BYTE, '","health":{"maxCognitive":25,"maxCrap":100000},"rules":{"unused-types":"warn"},"ignorePatterns":[]}\n');
+	const target = concatBytes('{"$schema":"', UTF8_LITERAL_REPLACEMENT_CHAR, '","health":{"maxCognitive":20,"maxCrap":100000},"rules":{"unused-types":"warn"},"ignorePatterns":[]}\n');
+	const dir = fallowProject('jsonc-invalid-trusted', { files: { '.fallowrc.json': trusted } });
+	branch(dir);
+	write(dir, '.fallowrc.json', target);
+	commit(dir, 'tighten while the trusted snapshot holds an invalid byte');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 2, `${result.stdout}${result.stderr}`);
+	assert.match(result.stderr, /\.fallowrc\.json is not valid UTF-8 at --trusted-ref/);
+});
+
+test('jsonc: an invalid byte in the enrollment file fails with 2', () => {
+	const dir = repository('jsonc-invalid-enrollment');
+	installTool(dir);
+	write(
+		dir,
+		'lint-kit.policy.json',
+		concatBytes('{"version":1,"enrollments":[{"id":"fallow","source":"configs/', UTF8_REPLACEMENT_BYTE, '.json","format":"opaque"}]}\n'),
+	);
+	commit(dir, 'base with an invalid enrollment byte');
+	branch(dir);
+	write(dir, 'src/app.ts', 'export const x = 1;\n');
+	commit(dir, 'unrelated change');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 2, `${result.stdout}${result.stderr}`);
+	assert.match(result.stderr, /lint-kit\.policy\.json is not valid UTF-8 at --trusted-ref/);
+});
+
+test('jsonc: a literal U+FFFD and further unicode survive a tightening', () => {
+	const schema = '\uFFFD\u2014na\u00efve\u{1F600}';
+	const dir = fallowProject('jsonc-unicode-tighten', { files: { '.fallowrc.json': fallowBytes(schema, 25) } });
+	branch(dir);
+	write(dir, '.fallowrc.json', fallowBytes(schema, 20));
+	commit(dir, 'tighten the ceiling while the valid unicode stays');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, `${result.stdout}${result.stderr}`);
+	assert.match(result.stdout, /no unapproved enrolled change since main/);
+});
+
+test('jsonc: a changed literal U+FFFD is still a review, not a silent match', () => {
+	const dir = fallowProject('jsonc-fffd-edit', { files: { '.fallowrc.json': fallowBytes('\uFFFD', 25) } });
+	branch(dir);
+	write(dir, '.fallowrc.json', fallowBytes('plain', 25));
+	commit(dir, 'replace the literal replacement character');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-unrecognized: a value changed outside the enrolled identities/);
+});
+
+test('jsonc: adding a byte-order mark is a visible edit, not an implicit normalization', () => {
+	const dir = fallowProject('jsonc-bom-added');
+	branch(dir);
+	write(dir, '.fallowrc.json', concatBytes(UTF8_BYTE_ORDER_MARK, fallowBytes('\uFFFD', 25)));
+	commit(dir, 'add a byte-order mark');
+	const result = guard(dir, guardArgs());
+	assert.notEqual(result.code, 0, `${result.stdout}${result.stderr}`);
 });
