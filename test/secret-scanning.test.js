@@ -22,6 +22,12 @@ const INTRODUCED = '0a1b2c3d4e5f60718293a4b5c6d7e8f9';
 const INHERITED = '7c3e1a9b5d2f8046c1b7e3a9d5f26048';
 const DELETED = '3d5f7a9c1e2b40586a7c9e1b3d5f7a9c';
 
+// A three-line private key the default config's `private-key` rule matches across lines. The body
+// avoids the default config's `abcdefghijklmnopqrstuvwxyz` stopword, which would suppress it.
+const PEM_BEGIN = '-----BEGIN RSA PRIVATE KEY-----';
+const PEM_BODY = 'MIIEowIBAAKCAQEA7f3a9c2e5b1d8f4a6c0e9b2d7a5f3c1e8b6d0a4f2c9e7b3d5a1f8c6e0b4d2a9f7c3e1b5d8a2f4c6e9b0d3a7f1c5e8b2d4a6f9c';
+const PEM_END = '-----END RSA PRIVATE KEY-----';
+
 const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-kit-secret-scanning-'));
 after(() => {
 	fs.rmSync(TEMP, { recursive: true, force: true });
@@ -300,17 +306,131 @@ test('a scan leaves no report or temporary artifact behind', () => {
 	assert.deepEqual(leftoverScanDirectories(), before);
 });
 
+test('branch mode reports an untracked credential in a non-ASCII path', () => {
+	const repository = createRepository('unicode-untracked');
+	// The reproduction ran with git's default quoting; pin it so the regression cannot hide.
+	git(repository, ['config', 'core.quotePath', 'true']);
+	addCleanFixture(repository);
+	const base = commitAll(repository, 'base');
+	writeCredentialFile(repository, 'caf\u00e9.ts', INTRODUCED);
+
+	const result = scan(repository, ['--base', base]);
+
+	assert.equal(result.code, 1, result.output);
+	assert.match(result.stdout, /^gitleaks-check: introduced generic-api-key caf\u00e9\.ts:1$/m);
+	assert.doesNotMatch(result.output, new RegExp(INTRODUCED));
+});
+
+test('branch mode reports a credential a branch binary attribute hides in the working tree', () => {
+	const repository = createRepository('binary-attribute-working-tree');
+	addCleanFixture(repository);
+	const base = commitAll(repository, 'base');
+	writeFile(repository, '.gitattributes', '*.ts binary\n');
+	commitAll(repository, 'mark ts files as binary');
+	writeFile(repository, 'clean.ts', `${fs.readFileSync(CLEAN_FIXTURE, 'utf8')}const apiKey = "${INTRODUCED}";\n`);
+
+	const result = scan(repository, ['--base', base]);
+
+	assert.equal(result.code, 1, result.output);
+	assert.match(result.stdout, /^gitleaks-check: introduced generic-api-key clean\.ts:2$/m);
+	assert.doesNotMatch(result.output, new RegExp(INTRODUCED));
+});
+
+test('branch mode and the history audit report a committed credential a binary attribute hides', () => {
+	const repository = createRepository('binary-attribute-committed');
+	addCleanFixture(repository);
+	writeFile(repository, '.gitattributes', '*.ts binary\n');
+	const base = commitAll(repository, 'base');
+	writeCredentialFile(repository, 'hidden.ts', INTRODUCED);
+	commitAll(repository, 'commit a credential the attribute hides');
+
+	const branch = scan(repository, ['--base', base]);
+	assert.equal(branch.code, 1, branch.output);
+	assert.match(branch.stdout, /^gitleaks-check: introduced generic-api-key hidden\.ts:1 commit [0-9a-f]{7}$/m);
+	assert.doesNotMatch(branch.output, new RegExp(INTRODUCED));
+
+	const history = scan(repository, ['--mode', 'history']);
+	assert.equal(history.code, 1, history.output);
+	assert.match(history.stdout, /^gitleaks-check: finding generic-api-key hidden\.ts:1 commit [0-9a-f]{7}$/m);
+	assert.doesNotMatch(history.output, new RegExp(INTRODUCED));
+});
+
+test('the history audit reports a binary-hidden credential a later commit deleted', () => {
+	const repository = createRepository('binary-attribute-deleted');
+	addCleanFixture(repository);
+	writeFile(repository, '.gitattributes', '*.ts binary\n');
+	commitAll(repository, 'base');
+	writeCredentialFile(repository, 'gone.ts', DELETED);
+	commitAll(repository, 'commit a credential the attribute hides');
+	git(repository, ['rm', '-q', 'gone.ts']);
+	commitAll(repository, 'delete it again');
+
+	const result = scan(repository, ['--mode', 'history']);
+
+	assert.equal(result.code, 1, result.output);
+	assert.match(result.stdout, /^gitleaks-check: finding generic-api-key gone\.ts:1 commit [0-9a-f]{7}$/m);
+	assert.doesNotMatch(result.output, new RegExp(DELETED));
+});
+
+test('branch mode reports a multi-line match whose new lines extend an inherited one', () => {
+	const repository = createRepository('multiline-overlap');
+	writeFile(repository, 'key.pem', `${PEM_BEGIN}\n`);
+	const base = commitAll(repository, 'base');
+	writeFile(repository, 'key.pem', `${PEM_BEGIN}\n${PEM_BODY}\n${PEM_END}\n`);
+
+	const result = scan(repository, ['--base', base]);
+
+	assert.equal(result.code, 1, result.output);
+	// The match starts on line 1, which the base already had; lines 2 and 3 are the branch's.
+	assert.match(result.stdout, /^gitleaks-check: introduced private-key key\.pem:1$/m);
+	assert.doesNotMatch(result.output, new RegExp(PEM_BODY));
+});
+
+test('branch mode leaves a multi-line match that is wholly inherited inherited', () => {
+	const repository = createRepository('multiline-inherited');
+	writeFile(repository, 'key.pem', `${PEM_BEGIN}\n${PEM_BODY}\n${PEM_END}\n`);
+	const base = commitAll(repository, 'base');
+	writeFile(repository, 'key.pem', `${PEM_BEGIN}\n${PEM_BODY}\n${PEM_END}\nexport const more = 1;\n`);
+
+	const result = scan(repository, ['--base', base]);
+
+	assert.equal(result.code, 0, result.output);
+	assert.match(result.stdout, /^gitleaks-check: inherited private-key key\.pem:1 \(not introduced by this branch/m);
+	assert.doesNotMatch(result.output, new RegExp(PEM_BODY));
+});
+
+test('branch mode refuses a working-tree file a clean filter can hide from the diff', () => {
+	const repository = createRepository('clean-filter');
+	addCleanFixture(repository);
+	const base = commitAll(repository, 'base');
+	// The filter strips the credential on its way to git, so the diff would call the file
+	// unchanged; the attribute is refused before the diff runs.
+	git(repository, ['config', 'filter.lintkit-hide.clean', "sed '/apiKey/d'"]);
+	writeFile(repository, '.gitattributes', '*.ts filter=lintkit-hide\n');
+	commitAll(repository, 'hide the git view through a clean filter');
+	writeFile(repository, 'clean.ts', `${fs.readFileSync(CLEAN_FIXTURE, 'utf8')}const apiKey = "${INTRODUCED}";\n`);
+
+	const result = scan(repository, ['--base', base]);
+
+	assert.equal(result.code, 2, result.output);
+	assert.match(result.stderr, /cannot check: .*sets the Git filter attribute/);
+	assert.doesNotMatch(result.output, new RegExp(INTRODUCED));
+});
+
 test('the report reader rejects anything that is not fully redacted', () => {
+	const commit = 'd5ab1cbcdab2eaae3f2742358a8c1f1ee60b6718';
 	const valid = JSON.stringify([
-		{ RuleID: 'generic-api-key', File: 'src/a.ts', StartLine: 4, EndLine: 4, Commit: 'abc', Secret: REDACTED, Match: REDACTED, Author: 'someone@example.com' },
+		{ RuleID: 'generic-api-key', File: 'src/a.ts', StartLine: 4, EndLine: 6, Commit: commit, Secret: REDACTED, Match: REDACTED, Author: 'someone@example.com' },
 	]);
 	const read = parseGitleaksReport(valid);
 	assert.deepEqual(read, {
 		ok: true,
-		findings: [{ ruleId: 'generic-api-key', file: 'src/a.ts', startLine: 4, endLine: 4, commit: 'abc' }],
+		findings: [{ ruleId: 'generic-api-key', file: 'src/a.ts', startLine: 4, endLine: 6, commit }],
 	});
 	assert.doesNotMatch(JSON.stringify(read), /Secret|Match|Author|someone@example\.com/);
 
+	// Every entry below is malformed protocol: Gitleaks cannot emit it with --redact=100 and
+	// --report-format json, so it is tested at the reader rather than through the scanner.
 	const rejected = [
 		'not json',
 		'{"findings":[]}',
@@ -319,11 +439,19 @@ test('the report reader rejects anything that is not fully redacted', () => {
 		'[{"RuleID":"r","StartLine":1,"Secret":"REDACTED"}]',
 		'[{"RuleID":"r","File":"a.ts","StartLine":0,"Secret":"REDACTED"}]',
 		`[{"RuleID":"r","File":"a.ts","StartLine":1,"Secret":"hunter2-the-real-value"}]`,
+		`[{"RuleID":"r","File":"a.ts","StartLine":1,"EndLine":1,"Commit":"","Secret":"REDACTED","Match":"hunter2-the-real-value"}]`,
+		'[{"RuleID":"r","File":"a.ts","StartLine":1,"Commit":"","Secret":"REDACTED"}]',
+		'[{"RuleID":"r","File":"a.ts","StartLine":3,"EndLine":2,"Commit":"","Secret":"REDACTED","Match":"REDACTED"}]',
+		'[{"RuleID":"r","File":"a.ts","StartLine":1,"EndLine":"4","Commit":"","Secret":"REDACTED","Match":"REDACTED"}]',
+		'[{"RuleID":"r","File":"a.ts","StartLine":1,"EndLine":1,"Secret":"REDACTED","Match":"REDACTED"}]',
+		'[{"RuleID":"r","File":"a.ts","StartLine":1,"EndLine":1,"Commit":"not-a-commit","Secret":"REDACTED","Match":"REDACTED"}]',
+		'[{"RuleID":"r","File":"a\nb.ts","StartLine":1,"EndLine":1,"Commit":"","Secret":"REDACTED","Match":"REDACTED"}]',
+		'[{"RuleID":"r\nforged","File":"a.ts","StartLine":1,"EndLine":1,"Commit":"","Secret":"REDACTED","Match":"REDACTED"}]',
 	];
 	for (const report of rejected) {
 		const outcome = parseGitleaksReport(report);
 		assert.equal(outcome.ok, false, report);
-		assert.doesNotMatch(outcome.reason, /hunter2-the-real-value/);
+		assert.doesNotMatch(outcome.reason, /hunter2-the-real-value|forged/);
 	}
 });
 

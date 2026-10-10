@@ -18,6 +18,12 @@
  * so the branch cannot widen its own exceptions. The only exceptions are the narrow documented
  * ones in the config.
  *
+ * Both scans force a text diff for the commits (`--text --no-textconv`, `--all` for the audit) and
+ * the working tree, so a branch `.gitattributes` that marks files binary cannot hide a committed or
+ * added credential. A Git attribute that changes what the working tree converts to (a clean
+ * `filter` or `working-tree-encoding`) is refused instead: the diff could not be trusted to
+ * attribute that file's lines.
+ *
  * Gitleaks runs with `--redact=100`, and its stdout, stderr and report never reach the output:
  * this command prints an allowlisted rule/file/line/commit metadata line per finding.
  */
@@ -102,7 +108,7 @@ function main(argv) {
 
 /** The initial audit: every commit and the working tree, every finding reported. */
 function runHistory(scan, version) {
-	const commits = runScan(scan, { subcommand: 'git', report: 'commits.json' });
+	const commits = runScan(scan, { subcommand: 'git', logOpts: '--text --no-textconv --all', report: 'commits.json' });
 	if (!commits.ok) return cannotCheck(commits.reason);
 	const tree = runScan(scan, { subcommand: 'dir', report: 'tree.json' });
 	if (!tree.ok) return cannotCheck(tree.reason);
@@ -119,13 +125,13 @@ function runHistory(scan, version) {
 function runBranch(scan, requestedBase, version) {
 	const base = resolveBase(scan.source, requestedBase);
 	if (!base.ok) return cannotCheck(base.reason);
-	const mergeBase = git(scan.source, ['merge-base', base.sha, 'HEAD']);
+	const mergeBase = gitText(scan.source, ['merge-base', base.sha, 'HEAD']);
 	if (!mergeBase || !isCommitSha(mergeBase))
 		return cannotCheck(`no merge base between ${base.label} and HEAD`);
 
 	const commits = runScan(scan, {
 		subcommand: 'git',
-		logOpts: `${mergeBase}..HEAD`,
+		logOpts: `--text --no-textconv ${mergeBase}..HEAD`,
 		report: 'commits.json',
 	});
 	if (!commits.ok) return cannotCheck(commits.reason);
@@ -153,10 +159,35 @@ function runBranch(scan, requestedBase, version) {
 
 /** Split working-tree findings into the lines the branch added and the ones it inherited. */
 function attributeTreeFindings(scan, treeFindings, mergeBase) {
-	const diff = git(scan.source, [
+	// `-z` keeps a non-ASCII path byte-for-byte the way Gitleaks reports it; the line-based form
+	// C-quotes it ("caf\303\251.ts"), which can never match a finding and would hide it.
+	const untracked = gitRaw(scan.source, ['ls-files', '-z', '--others', '--exclude-standard']);
+	if (untracked === null) return { ok: false, reason: 'could not list untracked files' };
+	const untrackedFiles = new Set(untracked.split('\0').filter(Boolean));
+
+	// A file the working tree converts on its way to git (a clean `filter` or
+	// `working-tree-encoding`) makes the added-line diff describe something other than what
+	// Gitleaks scanned. There is no safe attribution for it, so fail closed rather than call it
+	// inherited.
+	const converted = [
+		...new Set(
+			treeFindings
+				.filter((finding) => !untrackedFiles.has(normalizePath(finding.file)))
+				.map((finding) => normalizePath(finding.file)),
+		),
+	];
+	const hazard = checkWorkingTreeConversion(scan.source, converted);
+	if (!hazard.ok) return hazard;
+
+	// `--text --no-textconv` forces a text diff: without it `*.ts binary` (or `-diff`, or a
+	// textconv driver) makes git print "Binary files ... differ" with no hunks, and a freshly added
+	// credential would have no added line to be attributed to.
+	const diff = gitRaw(scan.source, [
 		'-c',
 		'core.quotePath=false',
 		'diff',
+		'--text',
+		'--no-textconv',
 		'--unified=0',
 		'--no-color',
 		'--no-ext-diff',
@@ -166,9 +197,6 @@ function attributeTreeFindings(scan, treeFindings, mergeBase) {
 	]);
 	if (diff === null) return { ok: false, reason: `could not diff ${short(mergeBase)} against the working tree` };
 	const added = parseAddedLines(diff);
-	const untracked = git(scan.source, ['ls-files', '--others', '--exclude-standard']);
-	if (untracked === null) return { ok: false, reason: 'could not list untracked files' };
-	const untrackedFiles = new Set(untracked.split('\n').filter(Boolean));
 
 	const introduced = [];
 	const inherited = [];
@@ -179,14 +207,45 @@ function attributeTreeFindings(scan, treeFindings, mergeBase) {
 	return { ok: true, introduced, inherited };
 }
 
-/** Whether a working-tree finding sits on a line the branch added, or in an untracked file. */
+/**
+ * Fail closed when a reported tracked file sets `filter` or `working-tree-encoding`: those change
+ * the bytes git compares, so the diff cannot say which lines the branch added to what Gitleaks read.
+ */
+function checkWorkingTreeConversion(source, files) {
+	if (files.length === 0) return { ok: true };
+	const output = gitRaw(source, ['check-attr', '-z', 'filter', 'working-tree-encoding', '--', ...files]);
+	if (output === null) return { ok: false, reason: 'could not read the Git attributes of the working tree' };
+	const fields = output.split('\0');
+	for (let index = 0; index + 2 < fields.length; index += 3) {
+		const value = fields[index + 2];
+		if (value !== 'unspecified' && value !== 'unset') {
+			const [file, attribute] = [fields[index], fields[index + 1]];
+			return {
+				ok: false,
+				reason: `${file} sets the Git ${attribute} attribute, which changes the working-tree content git compares; remove it or scan that file with an explicit config`,
+			};
+		}
+	}
+	return { ok: true };
+}
+
+/**
+ * Whether a working-tree finding overlaps a line the branch added, or sits in an untracked file.
+ * The whole `StartLine..EndLine` range counts: a multi-line match whose first line is inherited but
+ * whose later lines are new is still the branch's.
+ */
 function isIntroduced(finding, addedLines, untrackedFiles, unreliable) {
 	// A path git printed in a form this command cannot match against is treated as introduced: a
 	// wrong guess must never hide a secret, only surface an inherited one as the branch's.
 	if (unreliable) return true;
-	const file = finding.file.replace(/\\/g, '/');
+	const file = normalizePath(finding.file);
 	if (untrackedFiles.has(file)) return true;
-	return addedLines.get(file)?.has(finding.startLine) ?? false;
+	const lines = addedLines.get(file);
+	if (lines === undefined) return false;
+	for (const number of lines) {
+		if (number >= finding.startLine && number <= finding.endLine) return true;
+	}
+	return false;
 }
 
 /**
@@ -342,12 +401,12 @@ function resolveBase(source, requested) {
 
 /** `git rev-parse` as a literal revision: option parsing ends before the ref, so a ref cannot inject. */
 function resolveCommit(source, ref) {
-	const resolved = git(source, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]);
+	const resolved = gitText(source, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]);
 	return resolved && isCommitSha(resolved) ? resolved : null;
 }
 
-/** Run git in `source` and return trimmed stdout, or null when git fails. */
-function git(source, args) {
+/** Run git in `source` and return its raw stdout, or null when git fails. */
+function gitRaw(source, args) {
 	const result = spawnSync('git', args, {
 		cwd: source,
 		encoding: 'utf8',
@@ -355,14 +414,25 @@ function git(source, args) {
 		windowsHide: true,
 	});
 	if (result.error || result.status !== 0) return null;
-	return (result.stdout ?? '').trim();
+	return result.stdout ?? '';
+}
+
+/** Run git in `source` and return trimmed stdout, or null when git fails. */
+function gitText(source, args) {
+	const output = gitRaw(source, args);
+	return output === null ? null : output.trim();
 }
 
 /** A findings line: allowlisted metadata only, never a matched value. */
 function findingLine(label, finding) {
-	const location = `${finding.file.replace(/\\/g, '/')}:${finding.startLine}`;
+	const location = `${normalizePath(finding.file)}:${finding.startLine}`;
 	const commit = finding.commit ? ` commit ${short(finding.commit)}` : '';
 	return `gitleaks-check: ${label} ${finding.ruleId} ${location}${commit}`;
+}
+
+/** A path from a report, with any separator this platform used written as `/`. */
+function normalizePath(file) {
+	return file.replace(/\\/g, '/');
 }
 
 /** Drop repeats of the same location, so a committed secret is listed once. */
