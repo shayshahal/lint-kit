@@ -1032,3 +1032,65 @@ test('jsonc: adding a byte-order mark is a visible edit, not an implicit normali
 	const result = guard(dir, guardArgs());
 	assert.notEqual(result.code, 0, `${result.stdout}${result.stderr}`);
 });
+
+// ── the quarantine ledger is an enrolled policy change (#49) ─────────────────────
+
+const QUARANTINE_LEDGER = 'test-quarantine.json';
+const quarantineLedger = (entries) => `${JSON.stringify({ version: 1, entries }, null, 2)}\n`;
+const QUARANTINE_ENTRY = { file: 'test/a.test.js', line: 1, column: 1, sourceCallSha256: '0'.repeat(64), reason: 'r', owner: 'o', expires: '2099-01-01' };
+
+/** A repository with the ledger enrolled opaque and an empty ledger at base. */
+const quarantineProject = (name) =>
+	project(name, {
+		enrollments: [opaque('quarantine', QUARANTINE_LEDGER)],
+		files: { '.fallowrc.json': '{"health":{"maxCognitive":25}}\n', [QUARANTINE_LEDGER]: quarantineLedger([]) },
+	});
+
+test('opaque: an unchanged enrolled ledger is clean', () => {
+	const dir = quarantineProject('ledger-clean');
+	branch(dir);
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, result.stderr);
+});
+
+test('opaque: adding, extending or broadening a ledger entry needs review', () => {
+	const dir = quarantineProject('ledger-change');
+	branch(dir);
+	const change = (entries, message) => {
+		write(dir, QUARANTINE_LEDGER, quarantineLedger(entries));
+		commit(dir, message);
+		assert.equal(guard(dir, guardArgs()).code, 1, message);
+	};
+	change([QUARANTINE_ENTRY], 'add an entry');
+	change([{ ...QUARANTINE_ENTRY, reason: 'extended reason' }], 'extend the reason');
+	change([{ ...QUARANTINE_ENTRY, reason: 'extended reason' }, { ...QUARANTINE_ENTRY, line: 2 }], 'broaden with a second entry');
+});
+
+test('a non-enrolled ledger change stays advisory', () => {
+	const dir = project('ledger-not-enrolled');
+	branch(dir);
+	write(dir, QUARANTINE_LEDGER, quarantineLedger([QUARANTINE_ENTRY]));
+	commit(dir, 'add a ledger');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, result.stderr);
+	assert.match(result.stdout, /non-enrolled file\(s\) changed \(advisory\)/);
+});
+
+test('opaque: an approval field in the trusted policy is exit 2, not an approval', () => {
+	const dir = repository('ledger-approval');
+	installTool(dir);
+	write(dir, 'lint-kit.policy.json', policy([{ id: 'quarantine', source: QUARANTINE_LEDGER, format: 'opaque', approvedBy: '@me' }]));
+	write(dir, QUARANTINE_LEDGER, quarantineLedger([]));
+	commit(dir, 'base');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 2, `${result.stdout}${result.stderr}`);
+	assert.match(result.stderr, /unknown field/i);
+});
+
+test('the guard has no HEAD-baseline default for the trusted ref', () => {
+	const dir = quarantineProject('ledger-no-trusted-ref');
+	branch(dir);
+	const result = guard(dir, ['--base', 'main', '--target', 'HEAD', '--policy', 'lint-kit.policy.json', '--mode', 'committed']);
+	assert.equal(result.code, 2, `${result.stdout}${result.stderr}`);
+	assert.match(result.stderr, /missing required argument: --trusted-ref/);
+});

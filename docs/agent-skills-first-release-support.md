@@ -95,6 +95,18 @@ The implementing issues must not claim more than these show.
 | Counterexamples that must pass | `test.todo(…)` / `it.todo(…)`; `test.fails(…)` expected failures; the conditional forms `test.skipIf(cond)(…)` and `test.runIf(cond)(…)`; a locally bound `test`; a `test.skip` imported from a library other than `vitest` |
 | Limits to record | There is no conditional `test.skip` API: the runner treats the first argument as the test name, so `test.skip(cond, 'why', …)` is an unconditional skip named after the condition value (the runner fixture pins this). `test.each([…]).skip` is a collection failure, not a skip. #49's scoped reason/owner/expiry quarantine (its own minimal format) is the only way to allow a real skip, and the plugin alone does not provide it |
 
+Shipped in #49: one repository-root `test-quarantine.json` addresses the **enclosing call** by
+repository-relative file, 1-based call start and the SHA-256 of the call's exact LF-normalized
+source, with trimmed `reason`/`owner` and an inclusive UTC `expires`. The `vitest/no-disabled-tests`
+rule drops a report a live entry with the matching fingerprint excuses and forces one whose
+fingerprint changed or lapsed, even on an inherited line; it never re-derives a title, so dynamic
+and duplicate titles stay distinct. The separate non-file-filtered pre-push
+`tools/eslint/check-quarantine-ledger.mjs` is the primary owner of whole-ledger structural validity
+and expiry, so a docs-only, deletion-only or no-test-selected push still validates every entry; a
+missing ledger is clean, a present-but-bad or expired one fails. Enrollment is manual and opaque
+(`{"id":"test-quarantine","source":"test-quarantine.json","format":"opaque"}`); no field or issue
+link is an approval, and the clock is the production UTC clock with no public as-of knob.
+
 The three sets above stay one owner each. No lint rule is added to `slop-patterns`, and the
 application sets' existing test exclusions are kept.
 

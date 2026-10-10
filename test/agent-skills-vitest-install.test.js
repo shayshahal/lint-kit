@@ -10,6 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -164,7 +165,8 @@ test('a repository with its own eslint step keeps it, and the manual step is nam
 	} finally {
 		console.log = log;
 	}
-	assert.equal(text(dir, 'lefthook.yml'), own, "the repository's command is its policy");
+	// The repository's own command is its policy; only the new pre-push validator is added.
+	assert.equal(hooks(dir)['pre-commit'].commands.lint.run, 'npx eslint --fix {staged_files}');
 	assert.match(said.join('\n'), /the step that runs ESLint for this project was left alone; add \*\.\{test,spec\}\.\*/);
 });
 
@@ -312,4 +314,202 @@ test('the installed hook checks an outside-src test (real lefthook)', async () =
 	fs.writeFileSync(path.join(dir, 'test', 'outside.test.js'), "import { test } from 'vitest';\ntest('outside src', () => {});\n");
 	git('add', '-A');
 	execFileSync(LEFTHOOK, ['run', 'pre-commit'], { cwd: dir, stdio: 'ignore', shell: process.platform === 'win32' });
+});
+
+// ── the quarantine ledger and its repo-wide pre-push check (#49) ─────────────────
+
+const sha256 = (value) => createHash('sha256').update(value.replace(/\r\n/g, '\n')).digest('hex');
+const QUARANTINE_SCRIPT_BODY = '#!/usr/bin/env bash\nset -e\nnode tools/eslint/check-quarantine-ledger.mjs\n';
+
+/** A real Git repository (git init, not a bare `.git/HEAD`): the ledger check reads Git. */
+function realRepo(name, files = {}) {
+	const dir = path.join(TMP, name);
+	fs.mkdirSync(dir, { recursive: true });
+	const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
+	git('init', '-q', '-b', 'main');
+	git('config', 'user.email', 't@example.test');
+	git('config', 'user.name', 't');
+	for (const [relative, textContent] of Object.entries(files)) {
+		fs.mkdirSync(path.dirname(path.join(dir, relative)), { recursive: true });
+		fs.writeFileSync(path.join(dir, relative), textContent);
+	}
+	git('add', '-A');
+	git('commit', '--allow-empty', '-qm', 'base');
+	return dir;
+}
+
+/** lefthook with the test runner's own Node first on PATH, so the installed script's `node` runs. */
+const runPrePush = (dir) =>
+	spawnSync(LEFTHOOK, ['run', 'pre-push'], {
+		cwd: dir,
+		encoding: 'utf8',
+		shell: process.platform === 'win32',
+		env: { ...process.env, PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH}` },
+	});
+
+test('vitest installs the repo-wide ledger validator without touching the ledger or the policy', async () => {
+	const ledger = '{\n\t"version": 1,\n\t"entries": []\n}\n';
+	const policy = '{"version":1,"enrollments":[]}\n';
+	const dir = consumer('quarantine-install', { 'test-quarantine.json': ledger, 'lint-kit.policy.json': policy });
+	await init(dir, '--sets', 'vitest');
+	assert.ok(fs.existsSync(path.join(dir, 'tools/eslint/quarantine-ledger.mjs')));
+	assert.ok(fs.existsSync(path.join(dir, 'tools/eslint/check-quarantine-ledger.mjs')));
+	// The installer never edits the ledger or the enrollment file.
+	assert.equal(text(dir, 'test-quarantine.json'), ledger);
+	assert.equal(text(dir, 'lint-kit.policy.json'), policy);
+	// The validator is a non-file-filtered pre-push script, not a changed-file command.
+	assert.deepEqual(hooks(dir)['pre-push'].scripts['test-quarantine.sh'], { runner: 'bash' });
+	assert.equal(text(dir, '.lefthook/pre-push/test-quarantine.sh'), QUARANTINE_SCRIPT_BODY);
+	// A repeat install refreshes the copied tools and keeps the hook.
+	const before = text(dir, 'lefthook.yml');
+	await init(dir, '--sets', 'vitest');
+	assert.equal(text(dir, 'lefthook.yml'), before);
+});
+
+test('the install names the manual opaque enrollment instead of approving the ledger', async () => {
+	const dir = consumer('quarantine-snippet');
+	const said = [];
+	const log = console.log;
+	console.log = (...args) => said.push(args.join(' '));
+	try {
+		assert.equal(await main(['init', '--no-install', '--cwd', dir, '--sets', 'vitest']), 0);
+	} finally {
+		console.log = log;
+	}
+	const output = said.join('\n');
+	assert.match(output, /test-quarantine\.json: not enrolled by this installer/);
+	assert.match(output, /"id": "test-quarantine", "source": "test-quarantine\.json", "format": "opaque"/);
+	assert.match(output, /enroll tools\/eslint\/vitest\.mjs and tools\/eslint\/quarantine-ledger\.mjs opaque/);
+	assert.equal(fs.existsSync(path.join(dir, 'lint-kit.policy.json')), false, 'no automatic enrollment');
+});
+
+test('without lefthook the install prints a complete body, not a runner for a missing file', async () => {
+	const dir = project('quarantine-no-lefthook', {
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5', vitest: '4.1.11' } }),
+		'pnpm-lock.yaml': '',
+		'src/app.ts': 'export const a = 1;\n',
+	});
+	const said = [];
+	const log = console.log;
+	console.log = (...args) => said.push(args.join(' '));
+	try {
+		assert.equal(await main(['init', '--no-install', '--cwd', dir, '--sets', 'vitest']), 0);
+	} finally {
+		console.log = log;
+	}
+	const output = said.join('\n');
+	assert.match(output, /no lefthook\.yml/);
+	assert.match(output, /node tools\/eslint\/check-quarantine-ledger\.mjs/);
+	assert.equal(fs.existsSync(path.join(dir, '.lefthook')), false, 'nothing references a file that was not written');
+});
+
+test('the real pre-push validator runs with no changed file and fails an expired entry', async () => {
+	const dir = realRepo('quarantine-push', {
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5', vitest: '4.1.11' } }),
+		'pnpm-lock.yaml': '',
+		'lefthook.yml': 'pre-commit:\n  commands: {}\n',
+		'src/app.ts': 'export const a = 1;\n',
+	});
+	await init(dir, '--sets', 'vitest');
+	const ledger = path.join(dir, 'test-quarantine.json');
+	const entry = (expires) => ({
+		file: 'test/gone.test.js',
+		line: 1,
+		column: 1,
+		sourceCallSha256: '0'.repeat(64),
+		reason: 'r',
+		owner: 'o',
+		expires,
+	});
+	// A docs-only change, not a test: the script is not file-filtered, so it still runs.
+	fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+	fs.writeFileSync(path.join(dir, 'docs/readme.md'), '# docs\n');
+	fs.writeFileSync(ledger, `${JSON.stringify({ version: 1, entries: [entry('2000-01-01')] })}\n`);
+	const failing = runPrePush(dir);
+	assert.notEqual(failing.status, 0, `${failing.stdout}\n${failing.stderr}`);
+	assert.match(`${failing.stdout}\n${failing.stderr}`, /expired/);
+	// The same no-test change passes once the entry is live.
+	fs.writeFileSync(ledger, `${JSON.stringify({ version: 1, entries: [entry('2099-01-01')] })}\n`);
+	const passing = runPrePush(dir);
+	assert.equal(passing.status, 0, `${passing.stdout}\n${passing.stderr}`);
+});
+
+test('the real pre-push validator rejects a malformed ledger even when the push deletes the only test', async () => {
+	const dir = realRepo('quarantine-delete', {
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5', vitest: '4.1.11' } }),
+		'pnpm-lock.yaml': '',
+		'lefthook.yml': 'pre-commit:\n  commands: {}\n',
+		'test/only.test.js': "import { test } from 'vitest';\ntest('x', () => {});\n",
+	});
+	await init(dir, '--sets', 'vitest');
+	const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
+	git('rm', '-q', 'test/only.test.js');
+	git('commit', '-qm', 'delete the only test');
+	fs.writeFileSync(path.join(dir, 'test-quarantine.json'), '{ not json\n');
+	const result = runPrePush(dir);
+	assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+	assert.match(`${result.stdout}\n${result.stderr}`, /invalid \(not-json\)/);
+});
+
+test('the installed ESLint reports an outside-src skip, and a live ledger entry excuses it', async () => {
+	const dir = realRepo('installed-skip', {
+		'package.json': JSON.stringify({ devDependencies: { svelte: '^5', vitest: '4.1.11' } }),
+		'pnpm-lock.yaml': '',
+		'lefthook.yml': 'pre-commit:\n  commands: {}\n',
+		'src/app.ts': 'export const a = 1;\n',
+	});
+	await init(dir, '--sets', 'vitest');
+	fs.mkdirSync(path.join(dir, 'test'), { recursive: true });
+	fs.writeFileSync(path.join(dir, 'test/outside.test.js'), "import { test } from 'vitest';\ntest.skip('outside', () => {});\n");
+	assert.deepEqual(installedMessages(dir, 'test/outside.test.js'), [['vitest/no-disabled-tests', 2]]);
+	// The legitimate forms stay quiet, so the rule separates conditional skips, TODOs and fails.
+	fs.writeFileSync(
+		path.join(dir, 'test/outside.test.js'),
+		"import { test } from 'vitest';\ntest.todo('later');\ntest.fails('expected', () => {});\ntest.skipIf(true)('win', () => {});\n",
+	);
+	assert.deepEqual(installedMessages(dir, 'test/outside.test.js'), []);
+	// A live entry at the call's identity excuses it; the identity is repo-relative.
+	fs.writeFileSync(path.join(dir, 'test/outside.test.js'), "import { test } from 'vitest';\ntest.skip('outside', () => {});\n");
+	fs.writeFileSync(
+		path.join(dir, 'test-quarantine.json'),
+		`${JSON.stringify({
+			version: 1,
+			entries: [
+				{
+					file: 'test/outside.test.js',
+					line: 2,
+					column: 1,
+					sourceCallSha256: sha256("test.skip('outside', () => {})"),
+					reason: 'flaky upstream',
+					owner: '@team',
+					expires: '2099-01-01',
+				},
+			],
+		})}\n`,
+	);
+	assert.deepEqual(installedMessages(dir, 'test/outside.test.js'), []);
+});
+
+test('an orphan pre-push script of the same name is preserved, not overwritten or claimed', async () => {
+	const orphan = '#!/usr/bin/env bash\necho mine\n';
+	const dir = consumer('quarantine-orphan', { '.lefthook/pre-push/test-quarantine.sh': orphan });
+	const said = [];
+	const log = console.log;
+	console.log = (...args) => said.push(args.join(' '));
+	try {
+		assert.equal(await main(['init', '--no-install', '--cwd', dir, '--sets', 'vitest']), 0);
+	} finally {
+		console.log = log;
+	}
+	assert.equal(text(dir, '.lefthook/pre-push/test-quarantine.sh'), orphan);
+	assert.equal(hooks(dir)['pre-push']?.scripts?.['test-quarantine.sh'], undefined);
+	assert.match(said.join('\n'), /a pre-push step for test-quarantine\.json is left as it is/);
+});
+
+test('a repository already running the validator keeps its own command', async () => {
+	const own = 'pre-push:\n  commands:\n    ledger:\n      run: node tools/eslint/check-quarantine-ledger.mjs\n';
+	const dir = consumer('quarantine-own-command', { 'lefthook.yml': own });
+	await init(dir, '--sets', 'vitest');
+	assert.equal(hooks(dir)['pre-push'].commands.ledger.run, 'node tools/eslint/check-quarantine-ledger.mjs');
+	assert.equal(hooks(dir)['pre-push']?.scripts?.['test-quarantine.sh'], undefined);
 });

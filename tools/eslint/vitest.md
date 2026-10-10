@@ -9,8 +9,8 @@ are `vitest/no-focused-tests`, `vitest/valid-expect` and `vitest/valid-expect-in
 plugin, wrapped so the set narrows them to the lines the branch added like the other sets.
 
 The rules apply to `*.test.*` and `*.spec.*` files anywhere in the project, inside or outside
-`src/`. They are the only rules this set turns on: the plugin's recommended config would also
-enable skip checks, which are their own slice, and no other engine diagnoses these shapes.
+`src/`. The set turns on four rules: the two async-assertion rules, `no-focused-tests`, and
+`no-disabled-tests` with a repository quarantine layered over it.
 
 `vitest.config()` takes `inspection`, which narrows the rules to the lines the branch added since
 the merge-base with its base (`init` writes it); `inspection.mjs` beside this file has the detail.
@@ -108,6 +108,84 @@ Severity follows the owning rule's entry: `'vitest/valid-expect': 'warn'` leaves
 not an error reintroduced by the held rule. With the owner disabled
 (`'vitest/valid-expect': 'off'`) nothing is owned, so the promise rule reports the shape at its own
 entry instead.
+
+## no-disabled-tests
+
+A disabled test is a hole the suite still calls green. `test.skip`, `it.skip`, `describe.skip`, the
+Jest-only `x*` names and `pending()` are reported as blocking, and an unconditional skip is excused
+by a live quarantine entry. Upstream already separates the legitimate forms from the defect:
+`test.todo`, `test.fails`, `skipIf`/`runIf` and a locally bound or differently imported `test` stay
+valid, so the set does not ban `xfail` wholesale and does not add a name filter of its own.
+`test.skip(false, 'why', fn)` has no condition — the first argument is the name — so it is a skip.
+`test.skip('a')` with no body keeps both native diagnostics (a missing function and a disabled
+test). Upstream also reports the Jest-only `xit`/`xtest`/`xdescribe` and the Jest `pending()`; those
+are recorded limits of the maintained rule, not Vitest APIs.
+
+An unconditional skip is excused only by one entry in the repository-root `test-quarantine.json`:
+
+```json
+{
+	"version": 1,
+	"entries": [
+		{
+			"file": "test/payments.test.ts",
+			"line": 42,
+			"column": 1,
+			"sourceCallSha256": "<sha256 of the enclosing call text>",
+			"reason": "flaky against the real payments API; tracked in #123",
+			"owner": "@team-payments",
+			"expires": "2026-12-31"
+		}
+	]
+}
+```
+
+- `file` is repository-relative with `/` separators; `line`/`column` are 1-based and name the
+  **enclosing test/describe call** (`.skip.each(…)(…)`, `concurrent.skip`, `x*`, dynamic titles and
+  duplicate titles all resolve to the call, never to a title).
+- `sourceCallSha256` is the SHA-256 of that call's exact source text with CRLF normalized to LF. A
+  changed fingerprint — a moved call, a replaced one, or a broadened inline group body — no longer
+  matches, so it cannot reuse the waiver. A moved call is forced even on an inherited line.
+- `reason` and `owner` are free text, trimmed and non-empty. They are not an approval.
+- `expires` is an inclusive UTC date; the entry is valid through the end of that day. An expired
+  or structurally invalid entry is never accepted (fail closed, no exception).
+
+There is no approval field. A malformed, unreadable or duplicated ledger grants nothing at all,
+and an unknown field makes the whole ledger invalid. The fingerprint, not a stored approval, is
+what a reviewer sees change.
+
+### The repository-wide check
+
+The rule excuses a skip where it lints; the separate `check-quarantine-ledger.mjs` validates the
+**whole ledger** — structural validity and expiry for every entry — independently of which files a
+change touches. `init --sets vitest` wires it as a non-file-filtered pre-push script
+(`test-quarantine.sh`, or prints the complete body when the repository has no lefthook), so a
+docs-only, deletion-only or no-test-selected push still validates every entry. A missing ledger is
+clean; a present-but-bad or expired one fails even when no test file is in the push. It prints a
+location, a status and a date only — never an entry's reason, owner or source, and never a raw JSON
+parser error.
+
+### Enrollment
+
+The ledger is optional and is **not** enrolled automatically. To make a quarantine change a
+reviewed policy change, enroll it opaque by hand in `lint-kit.policy.json` and land that through
+the trusted-ref process:
+
+```json
+{ "id": "test-quarantine", "source": "test-quarantine.json", "format": "opaque" }
+```
+
+Enrolling the copied `tools/eslint/vitest.mjs` and `tools/eslint/quarantine-ledger.mjs` opaque as
+well keeps a branch from editing the matcher or the clock in the same change. A local run, a valid
+entry and an issue link are all feedback, not authorization.
+
+### Branch baseline
+
+With `inspection: 'branch'`, an inherited skip with no entry stays exempt (adopting the set does
+not fail on pre-existing debt), a skip the branch introduced with no entry fails, and a live entry
+excuses either. An entry that lapsed, or whose fingerprint no longer matches at the same position,
+is forced even on an inherited line; the separate whole-ledger check is what fails a lapsed entry
+that no lint run visits.
 
 ## What the async check cannot see
 

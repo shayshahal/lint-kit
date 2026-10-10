@@ -77,6 +77,12 @@ const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', 
 const VITEST_PLUGIN_PIN = '1.6.27';
 const ESLINT_PEERS_FOR = { vitest: [`@vitest/eslint-plugin@${VITEST_PLUGIN_PIN}`] };
 
+/** The repository-root quarantine ledger and the non-file-filtered pre-push step that validates it. */
+const QUARANTINE_LEDGER = 'test-quarantine.json';
+const QUARANTINE_HOOK = 'pre-push';
+const QUARANTINE_SCRIPT = 'test-quarantine.sh';
+const QUARANTINE_COMMAND = 'tools/eslint/check-quarantine-ledger.mjs';
+
 /** Every devDependency the chosen ESLint sets need, without duplicates. */
 export function eslintPeers(sets) {
 	return [...new Set([...ESLINT_PEERS, ...sets.flatMap((s) => ESLINT_PEERS_FOR[s] ?? [])])];
@@ -1242,6 +1248,51 @@ function writeStructure(repo, projects, doc, base, args) {
 	return [...roots.map((p) => `fallow (${where(p)})`), ...projects.py.map((py) => `structure_check.py (${where(py)})`)];
 }
 
+// ── quarantine ledger ───────────────────────────────────────────────────────────
+
+/** The script body that validates every ledger entry before a push, whichever files it changes. */
+const quarantineScriptBody = () => `#!/usr/bin/env bash\nset -e\nnode ${QUARANTINE_COMMAND}\n`;
+
+/**
+ * Wire the repository-wide ledger validator as a non-file-filtered pre-push script. A lefthook
+ * `commands` step is filtered by the push's changed files, so a docs-only, deletion-only or
+ * no-test-selected push could skip it; a `scripts` entry is not filtered. It is added only when
+ * the name is free and no command already runs the validator, so a repository's own hook or an
+ * orphan `.lefthook/pre-push/` file is never overwritten or claimed. Returns how it was handled.
+ */
+function wireQuarantineScript(repo, doc) {
+	if (doc.hasIn([QUARANTINE_HOOK, 'scripts', QUARANTINE_SCRIPT])) return 'kept';
+	const commands = doc.getIn([QUARANTINE_HOOK, 'commands'])?.toJSON() ?? {};
+	if (Object.values(commands).some((step) => /check-quarantine-ledger\.mjs/.test(step?.run ?? ''))) return 'kept';
+	if (fs.existsSync(path.join(repo, '.lefthook', QUARANTINE_HOOK, QUARANTINE_SCRIPT))) return 'kept';
+	if (!doc.hasIn([QUARANTINE_HOOK, 'scripts'])) doc.setIn([QUARANTINE_HOOK, 'scripts'], doc.createNode({}));
+	const scripts = doc.getIn([QUARANTINE_HOOK, 'scripts']);
+	if (scripts.flow && !scripts.items.length) scripts.flow = false;
+	doc.setIn([QUARANTINE_HOOK, 'scripts', QUARANTINE_SCRIPT], doc.createNode({ runner: 'bash' }));
+	writeHookScript(repo, QUARANTINE_HOOK, QUARANTINE_SCRIPT, quarantineScriptBody());
+	return 'added';
+}
+
+/**
+ * The manual enrollment and hook guidance one vitest install prints. Enrollment of the ledger and
+ * of the copied checker files is a reviewed trusted-ref change, never this installer's: it prints
+ * the exact snippet and leaves `lint-kit.policy.json` byte-for-byte.
+ */
+function sayQuarantineGuidance(status) {
+	say(`→ ${QUARANTINE_LEDGER}: not enrolled by this installer. Land this enrollment in lint-kit.policy.json through the trusted-ref review (a local run is feedback, not approval):`);
+	say(`    { "id": "test-quarantine", "source": "${QUARANTINE_LEDGER}", "format": "opaque" }`);
+	say('→ enroll tools/eslint/vitest.mjs and tools/eslint/quarantine-ledger.mjs opaque too, so a branch cannot edit the matcher or the clock in the same change');
+	if (status === 'added')
+		say(`✔ lefthook.yml: ${QUARANTINE_SCRIPT} before each push validates every ${QUARANTINE_LEDGER} entry, whichever files the push changed`);
+	else if (status === 'kept')
+		say(`→ lefthook.yml: a pre-push step for ${QUARANTINE_LEDGER} is left as it is; make sure it runs node ${QUARANTINE_COMMAND}`);
+	else {
+		say(`→ no lefthook.yml: run this before each push so every ${QUARANTINE_LEDGER} entry is validated even when no test changes:`);
+		say(`    node ${QUARANTINE_COMMAND}`);
+		say(`    # or as .lefthook/pre-push/${QUARANTINE_SCRIPT}:\n    ${quarantineScriptBody().trim().replace(/\n/g, '\n    ')}`);
+	}
+}
+
 // ── main ────────────────────────────────────────────────────────────────────────
 
 export async function main(argv = process.argv.slice(2)) {
@@ -1276,6 +1327,7 @@ export async function main(argv = process.argv.slice(2)) {
 	const structure = sets.includes('structure');
 	copyTools(repo, [
 		...(eslintSets.length ? ['eslint/inspection.mjs'] : []),
+		...(eslintSets.includes('vitest') ? ['eslint/quarantine-ledger.mjs', 'eslint/check-quarantine-ledger.mjs'] : []),
 		...eslintSets.flatMap((s) => [`eslint/${s}.mjs`, `eslint/${s}.md`]),
 		...oxlintSets.map((s) => `oxlint/${s}`),
 		...(fastapi.length ? ['python/fastapi_rules.py'] : []),
@@ -1285,6 +1337,7 @@ export async function main(argv = process.argv.slice(2)) {
 	for (const { p, wanted } of linted) writeEslint(repo, p, wanted, args);
 	for (const { p, wanted } of oxlinted) writeOxlint(repo, p, wanted);
 	const wired = fastapi.map((py) => writeFastapi(repo, py, args));
+	let quarantineStatus = 'not-selected';
 	const hooked = editLefthook(repo, (doc) => {
 		const eslintNames = stepNames('eslint', linted.map(({ p }) => p));
 		for (const { p, wanted } of linted) {
@@ -1305,9 +1358,11 @@ export async function main(argv = process.argv.slice(2)) {
 			const base = findBase(args, doc.toString(AS_WRITTEN), repo);
 			say(`✔ lefthook.yml: ${writeStructure(repo, projects, doc, base, args).join(', ') || 'nothing'} before each push, against ${base}`);
 		}
+		if (eslintSets.includes('vitest')) quarantineStatus = wireQuarantineScript(repo, doc);
 	});
 	if (!hooked && (sets.includes('typecheck') || structure))
 		say('→ typecheck and structure run as lefthook pre-push steps, and this repository has no lefthook.yml');
+	if (eslintSets.includes('vitest')) sayQuarantineGuidance(hooked ? quarantineStatus : 'no-lefthook');
 	say('done');
 	return 0;
 }
