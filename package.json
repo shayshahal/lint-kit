@@ -34,7 +34,8 @@
 		"oxlint": "1.81.0",
 		"svelte": "^5.57.1",
 		"svelte-eslint-parser": "^1.8.1",
-		"typescript": "^5.9.3"
+		"typescript": "^5.9.3",
+		"vitest": "4.1.11"
 	},
 	"packageManager": "pnpm@11.3.0"
 }

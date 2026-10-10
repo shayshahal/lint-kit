@@ -4,10 +4,12 @@
  *
  * It runs the selected upstream plugin (@vitest/eslint-plugin) through ESLint's real RuleTester
  * against installed tooling, so the documented claims — which focused/async/skip APIs are caught,
- * which aliases are not, and that shadowed identifiers pass — are checked, not asserted in prose.
+ * which aliases are local shadows, and which imported names resolve to Vitest — are checked, not
+ * asserted in prose. What the rule accepts is not proof the shape runs; the companion
+ * test/agent-skills-vitest-runner.test.js runs the pinned Vitest CLI for that.
  *
  * No lint-kit testing set is installed by this issue. #47-#49 build on these results and must
- * not restate them as coverage the plugin does not provide (for example, `fit`/`fdescribe`).
+ * not restate them as coverage the plugin does not provide.
  */
 
 import assert from 'node:assert/strict';
@@ -24,7 +26,8 @@ const FROZEN_PLUGIN_VERSION = '1.6.27';
 
 /**
  * Vitest's test globals as a consumer's config declares them. The selected rules use scope
- * analysis, so a locally bound `test`/`it`/`expect` is unrelated and must stay valid.
+ * analysis: a locally bound `test`/`it`/`expect` is unrelated and must stay valid, while an
+ * imported binding is recognized only when its source is `vitest`.
  */
 const vitestGlobals = {
 	test: 'readonly',
@@ -32,10 +35,6 @@ const vitestGlobals = {
 	describe: 'readonly',
 	expect: 'readonly',
 	vi: 'readonly',
-	fit: 'readonly',
-	fdescribe: 'readonly',
-	xit: 'readonly',
-	xdescribe: 'readonly',
 };
 
 const tester = new RuleTester({
@@ -53,16 +52,11 @@ describe('no-focused-tests', () => {
 		valid: [
 			"test('runs', () => {});",
 			"describe('group', () => {});",
-			// Documented gaps: the maintained rule checks `it`/`test`/`describe` only, so the
-			// focus aliases pass here (no-test-prefixes below catches them), and a `.only`
-			// applied after `.each` is not resolved to a focused call.
-			"fit('alias', () => {});",
-			"fdescribe('alias', () => {});",
-			"describe.each([1]).only('gap', () => {});",
-			"it.each([1]).only('gap', () => {});",
-			// Shadowed runner names are unrelated objects, not vitest calls.
+			// Locally bound runner names are unrelated objects, not Vitest calls.
 			"const test = { only: () => {} };\ntest.only('other');",
 			'function it() {}\nit.only("other");',
+			// An import from another library does not resolve to Vitest.
+			"import { test } from 'some-other-lib';\ntest.only('other');",
 		],
 		invalid: [
 			{
@@ -90,18 +84,17 @@ describe('no-focused-tests', () => {
 				output: "test.each([1])('e', () => {});",
 				errors: [{ message: 'Focused tests are not allowed' }],
 			},
-		],
-	});
-});
-
-describe('no-test-prefixes', () => {
-	tester.run('no-test-prefixes', vitestRule('no-test-prefixes'), {
-		valid: ["test('runs', () => {});", "describe('group', () => {});", "test.skip('skip', () => {});"],
-		invalid: [
-			{ code: "fit('a', () => {});", output: "it.only('a', () => {});", errors: [{ message: 'Use "it.only" instead' }] },
-			{ code: "fdescribe('b', () => {});", output: "describe.only('b', () => {});", errors: [{ message: 'Use "describe.only" instead' }] },
-			{ code: "xit('c', () => {});", output: "it.skip('c', () => {});", errors: [{ message: 'Use "it.skip" instead' }] },
-			{ code: "xdescribe('d', () => {});", output: "describe.skip('d', () => {});", errors: [{ message: 'Use "describe.skip" instead' }] },
+			// Imported aliases resolve to the Vitest test function, whatever the local name.
+			{
+				code: "import { test as t } from 'vitest';\nt.only('f', () => {});",
+				output: "import { test as t } from 'vitest';\nt('f', () => {});",
+				errors: [{ message: 'Focused tests are not allowed' }],
+			},
+			{
+				code: "import { it as test } from 'vitest';\ntest.only('g', () => {});",
+				output: "import { it as test } from 'vitest';\ntest('g', () => {});",
+				errors: [{ message: 'Focused tests are not allowed' }],
+			},
 		],
 	});
 });
@@ -111,14 +104,24 @@ describe('valid-expect', () => {
 		valid: [
 			"test('awaited', async () => { await expect(fetch('x')).resolves.toBe('y'); });",
 			"test('returned', () => { return expect(fetch('x')).resolves.toBe('y'); });",
-			"test('callback', (done) => { expect(1).toBe(1); done(); });",
+			"test('synchronous', () => { expect(1).toBe(1); });",
 			"test('shadowed expect', () => { const expect = (v) => v; expect(1); });",
+			// The rule accepts the callback `done` form; the pinned runner deprecates it, so the
+			// runner fixture proves it is NOT a legitimate passing shape (see vitest-runner.test.js).
+			"test('done form', (done) => { expect(1).toBe(1); done(); });",
 		],
 		invalid: [
 			// The fixer makes the callback async and awaits the assertion.
 			{
 				code: "test('unawaited', () => { expect(fetch('x')).resolves.toBe('y'); });",
 				output: "test('unawaited', async () => { await expect(fetch('x')).resolves.toBe('y'); });",
+				errors: [{ message: 'Async assertions must be awaited or returned' }],
+			},
+			// An imported alias of `expect` is still the Vitest assertion.
+			{
+				code: "import { expect as e, test } from 'vitest';\ntest('alias', () => { e(fetch('x')).resolves.toBe('y'); });",
+				output:
+					"import { expect as e, test } from 'vitest';\ntest('alias', async () => { await e(fetch('x')).resolves.toBe('y'); });",
 				errors: [{ message: 'Async assertions must be awaited or returned' }],
 			},
 		],
@@ -141,15 +144,15 @@ describe('valid-expect-in-promise', () => {
 					},
 				],
 			},
-		],
-	});
-});
-
-describe('no-standalone-expect', () => {
-	tester.run('no-standalone-expect', vitestRule('no-standalone-expect'), {
-		valid: ["test('inside', () => { expect(1).toBe(1); });", 'const expect = (v) => v;\nexpect(1);'],
-		invalid: [
-			{ code: 'expect(1).toBe(1);', errors: [{ message: 'Expect must be called inside a test block' }] },
+			{
+				code: "import { test as t } from 'vitest';\nt('floating alias', () => { fetch('x').then((r) => { expect(r).toBe('y'); }); });",
+				errors: [
+					{
+						message:
+							'This promise should either be returned or awaited to ensure the expects in its chain are called',
+					},
+				],
+			},
 		],
 	});
 });
@@ -160,25 +163,31 @@ describe('no-disabled-tests', () => {
 			"test('runs', () => {});",
 			"test.todo('later');",
 			"it.todo('later');",
-			// Conditional platform skips are the runner's supported form and stay valid.
+			// The runner's supported conditional skips stay valid.
 			"test.skipIf(process.platform === 'win32')('win', () => {});",
 			"test.runIf(true)('runs', () => {});",
-			'const xit = () => {};\nxit("other");',
-			// Documented gap: a `.skip` applied after `.each` is not resolved to a disabled call.
-			"test.each([1]).skip('gap', () => {});",
-			"describe.each([1]).skip('gap', () => {});",
+			// Local shadows and non-Vitest imports are unrelated.
+			'const test = { skip: () => {} };\ntest.skip("other");',
+			"import { test } from 'some-other-lib';\ntest.skip('other');",
 		],
 		invalid: [
 			{ code: "test.skip('a', () => {});", errors: [{ message: /Disabled test/ }] },
 			{ code: "it.skip('b', () => {});", errors: [{ message: /Disabled test/ }] },
 			{ code: "describe.skip('c', () => {});", errors: [{ message: /Disabled test suite/ }] },
-			{ code: "xit('d', () => {});", errors: [{ message: /Disabled test/ }] },
-			{ code: "xdescribe('e', () => {});", errors: [{ message: /Disabled test suite/ }] },
 			{ code: "test.skip.each([1])('f', () => {});", errors: [{ message: /Disabled test/ }] },
-			// Documented limit: a `.skip` carrying a condition is still reported; the plugin does
-			// not separate it from an unconditional skip. #49 must add that policy itself.
+			// Imported aliases of the test function are reported.
 			{
-				code: "test.skip(process.platform === 'win32', 'win only', () => {});",
+				code: "import { test as t } from 'vitest';\nt.skip('g', () => {});",
+				errors: [{ message: /Disabled test/ }],
+			},
+			{
+				code: "import { it as test } from 'vitest';\ntest.skip('h', () => {});",
+				errors: [{ message: /Disabled test/ }],
+			},
+			// `test.skip` takes no condition: this is an unconditional skip whose name is `false`
+			// (proved by the runner fixture). Reporting it is correct, not a false positive.
+			{
+				code: "test.skip(false, 'win only', () => {});",
 				errors: [{ message: /Disabled test/ }],
 			},
 		],
