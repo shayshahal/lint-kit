@@ -209,20 +209,86 @@ test('measured overlap: the concise form is one owned finding, the block form tw
 	const blockFixed = new Linter({ configType: 'flat' }).verifyAndFix(blockCode, [PARSER, ...config()], 'src/a.test.js');
 	assert.deepEqual(blockFixed.messages.map((m) => m.ruleId), ['vitest/valid-expect-in-promise']);
 
-	// Concise arrow: the two rules report nodes at the same start, and one valid-expect fix — await
-	// the chain — clears both. The owner keeps the single finding and the held report is dropped.
+	// Concise arrow: the two rules report the same promise expression, and one valid-expect fix —
+	// await the chain — clears both. The owner keeps the single finding and the held report is
+	// dropped.
 	const conciseCode = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
 	const concise = lint(conciseCode, 'src/a.test.js');
 	assert.deepEqual(concise.map((m) => `${m.ruleId}@${m.line}:${m.column}`), ['vitest/valid-expect@1:19']);
 	const conciseFixed = new Linter({ configType: 'flat' }).verifyAndFix(conciseCode, [PARSER, ...config()], 'src/a.test.js');
 	assert.deepEqual(conciseFixed.messages, []);
 	assert.equal(conciseFixed.output, "test('x', async () => { await fetch('u').then((r) => expect(r).resolves.toBe('y')); });");
+
+	// Assignment: the held report's node is the declarator and the owner's is the promise expression
+	// inside it. They are the same promise, so one owner keeps one finding, and the owner's single
+	// upstream fix — await the chain — clears both.
+	const assignedCode = "test('x', () => { const p = fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	const assigned = lint(assignedCode, 'src/a.test.js');
+	assert.deepEqual(assigned.map((m) => `${m.ruleId}@${m.line}:${m.column}`), ['vitest/valid-expect@1:29']);
+	const assignedFixed = new Linter({ configType: 'flat' }).verifyAndFix(assignedCode, [PARSER, ...config()], 'src/a.test.js');
+	assert.deepEqual(assignedFixed.messages, []);
+	assert.equal(assignedFixed.output, "test('x', async () => { const p = await fetch('u').then((r) => expect(r).resolves.toBe('y')); });");
+});
+
+test('a reused SourceCode is not owned by a previous run (owner-on, then owner-off)', () => {
+	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	const linter = new Linter({ configType: 'flat' });
+	// The first run reports the concise chain once, through its owner.
+	assert.deepEqual(linter.verify(concise, config(), 'src/a.test.js').map((m) => m.ruleId), ['vitest/valid-expect']);
+	// The *same* SourceCode object, now with the owner off. If the ownership state survived the run,
+	// the held report would still see the owner's promise expression and be dropped — a false clean.
+	// The owner-off fallback must report instead.
+	const sourceCode = linter.getSourceCode();
+	assert.deepEqual(
+		linter.verify(sourceCode, config({ rules: { 'vitest/valid-expect': 'off' } }), 'src/a.test.js').map((m) => m.ruleId),
+		['vitest/valid-expect-in-promise'],
+	);
+	// Back to the owner on, on the same SourceCode: still exactly one finding.
+	assert.deepEqual(
+		linter.verify(sourceCode, config(), 'src/a.test.js').map((m) => m.ruleId),
+		['vitest/valid-expect'],
+	);
+});
+
+test('an owner-only run leaves nothing for a held-only run on the same SourceCode', () => {
+	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	const linter = new Linter({ configType: 'flat' });
+	const ownerOnly = config({ rules: { 'vitest/valid-expect-in-promise': 'off' } });
+	const heldOnly = config({ rules: { 'vitest/valid-expect': 'off' } });
+	assert.deepEqual(linter.verify(concise, ownerOnly, 'src/a.test.js').map((m) => m.ruleId), ['vitest/valid-expect']);
+	const sourceCode = linter.getSourceCode();
+	assert.deepEqual(
+		linter.verify(sourceCode, heldOnly, 'src/a.test.js').map((m) => m.ruleId),
+		['vitest/valid-expect-in-promise'],
+	);
+});
+
+test('the release does not depend on the order the two producers are registered', () => {
+	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	const [entry] = config();
+	// The same public config, with the two async rule entries reversed. Both rules report from
+	// Program:exit, so releasing the held report at the first exit would duplicate the finding; the
+	// release waits for every enabled participant, so the order does not matter.
+	const reversed = {
+		...entry,
+		rules: {
+			'vitest/valid-expect-in-promise': entry.rules['vitest/valid-expect-in-promise'],
+			'vitest/valid-expect': entry.rules['vitest/valid-expect'],
+			'vitest/no-focused-tests': entry.rules['vitest/no-focused-tests'],
+		},
+	};
+	assert.deepEqual(
+		new Linter({ configType: 'flat' }).verify(concise, [reversed], 'src/a.test.js').map((m) => m.ruleId),
+		['vitest/valid-expect'],
+	);
 });
 
 test('the owner keeps the finding, and the held report is not stale across runs or files', () => {
 	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
-	// A repeated verify of the same file, and the same code under another filename, both start from
-	// empty: the ownership registry lives on the file's SourceCode, not in module state.
+	// A repeated verify of the same file, and the same code under another filename, each start from
+	// empty: the state is released when a run's participants finish. The stronger case — one actual
+	// SourceCode object reused across configuration changes — is the test above, not this string
+	// loop.
 	for (const file of ['src/a.test.js', 'src/a.test.js', 'src/b.test.js']) {
 		assert.deepEqual(lint(concise, file).map((m) => m.ruleId), ['vitest/valid-expect'], file);
 	}

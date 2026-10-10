@@ -94,9 +94,15 @@ Only a chain the test never waits for is the false pass; the returned chain is t
 The two async rules overlap on one shape: a floating chain whose callback body is a single async
 assertion, `fetch(u).then((r) => expect(r).resolves.toBe(y))`, concise or block-bodied.
 `valid-expect` owns the assertion and `valid-expect-in-promise` holds its report, dropping it when
-the owner reported a node at the same start. The concise-arrow form is therefore one finding and
-one fix (`--fix` awaits the chain); the block form reports the chain and the inner assertion at
-different starts, each with its own fix, and keeps both.
+the owner reported the same promise expression. The concise-arrow form is therefore one finding and
+one fix (`--fix` awaits the chain); an assignment (`const p = fetch(u).then(…)`) is also one finding,
+because the two rules' report nodes — the declarator and the promise expression inside it — reduce
+to the same promise. The block form reports the chain and the inner assertion, two different promise
+expressions each with its own fix, and keeps both.
+
+Ownership does not depend on the order the two rules are registered, and it does not outlive the
+run: the held report is released once every enabled rule has finished, and a reused `SourceCode`
+starts clean, so a later run with the owner disabled still reports.
 
 Severity follows the owning rule's entry: `'vitest/valid-expect': 'warn'` leaves one warn finding,
 not an error reintroduced by the held rule. With the owner disabled

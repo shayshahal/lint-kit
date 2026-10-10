@@ -28,9 +28,10 @@
  * a floating `.then`/`.catch`/`.finally` chain whose callback body is a single async assertion.
  * `valid-expect` owns that assertion and `valid-expect-in-promise` holds its report (see
  * `coordinateReports`), so the concise-arrow form `fetch(u).then((r) => expect(r).resolves.toBe(y))`
- * is one finding whose one fix clears it, while the block-body form reports two different nodes
- * with two fixes and keeps both. `test/agent-skills-vitest-set.test.js` measures exactly which shapes
- * overlap.
+ * is one finding whose one fix clears it, and the assigned form `const p = fetch(u).then(…)` is one
+ * finding too because the two reports reduce to the same promise expression. The block-body form
+ * reports two different promise expressions with two fixes and keeps both.
+ * `test/agent-skills-vitest-set.test.js` measures exactly which shapes overlap.
  *
  * No other rule from the plugin is turned on. Its `recommended` config would also enable the skip
  * rules, which are their own slice (#49), and this set adds nothing to oxlint or Jest: one engine
@@ -86,38 +87,62 @@ const ASYNC_RULE_ROLE = { 'valid-expect': 'owner', 'valid-expect-in-promise': 'h
  * Report-level coordination between the two async rules, which is what keeps one assertion with one
  * owner. The concise arrow `fetch(u).then((r) => expect(r).resolves.toBe(y))` is a floating chain
  * (`valid-expect-in-promise`) whose body is also an unawaited assertion (`valid-expect`). The two
- * rules report different nodes that start at the same offset, and one `valid-expect` fix — await the
- * chain — clears both, so this is one finding: the owner keeps it, and the held report whose node
- * starts where an owned report's node starts is dropped. A block body reports the chain and the
- * inner assertion at different starts, each with its own fix, so both stay; an assignment reports
- * the declarator and the chain at different starts, so both stay.
+ * rules report the same promise expression (see `promiseExpression`) and one `valid-expect` fix —
+ * await the chain — clears both, so this is one finding: the owner keeps it and the held report for
+ * the same promise is dropped. A block body reports the chain and the inner assertion, two
+ * different promise expressions each with its own fix, so both stay; an assignment reports the
+ * declarator and the promise expression inside it, which reduce to the same promise, so it is one
+ * finding whose one fix awaits the chain.
  *
- * The owner reports from `Program:exit`, so the held reports are released from `Program:exit` too.
- * The set lists the owner first, which is the order ESLint registers the two `Program:exit`
- * listeners in, so the owner has reported before the held reports are released. If the owner is
+ * Both rules report from `Program:exit`, and the two are registered in whatever order the config
+ * lists them. The held reports are therefore not released at the first `Program:exit`: each enabled
+ * rule marks itself finished, and the release — using the held report's captured context, so its
+ * own rule and severity survive — runs when the last participant has finished. If the owner is
  * disabled nothing is owned and every held report is released.
  *
- * The registry is keyed by the file's `SourceCode`, one per file per lint run, so a second file, a
- * repeated `verify`, and an autofix pass each start empty.
+ * The registry is keyed by the file's `SourceCode`. ESLint may reuse one `SourceCode` across
+ * `verify` calls, so the state is released, and the entry dropped, as soon as every participant of
+ * that run has finished; the next run starts empty rather than inheriting the previous owner's
+ * promises.
  */
 const reportOwnership = new WeakMap();
 
-/** The per-`SourceCode` ownership state: the owner's node starts, and the held reports. */
+/** The per-`SourceCode` coordination state: the promise expressions the owner reported, the held
+ * reports, and how many coordinated rules are still running. */
 function ownershipFor(sourceCode) {
 	let state = reportOwnership.get(sourceCode);
 	if (!state) {
-		state = { ownedStarts: new Set(), held: [] };
+		state = { ownedRoots: new Set(), held: [], pending: 0 };
 		reportOwnership.set(sourceCode, state);
 	}
 	return state;
 }
 
-/** Where a report's node starts: the position the two rules share when they report one assertion. */
-function nodeStart(descriptor) {
-	const start = descriptor.node?.range?.[0];
-	if (start !== undefined) return start;
-	const loc = descriptor.loc?.start ?? descriptor.node?.loc?.start;
-	return loc ? `loc:${loc.line}:${loc.column}` : null;
+/**
+ * The promise expression a report is about. The two rules report one promise through different
+ * nodes: `valid-expect` reports the promise expression itself, while `valid-expect-in-promise`
+ * reports the statement or declaration that wraps it. Reducing a report to the expression it wraps
+ * gives the two rules one identity for one promise, so an assignment's declarator and its chain are
+ * recognized as the same promise instead of two. This is a plain unwrap of the containers the AST
+ * puts around an expression, not an assertion or promise-chain matcher.
+ */
+function promiseExpression(node) {
+	switch (node?.type) {
+		case 'ExpressionStatement':
+			return node.expression;
+		case 'VariableDeclarator':
+			return node.init ?? node;
+		case 'AssignmentExpression':
+			return node.right;
+		default:
+			return node ?? null;
+	}
+}
+
+/** A report's promise expression, or its location when it has no node. */
+function reportRoot(descriptor) {
+	const expression = descriptor.node ? promiseExpression(descriptor.node) : null;
+	return expression ?? descriptor.loc ?? null;
 }
 
 /**
@@ -131,34 +156,39 @@ function coordinateReports(role, rule) {
 		create(context) {
 			const state = ownershipFor(context.sourceCode);
 			const report = context.report.bind(context);
+			state.pending += 1;
 
-			if (role === 'owner') {
-				const owning = Object.create(context, {
-					report: {
-						value: (descriptor) => {
-							const start = nodeStart(descriptor);
-							if (start !== null) state.ownedStarts.add(start);
-							report(descriptor);
-						},
-					},
-				});
-				return rule.create(owning);
-			}
+			/** The owner's report: record the promise it is about, then report it through the rule. */
+			const own = (descriptor) => {
+				const root = reportRoot(descriptor);
+				if (root !== null) state.ownedRoots.add(root);
+				report(descriptor);
+			};
 
-			const holding = Object.create(context, {
-				report: { value: (descriptor) => state.held.push(descriptor) },
-			});
-			const listeners = rule.create(holding);
+			let finished = false;
+			/** Mark this participant done; the last one releases the held reports and the state. */
+			const finish = () => {
+				if (finished) return;
+				finished = true;
+				if (--state.pending > 0) return;
+				for (const descriptor of state.held) {
+					const root = reportRoot(descriptor);
+					if (root === null || !state.ownedRoots.has(root)) report(descriptor);
+				}
+				state.held = [];
+				reportOwnership.delete(context.sourceCode);
+			};
+
+			const listeners =
+				role === 'owner'
+					? rule.create(Object.create(context, { report: { value: own } }))
+					: rule.create(Object.create(context, { report: { value: (descriptor) => state.held.push(descriptor) } }));
 			const upstreamExit = listeners['Program:exit'];
 			return {
 				...listeners,
 				'Program:exit'(node) {
 					upstreamExit?.(node);
-					for (const descriptor of state.held) {
-						const start = nodeStart(descriptor);
-						if (start === null || !state.ownedStarts.has(start)) report(descriptor);
-					}
-					state.held = [];
+					finish();
 				},
 			};
 		},
