@@ -26,6 +26,7 @@
 	"devDependencies": {
 		"@oxlint/plugins": "1.81.0",
 		"@typescript-eslint/parser": "^8.71.0",
+		"@vitest/eslint-plugin": "1.6.27",
 		"eslint": "^10.11.0",
 		"eslint-plugin-svelte": "^3.23.0",
 		"jscpd": "^5.4.0",
