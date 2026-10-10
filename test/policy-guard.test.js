@@ -948,3 +948,87 @@ test('a test rename stays advisory and makes no coverage claim', () => {
 	assert.match(result.stdout, /non-enrolled file\(s\) changed \(advisory\)/);
 	assert.doesNotMatch(result.stdout, /coverage/);
 });
+
+// ── strict UTF-8 decoding of the raw bytes before JSONC/enrollment parsing ────────
+
+/** Concatenates UTF-8 string pieces and raw byte pieces into one Buffer. */
+const concatBytes = (...pieces) => Buffer.concat(pieces.map((piece) => (typeof piece === 'string' ? Buffer.from(piece, 'utf8') : piece)));
+
+const UTF8_REPLACEMENT_BYTE = Buffer.from([0xff]);
+const UTF8_LITERAL_REPLACEMENT_CHAR = Buffer.from([0xef, 0xbf, 0xbd]);
+const UTF8_BYTE_ORDER_MARK = Buffer.from([0xef, 0xbb, 0xbf]);
+
+/** A complete fallow config with `schema` in `$schema` and `maxCognitive` as the one ceiling. */
+const fallowBytes = (schema, maxCognitive) =>
+	concatBytes(`{"$schema":"${schema}","health":{"maxCognitive":${maxCognitive},"maxCrap":100000},"rules":{"unused-types":"warn"},"ignorePatterns":[]}\n`);
+
+test('jsonc: an invalid byte in the target is not read as a literal U+FFFD', () => {
+	const trusted = concatBytes('{"$schema":"', UTF8_LITERAL_REPLACEMENT_CHAR, '","health":{"maxCognitive":25,"maxCrap":100000},"rules":{"unused-types":"warn"},"ignorePatterns":[]}\n');
+	const target = concatBytes('{"$schema":"', UTF8_REPLACEMENT_BYTE, '","health":{"maxCognitive":25,"maxCrap":100000},"rules":{"unused-types":"warn"},"ignorePatterns":[]}\n');
+	const dir = fallowProject('jsonc-invalid-target', { files: { '.fallowrc.json': trusted } });
+	branch(dir);
+	write(dir, '.fallowrc.json', target);
+	commit(dir, 'invalid byte outside an enrolled value');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 2, `${result.stdout}${result.stderr}`);
+	assert.match(result.stderr, /\.fallowrc\.json is not valid UTF-8 at --target/);
+});
+
+test('jsonc: an invalid byte in the trusted snapshot fails with 2', () => {
+	const trusted = concatBytes('{"$schema":"', UTF8_REPLACEMENT_BYTE, '","health":{"maxCognitive":25,"maxCrap":100000},"rules":{"unused-types":"warn"},"ignorePatterns":[]}\n');
+	const target = concatBytes('{"$schema":"', UTF8_LITERAL_REPLACEMENT_CHAR, '","health":{"maxCognitive":20,"maxCrap":100000},"rules":{"unused-types":"warn"},"ignorePatterns":[]}\n');
+	const dir = fallowProject('jsonc-invalid-trusted', { files: { '.fallowrc.json': trusted } });
+	branch(dir);
+	write(dir, '.fallowrc.json', target);
+	commit(dir, 'tighten while the trusted snapshot holds an invalid byte');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 2, `${result.stdout}${result.stderr}`);
+	assert.match(result.stderr, /\.fallowrc\.json is not valid UTF-8 at --trusted-ref/);
+});
+
+test('jsonc: an invalid byte in the enrollment file fails with 2', () => {
+	const dir = repository('jsonc-invalid-enrollment');
+	installTool(dir);
+	write(
+		dir,
+		'lint-kit.policy.json',
+		concatBytes('{"version":1,"enrollments":[{"id":"fallow","source":"configs/', UTF8_REPLACEMENT_BYTE, '.json","format":"opaque"}]}\n'),
+	);
+	commit(dir, 'base with an invalid enrollment byte');
+	branch(dir);
+	write(dir, 'src/app.ts', 'export const x = 1;\n');
+	commit(dir, 'unrelated change');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 2, `${result.stdout}${result.stderr}`);
+	assert.match(result.stderr, /lint-kit\.policy\.json is not valid UTF-8 at --trusted-ref/);
+});
+
+test('jsonc: a literal U+FFFD and further unicode survive a tightening', () => {
+	const schema = '\uFFFD\u2014na\u00efve\u{1F600}';
+	const dir = fallowProject('jsonc-unicode-tighten', { files: { '.fallowrc.json': fallowBytes(schema, 25) } });
+	branch(dir);
+	write(dir, '.fallowrc.json', fallowBytes(schema, 20));
+	commit(dir, 'tighten the ceiling while the valid unicode stays');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 0, `${result.stdout}${result.stderr}`);
+	assert.match(result.stdout, /no unapproved enrolled change since main/);
+});
+
+test('jsonc: a changed literal U+FFFD is still a review, not a silent match', () => {
+	const dir = fallowProject('jsonc-fffd-edit', { files: { '.fallowrc.json': fallowBytes('\uFFFD', 25) } });
+	branch(dir);
+	write(dir, '.fallowrc.json', fallowBytes('plain', 25));
+	commit(dir, 'replace the literal replacement character');
+	const result = guard(dir, guardArgs());
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stdout, /enrolled-unrecognized: a value changed outside the enrolled identities/);
+});
+
+test('jsonc: adding a byte-order mark is a visible edit, not an implicit normalization', () => {
+	const dir = fallowProject('jsonc-bom-added');
+	branch(dir);
+	write(dir, '.fallowrc.json', concatBytes(UTF8_BYTE_ORDER_MARK, fallowBytes('\uFFFD', 25)));
+	commit(dir, 'add a byte-order mark');
+	const result = guard(dir, guardArgs());
+	assert.notEqual(result.code, 0, `${result.stdout}${result.stderr}`);
+});

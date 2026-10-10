@@ -115,6 +115,11 @@ stores no number or severity. A change outside the declared identities — anoth
 or whitespace — is `enrolled-unrecognized` and requires review, so parsing does not silently drop
 the rest of the file. A missing, wrong-typed or non-JSONC value is exit `2`, never a default.
 
+The enrollment file, the `--trusted-ref` source and the target source are each decoded as strict
+UTF-8 before parsing. An invalid byte is exit `2` rather than being replaced with U+FFFD, so it
+cannot read the same as a literal U+FFFD in the trusted snapshot and pass silently. A byte-order
+mark is kept as text, so adding or removing one is a visible edit, not an implicit normalization.
+
 The parser is loaded only when a `jsonc` enrollment has a changed source, so an `opaque`-only
 repository never needs it. If the copied command cannot load `jsonc-parser`, the run exits `2`
 rather than failing as an uncaught module error.

@@ -401,6 +401,23 @@ function sameBytes(left, right) {
 	return left.equals(right);
 }
 
+/**
+ * The text of raw file bytes, decoded as strict UTF-8. `Buffer.toString('utf8')` and a
+ * non-fatal `TextDecoder` both replace every invalid byte with U+FFFD, so an invalid byte in the
+ * target would read exactly like a literal U+FFFD in the trusted snapshot and the change would
+ * pass silently. A fatal decoder throws instead, so a byte sequence that is not valid UTF-8
+ * fails closed (exit 2) at the owning raw-byte boundary. `ignoreBOM: true` keeps a byte-order
+ * mark as text, so adding or removing one is a visible residual edit rather than an implicit
+ * normalization that hides it.
+ */
+function decodeUtf8Strict(bytes, source, snapshot) {
+	try {
+		return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+	} catch {
+		throw new PolicyGuardError(`${source} is not valid UTF-8 at ${snapshot}`);
+	}
+}
+
 /** A parsed JSONC document with every comment text, so an edit outside the values is still seen. */
 function parseJsoncDocument(text, source, snapshot) {
 	const jsonc = loadJsoncParser();
@@ -500,8 +517,8 @@ function fallowResidual(document, ranges) {
  */
 function compareFallowSource(trustedBytes, targetBytes, identities, source) {
 	const uniqueIdentities = [...new Map(identities.map((identity) => [identity.id, identity])).values()];
-	const trustedDocument = parseJsoncDocument(trustedBytes.toString('utf8'), source, '--trusted-ref');
-	const targetDocument = parseJsoncDocument(targetBytes.toString('utf8'), source, '--target');
+	const trustedDocument = parseJsoncDocument(decodeUtf8Strict(trustedBytes, source, '--trusted-ref'), source, '--trusted-ref');
+	const targetDocument = parseJsoncDocument(decodeUtf8Strict(targetBytes, source, '--target'), source, '--target');
 	const trustedRanges = [];
 	const targetRanges = [];
 	const details = [];
@@ -575,7 +592,7 @@ function runPolicyGuard(options) {
 	if (policyBytes === null) {
 		throw new PolicyGuardError(`policy ${policyPath} does not exist at --trusted-ref ${options.trustedRef}`);
 	}
-	const { paths: enrolled, enrollments } = parseEnrollmentPolicy(policyBytes.toString('utf8'), policyPath);
+	const { paths: enrolled, enrollments } = parseEnrollmentPolicy(decodeUtf8Strict(policyBytes, policyPath, '--trusted-ref'), policyPath);
 	const mergeBase = findMergeBase(repo, targetSha, baseSha);
 	const changes = readChangedPaths(repo, mergeBase, targetSha);
 	let workingTreeBytes = null;
