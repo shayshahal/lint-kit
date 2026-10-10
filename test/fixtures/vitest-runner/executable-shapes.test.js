@@ -10,6 +10,18 @@ test('synchronous assertion', () => {
 	expect(1).toBe(1);
 });
 
+test('awaited promise assertion', async () => {
+	await expect(Promise.resolve(1)).resolves.toBe(1);
+});
+
+test('returned promise assertion', () => {
+	return expect(Promise.resolve(1)).resolves.toBe(1);
+});
+
+test.fails('expected failure executes', () => {
+	expect(1).toBe(2);
+});
+
 // `test.skip` takes no condition. The first argument becomes the test name, so this is an
 // unconditional skip named "false" — the string "looks conditional" is ignored by the runner.
 test.skip(false, 'looks conditional', () => {

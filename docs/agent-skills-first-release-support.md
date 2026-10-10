@@ -88,7 +88,7 @@ The implementing issues must not claim more than these show.
 | --- | --- |
 | Rule | `vitest/no-disabled-tests` (blocking under enrolled policy) |
 | Failing example | `test.skip('a', …)`, `it.skip(…)`, `describe.skip(…)`, `test.skip.each([…])(…)`, and their aliased-import forms |
-| Counterexamples that must pass | `test.todo(…)` / `it.todo(…)`; the conditional forms `test.skipIf(cond)(…)` and `test.runIf(cond)(…)`; a locally bound `test`; a `test.skip` imported from a library other than `vitest` |
+| Counterexamples that must pass | `test.todo(…)` / `it.todo(…)`; `test.fails(…)` expected failures; the conditional forms `test.skipIf(cond)(…)` and `test.runIf(cond)(…)`; a locally bound `test`; a `test.skip` imported from a library other than `vitest` |
 | Limits to record | There is no conditional `test.skip` API: the runner treats the first argument as the test name, so `test.skip(cond, 'why', …)` is an unconditional skip named after the condition value (the runner fixture pins this). `test.each([…]).skip` is a collection failure, not a skip. #49's scoped reason/owner/expiry quarantine (its own minimal format) is the only way to allow a real skip, and the plugin alone does not provide it |
 
 The three sets above stay one owner each. No lint rule is added to `slop-patterns`, and the
@@ -141,8 +141,8 @@ own configuration at the trusted and target snapshots — never copied here.
       "format": "jsonc",
       "adapter": "fallow-jsonc",
       "identities": [
-        { "id": "health.maxCognitive", "unit": "count", "direction": "max" },
-        { "id": "health.maxCrap", "unit": "count", "direction": "max" },
+        { "id": "health.maxCognitive", "unit": "score", "direction": "max" },
+        { "id": "health.maxCrap", "unit": "score", "direction": "max" },
         { "id": "rules", "unit": "severity-map", "direction": "min" },
         { "id": "ignorePatterns", "unit": "glob-list", "direction": "subset" }
       ]
@@ -156,7 +156,7 @@ own configuration at the trusted and target snapshots — never copied here.
 }
 ```
 
-- `source` is the authoritative checker configuration. `format` is `json`, `jsonc` or `opaque`;
+- `source` is the authoritative checker configuration. This freeze supports `jsonc` or `opaque`;
   `opaque` means the whole file is protected but not parsed, so any change requires review.
 - `identity` names the value inside that source. `unit` and `direction` are identity: changing
   either is a policy change, not a comparable number. Direction is never inferred from
@@ -175,16 +175,18 @@ own configuration at the trusted and target snapshots — never copied here.
   writes — real JSONC despite the `.json` suffix. It carries `//` comments and a `$schema`, so a
   strict-JSON reader fails on it; `test/agent-skills-fallow-config.test.js` proves that against the
   installer's own output.
-- Read: strip `//` and `/* */` comments, then parse with a JSON parser. Comments are data; no
-  `.js`/`.ts`/`.cjs` module is imported, evaluated or executed, and no expression is interpreted.
+- Read with the maintained `jsonc-parser` `3.3.1`, preserving strings (including URLs) and rejecting
+  parser errors. Comments are data; no `.js`/`.ts`/`.cjs` module is imported, evaluated or executed,
+  and no expression is interpreted.
 - Produce the declared identity's value at the trusted snapshot (`git show <trusted-ref>:<source>`)
   and at the target snapshot.
 - An absent, wrong-typed, or non-JSONC identity (a JS expression, a template, a function call) is
   exit `2` — never a default, never "clean".
 - A change elsewhere in the same file, outside the declared identities, is an enrolled opaque
   change: exit `1`, review required, with no fabricated verdict.
-- YAML/TOML checker configurations are **not** frozen: no first-release checker writes one, so
-  accepting them would be untested format expansion. They are a deferred decision, not support.
+- YAML/TOML checker adapters are **not** frozen. Existing Python thresholds can live in
+  `pyproject.toml`, but parsing their semantics is deferred; an opaque enrollment still protects
+  edits. This first slice does not claim every checker configuration is parsed.
 
 Unknown keys and unknown enum values in `lint-kit.policy.json` are parse errors (exit `2`).
 Approval is never read from the file: there is no `APPROVED-BY` field, and approvals come from the
@@ -192,8 +194,11 @@ protected forge process (§6).
 
 ### 3.2 CLI, exit and baseline contract
 
-- The command takes an explicit `--base` and `--target`, plus a separately supplied trusted
-  enrollment (`--policy`).
+- The command takes explicit `--base`, `--target`, `--trusted-ref` and `--policy` inputs.
+  `--policy` is the repository-relative enrollment path read from the resolved trusted commit,
+  never the target or working tree. `--trusted-ref` selects that approved snapshot independently
+  of the source-change base. `--cwd` selects the source repository; `--mode committed` or
+  `--mode working-tree` declares which source snapshot is checked.
 - **Source baseline:** the diff the guard judges is the merge-base of the target and the base
   (`git merge-base`), using machine-safe path parsing. A deletion-only branch still runs.
 - **Value baselines:** guarded values are read from each enrolled `source` at two snapshots — the
@@ -215,7 +220,7 @@ protected forge process (§6).
 | --- | --- | --- | --- |
 | Threshold weakened | `.fallowrc.json` `health.maxCognitive 25 → 40` (a higher ceiling), or `health.maxCrap 100000 → 200000` | `25 → 20`, `100000 → 80000`, or an equal value (silent) | Numeric identity read from the checker source; direction declared — [#42](https://github.com/shayshahal/lint-kit/issues/42) |
 | Severity downgraded | enrolled `rules.<id>` `"error" → "warn"`/`"off"` | `"off" → "error"`; `"warn" → "error"` | Fallow JSONC adapter, per rule key — [#42](https://github.com/shayshahal/lint-kit/issues/42) |
-| Ignores widened | `ignorePatterns` gains `**` or a broader glob | a narrower ignore, or one removed | Set direction `subset`, read from the checker — [#42](https://github.com/shayshahal/lint-kit/issues/42) |
+| Ignores changed | `ignorePatterns` gains `**` or a new pattern | an unchanged list, or an ignore removed | Literal set direction `subset`; replacing a glob requires review rather than guessing language inclusion — [#42](https://github.com/shayshahal/lint-kit/issues/42) |
 | Enrolled file changed | an opaque-enrolled file (e.g. `tools/python/structure_check.py`) changes; or a change outside the declared identities of a parsed source | None auto-cleared; it requires review | Unsupported shapes are review findings, never a guessed verdict — [#41](https://github.com/shayshahal/lint-kit/issues/41) |
 | Test deleted / assertion moved | A test deleted, or an assertion removed | A rename/move pair; a legitimate `@ts-expect-error` in a type test | Advisory only; cannot establish weaker behavioral coverage — [#42](https://github.com/shayshahal/lint-kit/issues/42) |
 
@@ -282,7 +287,9 @@ Run in this worktree with the installed toolchain:
   including imported aliases and local shadows.
 - `node --test test/agent-skills-vitest-runner.test.js` — the same shapes through the pinned Vitest
   CLI: `.only` focusing, `skipIf`/`runIf`, `test.skip(cond, …)` as a name, `test.todo`, the
-  deprecated `done` callback, and `.each(…).only` failing collection.
+  deprecated `done` callback, and `.each(…).only` failing collection. The isolated focus fixture
+  explicitly uses `--allowOnly` to demonstrate focusing under CI; no consumer setting is changed.
+  Every fixture checks the process exit and report outcome, with a bounded timeout.
 - `node --test test/agent-skills-fallow-config.test.js` — the installer writes `.fallowrc.json` as
   JSONC with the enrolled identity paths, which a strict-JSON reader cannot parse.
 - `pnpm test` and `pnpm typecheck` — the full suite (including the integrated Svelte overlap test)

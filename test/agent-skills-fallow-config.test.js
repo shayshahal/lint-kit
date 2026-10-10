@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { parse as parseJsonc } from 'jsonc-parser';
 import { main } from '../bin/lint-kit.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -52,12 +53,15 @@ test('the installer writes a JSONC .fallowrc.json a strict-JSON policy reader ca
 	const source = path.join(dir, '.fallowrc.json');
 	assert.ok(fs.existsSync(source), 'the installer wrote no .fallowrc.json');
 	const text = fs.readFileSync(source, 'utf8');
-	// JSONC despite the .json suffix: comments make the strict-JSON reader fail, which is why the
-	// frozen adapter strips them instead of pretending strict JSON covers the file.
+	// JSONC despite the .json suffix: the real parser must preserve strings as it reads comments.
 	assert.throws(() => JSON.parse(text));
-	assert.match(text, /\/\//);
-	// The identities the `fallow-jsonc` adapter is frozen to read. The values live here, not in
-	// the enrollment declaration.
-	for (const identity of ['health', 'maxCognitive', 'maxCrap', 'rules', 'ignorePatterns'])
-		assert.ok(text.includes(`"${identity}"`), `.fallowrc.json has no ${identity}`);
+	const errors = [];
+	const configuration = parseJsonc(text, errors);
+	assert.deepEqual(errors, [], 'the installed configuration must be valid JSONC');
+	// These identities and values live in the actual checker source, not the enrollment.
+	assert.equal(configuration.health.maxCognitive, 25);
+	assert.equal(configuration.health.maxCrap, 100000);
+	assert.equal(configuration.rules['unused-dev-dependencies'], 'error');
+	assert.ok(configuration.ignorePatterns.includes('tools/**'));
+	assert.equal(configuration.$schema, 'https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json');
 });

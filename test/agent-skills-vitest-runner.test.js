@@ -26,16 +26,24 @@ const vitestCli = path.resolve(here, '..', 'node_modules', 'vitest', 'vitest.mjs
 /** The exact runner version frozen by #40; the plugin's optional peer must fit it. */
 const FROZEN_VITEST_VERSION = '4.1.11';
 
-/** Run one fixture through the pinned Vitest CLI; return its parsed JSON reporter output. */
-function runVitestFixture(name) {
+/** Run one fixture through the pinned Vitest CLI, checking its exit and JSON report. */
+function runVitestFixture(name, expectedExit = 0) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-kit-vitest-'));
 	const out = path.join(dir, 'report.json');
 	try {
-		spawnSync(process.execPath, [vitestCli, 'run', name, '--reporter=json', `--outputFile=${out}`], {
+		const args = [vitestCli, 'run', name, '--reporter=json', `--outputFile=${out}`];
+		// This isolated fixture intentionally demonstrates focus. CI otherwise rejects .only.
+		if (name === 'focus-shapes.test.js') args.push('--allowOnly');
+		const result = spawnSync(process.execPath, args, {
 			cwd: fixtureDir,
 			encoding: 'utf8',
+			timeout: 30_000,
 		});
-		return JSON.parse(fs.readFileSync(out, 'utf8'));
+		assert.ifError(result.error);
+		assert.equal(result.status, expectedExit, `Vitest fixture ${name}: ${result.stderr}`);
+		const report = JSON.parse(fs.readFileSync(out, 'utf8'));
+		assert.equal(report.success, expectedExit === 0, `Vitest fixture ${name}: report outcome`);
+		return report;
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
@@ -79,6 +87,9 @@ test('Vitest exposes focus only through .only, and never through .each(...)', ()
 test('a condition passed to test.skip is the test name, not a condition', () => {
 	const status = statusByTitle(runVitestFixture('executable-shapes.test.js'));
 	assert.equal(status['synchronous assertion'], 'passed');
+	assert.equal(status['awaited promise assertion'], 'passed');
+	assert.equal(status['returned promise assertion'], 'passed');
+	assert.equal(status['expected failure executes'], 'passed');
 	// The first argument is the name; "looks conditional" never becomes a test.
 	assert.equal(status.false, 'skipped');
 	assert.equal(status['looks conditional'], undefined);
@@ -96,7 +107,7 @@ test('.only focuses its test and skips its unfocused sibling', () => {
 });
 
 test('the callback done form is deprecated and fails in the frozen runner', () => {
-	const report = runVitestFixture('done-shape.test.js');
+	const report = runVitestFixture('done-shape.test.js', 1);
 	const [result] = report.testResults.flatMap((file) => file.assertionResults);
 	assert.equal(result.title, 'done callback');
 	assert.equal(result.status, 'failed');
@@ -104,7 +115,7 @@ test('the callback done form is deprecated and fails in the frozen runner', () =
 });
 
 test('a .only after .each(...) is a collection failure, not a focused test', () => {
-	const report = runVitestFixture('invalid-each-order.test.js');
+	const report = runVitestFixture('invalid-each-order.test.js', 1);
 	assert.equal(report.success, false);
 	assert.match(report.testResults[0].message, /\.only is not a function/);
 });

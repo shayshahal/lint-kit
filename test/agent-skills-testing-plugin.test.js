@@ -163,6 +163,7 @@ describe('no-disabled-tests', () => {
 			"test('runs', () => {});",
 			"test.todo('later');",
 			"it.todo('later');",
+			"test.fails('expected failure', () => {});",
 			// The runner's supported conditional skips stay valid.
 			"test.skipIf(process.platform === 'win32')('win', () => {});",
 			"test.runIf(true)('runs', () => {});",
