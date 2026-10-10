@@ -20,6 +20,7 @@ the repository owns the copies, and only whoever runs `init` needs access here.
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
 | `structure` | fallow, `structure_check.py` | lefthook pre-push steps that fail when a branch adds complexity, duplication, an import cycle or dead code its base did not have, and never on what was already there ([docs](docs/structure.md)) |
+| `secret-scanning` | Gitleaks | a pre-push branch scan for credentials the branch introduced, with the pinned Gitleaks 8.30.1 (opt-in; you provision the pinned binary) |
 
 Each ESLint rule links to its section in the `.md` copied beside it in `tools/eslint/` (editors
 show the link with the message); the FAP rules are listed in `tools/python/fastapi_rules.py`'s
@@ -105,7 +106,7 @@ The supported config shapes and the fallback for anything else are in
 to add, never reported as wired.
 
 Options: `--sets svelte-skills,fastapi` and `--yes` skip the questions, `--no-install` writes
-files only, `--base <branch>` names the branch structure compares with, `--cwd <dir>` runs it on
+files only, `--base <branch>` names the branch structure and secret-scanning compare with, `--cwd <dir>` runs it on
 another repository.
 
 ## ESLint sets
@@ -250,6 +251,88 @@ Over the same 1,431 files of a SvelteKit monorepo it reports 43; `no-trivial-wra
 that tree.
 
 The set lands at `warn`. Rules are checked with `node --test test/slop-patterns.test.js`.
+
+## secret-scanning
+
+A pre-push branch scan for credentials the branch introduced, using the pinned **Gitleaks 8.30.1**
+scanner. No dependency selects it: ask for it with `--sets secret-scanning`, and it stays on a
+re-run. The set is repository-wide — it needs no project dependency, because the command uses Node
+built-ins only. It copies `tools/security/gitleaks-check.mjs`, its `gitleaks-report.mjs` reader and
+`gitleaks-check.md`, writes the selected `gitleaks.toml`, and adds one repository-root lefthook step:
+
+```yaml
+pre-push:
+  commands:
+    secret-scanning:
+      run: node tools/security/gitleaks-check.mjs --base origin/main
+```
+
+The base is chosen the way the structure steps choose theirs: `--base`, the base an existing
+structure step names, the `origin/<branch>...HEAD` lefthook's pre-push `files` diffs against,
+`origin/HEAD`, else `origin/main`.
+
+The command answers three questions separately — what this branch introduced, what it inherited,
+and whether the check could run at all. It exits `0` clean, `1` on an introduced finding, and `2`
+when it could not run (a missing or wrong-version binary, an invalid config, a timeout, a source
+`.gitleaksignore`). A push that reaches it fails on `1` **and** `2`; a skip is never reported as
+success. `init` does **not** install the scanner: put Gitleaks 8.30.1 on `PATH`, or pass
+`--gitleaks <path>`. The official release assets, their recorded SHA-256, and the offline and
+unsupported-platform behaviour are in `tools/security/gitleaks-check.md`. Do not substitute a
+package from a registry.
+
+The initial/history audit is a separate remediation workflow, never a push step:
+
+```sh
+node tools/security/gitleaks-check.mjs --mode history   # or: npm run secret-scanning:history
+```
+
+It scans every ref and the working tree and reports every finding, including a credential a later
+commit deleted. `init` adds the `secret-scanning:history` script when a root `package.json` exists;
+otherwise run the command directly. A re-run never duplicates the step, and never rewrites or
+broadens `tools/security/gitleaks.toml`: reviewed exceptions live there, so an edited config is
+left byte-for-byte.
+
+A pre-push step counts as already wired only when it is exactly this repository-root command with
+an optional plain `--base` ref. A step that merely mentions `gitleaks-check` — `echo
+gitleaks-check`, `... || true`, a subfolder `root:`, a file `glob:`, `skip:`, or `--mode history` —
+is left untouched and reported as a manual action, never as wired. A base that is not a plain ref
+is not embedded in the generated shell command; `init` prints the step to add by hand instead.
+
+**CI.** The local hook is feedback only. A required check needs CI to run the command from a
+**trusted revision**, with the tool and config in trusted paths, before the untrusted checkout
+executes. Start with a source checkout containing full history (`fetch-depth: 0` in
+`actions/checkout`), so a branch and an advanced main still have a discoverable merge-base.
+This Linux x64 sample is a snippet to adapt, not a protected workflow `init` installs:
+
+```yaml
+- name: Provision the pinned Gitleaks and the trusted command in temp paths
+  run: |
+    set -euo pipefail
+    rm -rf /tmp/trusted && mkdir -p /tmp/trusted
+    curl -fsSLo /tmp/gitleaks.tar.gz \
+      https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+    echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum -c -
+    tar -xzf /tmp/gitleaks.tar.gz -C /tmp
+    git fetch origin main
+    git rev-parse FETCH_HEAD > /tmp/trusted-rev
+    trusted="$(cat /tmp/trusted-rev)"
+    for f in gitleaks-check.mjs gitleaks-report.mjs gitleaks.toml; do
+      git show "${trusted}:tools/security/${f}" > "/tmp/trusted/${f}"
+    done
+- name: Scan the change with the trusted command and config
+  run: |
+    set -euo pipefail
+    node /tmp/trusted/gitleaks-check.mjs --source "$PWD" --gitleaks /tmp/gitleaks \
+      --config /tmp/trusted/gitleaks.toml --base "$(cat /tmp/trusted-rev)"
+```
+
+The revision is pinned once (`/tmp/trusted-rev`) and the temp directory is emptied first, so a
+stale or half-written trusted config is never scanned. `set -euo pipefail` fails the step on a
+download, checksum, `git show` or extraction error. Run the trusted copy, not the branch's, so a
+pull request cannot edit the command or add an allowlist. Block the job on both exit `1` and exit
+`2`. Writing the hook does **not** create a required check or any branch protection: those are
+external forge settings set by the repository's administrator, and this install makes no claim
+that they exist.
 
 ## fastapi
 

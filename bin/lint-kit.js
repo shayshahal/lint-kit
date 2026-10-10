@@ -47,6 +47,10 @@ export const SETS = {
 		kind: 'structure',
 		about: 'fail a push that adds complexity, duplication or dead code the base did not have (lefthook)',
 	},
+	'secret-scanning': {
+		kind: 'security',
+		about: 'a pre-push branch scan with the pinned Gitleaks 8.30.1 (opt-in; the binary is not installed)',
+	},
 };
 /** The JS project dependency each ESLint set is for. */
 const ESLINT_FOR = {
@@ -62,7 +66,7 @@ const ESLINT_FOR = {
  * Sets a dependency never selects: they are a taste, so a repository asks for them by name and
  * keeps them on a re-run. `detect` only offers one that is already installed.
  */
-const OPT_IN = new Set(['prose']);
+const OPT_IN = new Set(['prose', 'secret-scanning']);
 const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', '@typescript-eslint/parser'];
 /** The JS project dependency each oxlint set is for. */
 const OXLINT_FOR = {
@@ -222,6 +226,7 @@ function installed(repo, projects) {
 		fastapi: projects.py.some((p) => FASTAPI_TABLE.test(p.text)),
 		typecheck: /svelte-check --tsgo|uv run pyright/.test(hooks),
 		structure: /structure_check\.py --base|fallow audit --base/.test(`${hooks}\n${hookScriptText(repo)}`),
+		secretScanning: fs.existsSync(path.join(repo, 'tools', 'security', 'gitleaks-check.mjs')) || /gitleaks-check/.test(hooks),
 	};
 }
 
@@ -245,6 +250,9 @@ function detect(repo, projects) {
 		fastapi: had.fastapi || fastapi,
 		typecheck: had.typecheck || (hooks && (anyDep('svelte') || fastapi)),
 		structure: had.structure || (hooks && (anyDep('svelte') || anyDep('typescript') || fastapi)),
+		// No dependency selects secret scanning: a repository asks for it by name, and a re-run
+		// keeps it on. A `gitleaks` in the project's dependencies is not evidence of the pinned tool.
+		'secret-scanning': had.secretScanning,
 	};
 }
 
@@ -1064,7 +1072,7 @@ export function findBase(args, lefthookText, repo) {
 		const options = { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] };
 		return execFileSync('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], options).trim();
 	} catch {
-		say('→ no origin/HEAD, so structure compares with origin/main; pass --base <branch> if branches merge elsewhere');
+		say('→ no origin/HEAD, so the branch checks compare with origin/main; pass --base <branch> if branches merge elsewhere');
 		return 'origin/main';
 	}
 }
@@ -1180,6 +1188,102 @@ function writeStructure(repo, projects, doc, base, args) {
 	return [...roots.map((p) => `fallow (${where(p)})`), ...projects.py.map((py) => `structure_check.py (${where(py)})`)];
 }
 
+// ── secret scanning ────────────────────────────────────────────────────────────
+
+/** The copied command; it must run at the repository root, so the step carries no `root`. */
+const SECRET_SCANNER = 'node tools/security/gitleaks-check.mjs';
+const SECRET_STEP = 'secret-scanning';
+const SECRET_HISTORY_SCRIPT = 'secret-scanning:history';
+/** The copies that are tool code. `gitleaks.toml` is handled apart: it is the consumer's policy. */
+const SECRET_TOOLS = ['security/gitleaks-check.mjs', 'security/gitleaks-report.mjs', 'security/gitleaks-check.md'];
+
+/** The branch scan run: the copied command with the resolved base when it is a plain ref. `null`
+ *  means the base cannot be embedded in a shell command, so the caller prints a manual action. */
+const SHELL_SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+function secretScannerRun(base) {
+	if (base === undefined) return SECRET_SCANNER;
+	return SHELL_SAFE_REF.test(base) ? `${SECRET_SCANNER} --base ${base}` : null;
+}
+
+/**
+ * The exact pre-push run this installer writes and recognises: the copied command at the
+ * repository root, with only an optional plain `--base` ref. `echo gitleaks-check`, a compound
+ * `... || true`, a history-mode run or any extra flag is not proven equivalent.
+ */
+const SECRET_RUN = /^node tools\/security\/gitleaks-check\.mjs(?: --base [A-Za-z0-9][A-Za-z0-9._/-]*)?$/;
+
+/** A pre-push step this installer can vouch for: exactly our run, and nothing that moves it to a
+ *  subfolder, filters its files or skips it. */
+const isSecretRunStep = (step) =>
+	Object.keys(step ?? {}).length === 1 && typeof step.run === 'string' && SECRET_RUN.test(step.run);
+
+/**
+ * Copy the selected config only when it is absent. Unlike the tool copies, `gitleaks.toml` holds
+ * the reviewed exceptions, which are the consumer's: a re-run or an upgrade must not overwrite an
+ * edited one, and must never add an allowlist entry.
+ */
+function writeGitleaksConfig(repo) {
+	const target = path.join(repo, 'tools', 'security', 'gitleaks.toml');
+	if (fs.existsSync(target)) {
+		say('→ tools/security/gitleaks.toml already exists; init left it as it is (reviewed exceptions live there)');
+		return;
+	}
+	fs.mkdirSync(path.dirname(target), { recursive: true });
+	fs.copyFileSync(path.join(SELF, 'tools', 'security', 'gitleaks.toml'), target);
+	say('✔ tools/security/gitleaks.toml (new: the pinned default rules and the one documented dummy)');
+}
+
+/**
+ * The one repository-root pre-push step. It is a command, not a script: branch mode covers the
+ * merge-base..HEAD commits and the working tree, and a push that reaches it fails on an introduced
+ * finding or on any inability to run. An existing step is never rewritten; only one this installer
+ * can vouch for counts as wired, and anything else is a manual action.
+ */
+function addSecretScanning(doc, base) {
+	const entries = Object.entries(doc.getIn(['pre-push', 'commands'])?.toJSON() ?? {});
+	const wired = entries.find(([, step]) => isSecretRunStep(step));
+	if (wired) {
+		say(`✔ lefthook.yml: pre-push "${wired[0]}" already runs the copied command at the repository root; nothing added`);
+		return;
+	}
+	// A step that names this command in any other shape, or that already scans secrets its own way,
+	// is left untouched: the installer will not claim it is equivalent, and will not put a second
+	// scan beside it.
+	const noisy = entries.find(
+		([name, step]) =>
+			name === SECRET_STEP || /\bgitleaks-check\b/.test(step?.run ?? '') || /\b(gitleaks|secret[-_ ]?scan)/i.test(step?.run ?? ''),
+	);
+	if (noisy) {
+		say(
+			`→ lefthook.yml: pre-push "${noisy[0]}" mentions secret scanning but is not the repository-root fail-closed run; init left it unchanged. To add the copied command, use:\n` +
+				`    pre-push:\n      commands:\n        ${SECRET_STEP}:\n          run: ${SECRET_SCANNER} --base <ref>`,
+		);
+		return;
+	}
+	const run = secretScannerRun(base);
+	if (run === null) {
+		// The resolved base is not a plain ref (it may come from a branch's own lefthook step), so
+		// embedding it in a shell command would risk expansion; print a manual action, not the value.
+		say(
+			'→ lefthook.yml: the resolved base is not a plain ref, so init did not write a shell command that embeds it. Add the pre-push step by hand with your reviewed base:\n' +
+				`    pre-push:\n      commands:\n        ${SECRET_STEP}:\n          run: ${SECRET_SCANNER} --base <ref>`,
+		);
+		return;
+	}
+	addStep(doc, 'pre-push', SECRET_STEP, { run }, /\bgitleaks-check\b/, true);
+	say('✔ lefthook.yml: pre-push secret-scanning (branch scan with the pinned Gitleaks; a finding or a missing tool fails the push)');
+}
+
+/** The initial/history audit is a separate remediation command, exposed where a root package.json is. */
+function writeSecretHistory(repo) {
+	const pkg = path.join(repo, 'package.json');
+	if (!fs.existsSync(pkg)) return;
+	const before = read(pkg);
+	if (JSON.parse(before).scripts?.[SECRET_HISTORY_SCRIPT]) return;
+	write(pkg, withScript(before, SECRET_HISTORY_SCRIPT, `${SECRET_SCANNER} --mode history`));
+	say(`✔ package.json script ${SECRET_HISTORY_SCRIPT}: the initial Gitleaks history audit, run by hand`);
+}
+
 // ── main ────────────────────────────────────────────────────────────────────────
 
 export async function main(argv = process.argv.slice(2)) {
@@ -1208,13 +1312,16 @@ export async function main(argv = process.argv.slice(2)) {
 	const oxlintSets = Object.keys(OXLINT_FOR).filter((s) => oxlinted.some(({ wanted }) => wanted.includes(s)));
 	const fastapi = sets.includes('fastapi') ? projects.py.filter(isFastapi) : [];
 	const structure = sets.includes('structure');
+	const secrets = sets.includes('secret-scanning');
 	copyTools(repo, [
 		...(eslintSets.length ? ['eslint/inspection.mjs'] : []),
 		...eslintSets.flatMap((s) => [`eslint/${s}.mjs`, `eslint/${s}.md`]),
 		...oxlintSets.map((s) => `oxlint/${s}`),
 		...(fastapi.length ? ['python/fastapi_rules.py'] : []),
 		...(structure && projects.py.length ? ['python/structure_check.py'] : []),
+		...(secrets ? SECRET_TOOLS : []),
 	]);
+	if (secrets) writeGitleaksConfig(repo);
 
 	for (const { p, wanted } of linted) writeEslint(repo, p, wanted, args);
 	for (const { p, wanted } of oxlinted) writeOxlint(repo, p, wanted);
@@ -1228,13 +1335,31 @@ export async function main(argv = process.argv.slice(2)) {
 		}
 		stepsFastapi(doc, wired);
 		if (sets.includes('typecheck')) say(`✔ lefthook.yml: typecheck before each push in ${writeTypecheck(projects, doc, args).join(', ') || 'no project'}`);
+		// One base for every step that compares the branch with its merge target, resolved by the
+		// installer's convention (--base, an existing step, lefthook's pre-push files, origin/HEAD,
+		// else origin/main) rather than a branch ref the scanner would guess on its own.
+		const base = structure || secrets ? findBase(args, doc.toString(AS_WRITTEN), repo) : undefined;
 		if (structure) {
-			const base = findBase(args, doc.toString(AS_WRITTEN), repo);
 			say(`✔ lefthook.yml: ${writeStructure(repo, projects, doc, base, args).join(', ') || 'nothing'} before each push, against ${base}`);
 		}
+		if (secrets) addSecretScanning(doc, base);
 	});
 	if (!hooked && (sets.includes('typecheck') || structure))
 		say('→ typecheck and structure run as lefthook pre-push steps, and this repository has no lefthook.yml');
+	if (!hooked && secrets) {
+		// No lefthook to read a base from, but an explicit --base still has to reach the printed step.
+		const run = secretScannerRun(args.base ? findBase(args, '', repo) : undefined);
+		say(
+			'→ secret-scanning: this repository has no lefthook.yml, so no pre-push step was added. Add:\n' +
+				`    pre-push:\n      commands:\n        ${SECRET_STEP}:\n          run: ${run ?? `${SECRET_SCANNER} --base <ref>`}` +
+				(run === null ? '  (the requested base is not a plain ref; put your reviewed ref here)' : ''),
+		);
+	}
+	if (secrets) {
+		writeSecretHistory(repo);
+		say(`→ secret-scanning: ${SECRET_SCANNER} needs the pinned Gitleaks 8.30.1 on PATH, or --gitleaks <path>; provisioning steps are in tools/security/gitleaks-check.md`);
+		say(`→ secret-scanning: the initial/history audit is separate: ${SECRET_SCANNER} --mode history`);
+	}
 	say('done');
 	return 0;
 }
