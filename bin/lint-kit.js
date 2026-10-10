@@ -1204,6 +1204,12 @@ const POLICY_SCRIPT = 'policy-guard.sh';
 const POLICY_TOOLS = ['policy/policy-guard.mjs', 'policy/README.md'];
 /** A branch ref is only embedded in the generated script when it is a plain ref. */
 const POLICY_SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+/**
+ * A ref is only accepted as an approved policy ref when it is a plain ref and is not `HEAD`: the
+ * branch's own HEAD is not a reviewed trusted snapshot, so an existing step that names it is not
+ * the supported step, and generation never embeds it.
+ */
+const isApprovedPolicyRef = (ref) => typeof ref === 'string' && ref !== 'HEAD' && POLICY_SAFE_REF.test(ref);
 
 /**
  * The identities the frozen `fallow-jsonc` adapter knows, with the only unit and direction real
@@ -1252,36 +1258,69 @@ function loadJsoncParser() {
 /**
  * The identities a real Fallow JSONC config provably has: each is present and already the type
  * its unit compares, so the guard can read it at both snapshots. Null when the text is not JSONC,
- * so the caller protects the file opaque instead of enrolling an identity it cannot read.
+ * so the caller protects the file opaque instead of enrolling an identity it cannot read. A
+ * malformed document is reported by `parseTree`, not thrown, so anything thrown here is a real
+ * install error (a missing parser, a programming error) and must not be relabelled "unsupported".
  */
 function presentFallowIdentities(text) {
+	const jsonc = loadJsoncParser();
+	const errors = [];
+	const tree = jsonc.parseTree(text, errors);
+	if (tree === undefined || errors.length > 0) return null;
+	const valueAt = (segments) => {
+		const node = jsonc.findNodeAtLocation(tree, segments);
+		return node === undefined ? undefined : jsonc.getNodeValue(node);
+	};
+	const present = [];
+	for (const identity of FALLOW_ENROLLMENT_IDENTITIES) {
+		const value = valueAt(identity.id.split('.'));
+		if (identity.unit === 'score' && typeof value === 'number' && Number.isFinite(value)) present.push(identity);
+		else if (identity.unit === 'severity-map' && isRecord(value) && Object.values(value).every((s) => FALLOW_SEVERITY.includes(s))) present.push(identity);
+		else if (identity.unit === 'glob-list' && Array.isArray(value) && value.every((p) => typeof p === 'string')) present.push(identity);
+	}
+	return present;
+}
+
+/**
+ * A guard-specific read of one enrollment candidate, at the boundary that decides what to enroll.
+ * A symbolic link is never followed and a non-regular file is never read, so no read leaves the
+ * repository through a linked path; the bytes are decoded as strict UTF-8 exactly as the copied
+ * guard decodes a parsed enrollment, so a malformed byte sequence is never reported as a readable
+ * JSONC identity. `null` means absent. `kind:'text'` is the only kind the JSONC adapter reads
+ * from; a missing parser or a programming error still throws.
+ */
+function policyCandidate(file) {
+	let stats;
 	try {
-		const jsonc = loadJsoncParser();
-		const errors = [];
-		const tree = jsonc.parseTree(text, errors);
-		if (tree === undefined || errors.length > 0) return null;
-		const valueAt = (segments) => {
-			const node = jsonc.findNodeAtLocation(tree, segments);
-			return node === undefined ? undefined : jsonc.getNodeValue(node);
-		};
-		const present = [];
-		for (const identity of FALLOW_ENROLLMENT_IDENTITIES) {
-			const value = valueAt(identity.id.split('.'));
-			if (identity.unit === 'score' && typeof value === 'number' && Number.isFinite(value)) present.push(identity);
-			else if (identity.unit === 'severity-map' && isRecord(value) && Object.values(value).every((s) => FALLOW_SEVERITY.includes(s))) present.push(identity);
-			else if (identity.unit === 'glob-list' && Array.isArray(value) && value.every((p) => typeof p === 'string')) present.push(identity);
-		}
-		return present;
+		stats = fs.lstatSync(file);
 	} catch {
 		return null;
+	}
+	if (stats.isSymbolicLink() || !stats.isFile()) return { kind: 'not-file' };
+	let bytes;
+	try {
+		bytes = fs.readFileSync(file);
+	} catch {
+		return { kind: 'unreadable' };
+	}
+	try {
+		return { kind: 'text', text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) };
+	} catch {
+		return { kind: 'invalid-utf8' };
+	}
+}
+
+/** Whether `file` is a regular file (a symbolic link is not), for an opaque enrollment. */
+function isRegularPolicyFile(file) {
+	try {
+		return fs.lstatSync(file).isFile();
+	} catch {
+		return false;
 	}
 }
 
 /** The repository-relative, forward-slash source path a guard enrollment names. */
 const policySource = (repo, file) => posix(path.relative(repo, file));
-
-/** A stable, unique enrollment id derived from its source path. */
-const policyEnrollmentId = (source) => source.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 
 /** The folders a fallow config can sit in: the repository root and each JS project. */
 function fallowConfigDirs(repo, projects) {
@@ -1296,30 +1335,43 @@ function fallowConfigDirs(repo, projects) {
  * is opaque. No threshold, severity or ignore list is copied here.
  */
 function buildPolicyEnrollments(repo, projects) {
-	const enrollments = [{ id: policyEnrollmentId('tools/policy/policy-guard.mjs'), source: 'tools/policy/policy-guard.mjs', format: 'opaque' }];
+	const enrollments = [{ id: 'tools/policy/policy-guard.mjs', source: 'tools/policy/policy-guard.mjs', format: 'opaque' }];
 	const seen = new Set(['tools/policy/policy-guard.mjs']);
 	const add = (source, enrollment) => {
 		if (seen.has(source)) return;
 		seen.add(source);
-		enrollments.push({ id: policyEnrollmentId(source), source, ...enrollment });
+		// The source path is the id, so two configs that a slug would fold together stay distinct.
+		enrollments.push({ id: source, source, ...enrollment });
 	};
 	for (const dir of fallowConfigDirs(repo, projects)) {
 		for (const name of FALLOW_JSONC_SOURCES) {
 			const file = path.join(dir, name);
-			if (!fs.existsSync(file)) continue;
+			const candidate = policyCandidate(file);
+			if (candidate === null) continue;
 			const source = policySource(repo, file);
-			const identities = presentFallowIdentities(read(file) ?? '');
-			if (identities && identities.length > 0) {
-				add(source, { format: 'jsonc', adapter: 'fallow-jsonc', identities });
-			} else {
+			if (candidate.kind === 'text') {
+				const identities = presentFallowIdentities(candidate.text);
+				if (identities && identities.length > 0) {
+					add(source, { format: 'jsonc', adapter: 'fallow-jsonc', identities });
+				} else {
+					add(source, { format: 'opaque' });
+					say(`→ ${source}: protected opaque; the fallow-jsonc adapter found no readable enrolled identity (enroll it by hand after review)`);
+				}
+			} else if (candidate.kind === 'invalid-utf8') {
 				add(source, { format: 'opaque' });
-				say(`→ ${source}: protected opaque; the fallow-jsonc adapter found no readable enrolled identity (enroll it by hand after review)`);
+				say(`→ ${source}: protected opaque; it is not valid UTF-8, so the fallow-jsonc adapter does not read it (enroll it by hand after review)`);
+			} else {
+				say(`→ ${source}: not a regular, readable file; init left it unchanged and enrolled nothing (enroll it by hand after review)`);
 			}
 		}
 		for (const name of FALLOW_OPAQUE_SOURCES) {
 			const file = path.join(dir, name);
 			if (!fs.existsSync(file)) continue;
 			const source = policySource(repo, file);
+			if (!isRegularPolicyFile(file)) {
+				say(`→ ${source}: not a regular file; init left it unchanged and enrolled nothing (enroll it by hand after review)`);
+				continue;
+			}
 			add(source, { format: 'opaque' });
 			say(`→ ${source}: protected opaque; this Fallow shape has no parsed adapter in the first release (no evaluation, enroll it by hand after review)`);
 		}
@@ -1357,7 +1409,7 @@ function provisionPolicyParser(repo, projects, args) {
 	}
 	if (declared !== '3.3.1') {
 		say(
-			`→ package.json declares jsonc-parser@${declared}, not the 3.3.1 the copied guard is frozen to; init left it as it is, and the guard exits 2 until it is reviewed and pinned by hand`,
+			`→ package.json declares jsonc-parser@${declared}, not the 3.3.1 the copied guard is frozen to; init left it exactly as it is. The copied guard does not check the declared version and loads the parser only when a parsed enrollment needs it, so whether this version works here is preserved and untested: review it and pin jsonc-parser@3.3.1 by hand.`,
 		);
 		return;
 	}
@@ -1380,12 +1432,25 @@ function writePolicyGuard(repo, projects, args) {
 /** The canonical run the release supports: repository root, explicit base and trusted-ref, working tree. */
 const POLICY_CANONICAL_RUN = /^node tools\/policy\/policy-guard\.mjs --base (\S+) --target HEAD --trusted-ref \1 --policy lint-kit\.policy\.json --mode working-tree$/;
 
-/** A step is the canonical run only when it is exactly `{ run }` and that run is the supported contract. */
+/**
+ * A step is the canonical run only when it is exactly `{ run }`, the run matches the supported
+ * contract, and the ref it names is an approved plain, non-HEAD ref. A wrong runner, an extra key
+ * or a ref the policy does not approve is not guessed equivalent.
+ */
 function isCanonicalPolicyStep(step) {
 	if (!isRecord(step)) return false;
 	const keys = Object.keys(step);
 	if (keys.length !== 1 || keys[0] !== 'run') return false;
-	return typeof step.run === 'string' && POLICY_CANONICAL_RUN.test(step.run);
+	if (typeof step.run !== 'string') return false;
+	const match = POLICY_CANONICAL_RUN.exec(step.run);
+	return match !== null && isApprovedPolicyRef(match[1]);
+}
+
+/** The supported lefthook script step: exactly `{ runner: 'bash' }`; any other key is not guessed. */
+function isCanonicalPolicyScriptStep(step) {
+	if (!isRecord(step)) return false;
+	const keys = Object.keys(step);
+	return keys.length === 1 && keys[0] === 'runner' && step.runner === 'bash';
 }
 
 /** The generated script body: base and trusted-ref are explicit, and the mode reads the working tree. */
@@ -1396,36 +1461,54 @@ const policyScriptBody = (base) =>
 const POLICY_CANONICAL_BODY =
 	/^#!\/usr\/bin\/env bash\nset -e\nnode tools\/policy\/policy-guard\.mjs --base (\S+) --target HEAD --trusted-ref \1 --policy lint-kit\.policy\.json --mode working-tree\n$/;
 
-/** Whether a pre-push script of `name` has the canonical body the installer writes, not just its name. */
-function isCanonicalPolicyScript(repo, name) {
-	try {
-		return POLICY_CANONICAL_BODY.test(read(path.join(repo, '.lefthook', 'pre-push', name))?.replaceAll('\r\n', '\n') ?? '');
-	} catch {
-		return false;
-	}
+/**
+ * The state of `.lefthook/pre-push/<name>`: `missing`, `canonical` (the exact supported body),
+ * `other`, or `not-ours` (a symbolic link, a directory or an unreadable file, never followed).
+ */
+function policyScriptBodyState(repo, name) {
+	const candidate = policyCandidate(path.join(repo, '.lefthook', 'pre-push', name));
+	if (candidate === null) return 'missing';
+	if (candidate.kind !== 'text') return 'not-ours';
+	const match = POLICY_CANONICAL_BODY.exec(candidate.text.replaceAll('\r\n', '\n'));
+	return match !== null && isApprovedPolicyRef(match[1]) ? 'canonical' : 'other';
 }
 
 /**
- * Wire one repository-root pre-push script. A script, not a command: lefthook intersects a
- * command with the push's changed files, so a deletion-only push would skip it, while a script
- * runs either way. A canonical run is recognised and never duplicated; any other step that names
- * the copied command is left byte-for-byte and reported as a manual action, never as success.
+ * The complete manual action for a repository the installer cannot wire: the exact script body
+ * and the lefthook.yml entry. A base that is not an approved plain ref is printed as the literal
+ * `<base-ref>` placeholder, so nothing unsafe is ever interpolated into a runnable line.
+ */
+function manualPolicyStep(base) {
+	const ref = isApprovedPolicyRef(base) ? base : '<base-ref>';
+	const body = policyScriptBody(ref).trimEnd().replaceAll('\n', '\n    ');
+	return (
+		`create .lefthook/pre-push/${POLICY_SCRIPT} with:\n` +
+		`    ${body}\n` +
+		`and in lefthook.yml:\n` +
+		`    pre-push:\n` +
+		`      scripts:\n` +
+		`        ${POLICY_SCRIPT}:\n` +
+		`          runner: bash`
+	);
+}
+
+/**
+ * Wire one repository-root pre-push script. The set installs a script, not a file-filtered
+ * command, so a deletion-only push still runs it; an existing command that already runs the guard
+ * with no filter is left as it is (it runs either way), while a filtered or otherwise different
+ * step is preserved and reported as a manual action. A supported step is exactly
+ * `{ runner: 'bash' }` with the exact generated body; anything else, including an orphan
+ * consumer file of the same name, is never overwritten.
  */
 function writePolicyGuardStep(repo, doc, base) {
 	const script = `pre-push script "${POLICY_SCRIPT}"`;
-	if (!POLICY_SAFE_REF.test(base)) {
-		say(`→ lefthook.yml: the resolved base is not a plain ref, so no ${script} was written; add the working-tree step by hand with a base you trust`);
-		return;
-	}
+	const bodyState = policyScriptBodyState(repo, POLICY_SCRIPT);
 	const scripts = doc.getIn(['pre-push', 'scripts'])?.toJSON() ?? {};
 	if (POLICY_SCRIPT in scripts) {
-		if (isCanonicalPolicyScript(repo, POLICY_SCRIPT)) {
+		if (isCanonicalPolicyScriptStep(scripts[POLICY_SCRIPT]) && bodyState === 'canonical') {
 			say(`✔ lefthook.yml: ${script} already runs the copied guard; nothing added`);
 		} else {
-			say(
-				`→ lefthook.yml: ${script} exists but is not the supported working-tree run; init left it unchanged. Its body should be:\n` +
-					`    ${policyScriptBody('<ref>').trimEnd().replaceAll('\n', '\n    ')}`,
-			);
+			say(`→ lefthook.yml: ${script} exists but is not the supported working-tree run; init left it unchanged. The supported step is:\n` + manualPolicyStep(base));
 		}
 		return;
 	}
@@ -1435,13 +1518,28 @@ function writePolicyGuardStep(repo, doc, base) {
 		say(`✔ lefthook.yml: pre-push "${canonical[0]}" already runs the copied guard at the repository root; nothing added`);
 		return;
 	}
+	if (bodyState === 'canonical') {
+		addScript(doc, 'pre-push', POLICY_SCRIPT, { runner: 'bash' }, null);
+		say(`✔ lefthook.yml: ${script} wired to the existing canonical script (its body is left byte-for-byte)`);
+		return;
+	}
+	if (bodyState !== 'missing') {
+		say(
+			`→ lefthook.yml: .lefthook/pre-push/${POLICY_SCRIPT} already exists but is not the supported working-tree run; init left it unchanged and added no step (migrate it by hand)`,
+		);
+		return;
+	}
 	const named =
 		commands.some(([, step]) => /policy-guard\.mjs/.test(step?.run ?? '')) || /policy-guard\.mjs/.test(hookScriptText(repo));
 	if (named) {
 		say(
-			`→ lefthook.yml: a pre-push step names the copied guard but is not the repository-root working-tree run; init left it unchanged. To run the supported step instead, add:\n` +
-				`    pre-push:\n      scripts:\n        ${POLICY_SCRIPT}:\n          runner: bash`,
+			`→ lefthook.yml: a pre-push step names the copied guard but is not the repository-root working-tree run; init left it unchanged. To run the supported step instead,\n` +
+				manualPolicyStep(base),
 		);
+		return;
+	}
+	if (!isApprovedPolicyRef(base)) {
+		say(`→ lefthook.yml: the resolved base is not a plain ref, or it is HEAD, so no ${script} was written; add the working-tree step by hand with a base you trust:\n` + manualPolicyStep(base));
 		return;
 	}
 	addScript(doc, 'pre-push', POLICY_SCRIPT, { runner: 'bash' }, null);
@@ -1511,11 +1609,13 @@ export async function main(argv = process.argv.slice(2)) {
 	if (policy) writePolicyGuard(repo, projects, args);
 	if (!hooked && (sets.includes('typecheck') || structure))
 		say('→ typecheck and structure run as lefthook pre-push steps, and this repository has no lefthook.yml');
-	if (!hooked && policy)
+	if (!hooked && policy) {
+		const base = findBase(args, '', repo);
 		say(
-			'→ policy-guard: this repository has no lefthook.yml, so no pre-push script was added. Add:\n' +
-				`    pre-push:\n      scripts:\n        ${POLICY_SCRIPT}:\n          runner: bash`,
+			'→ policy-guard: this repository has no lefthook.yml, so no pre-push script was added. To wire the same guard by hand:\n' +
+				manualPolicyStep(base),
 		);
+	}
 	if (policy) {
 		say(`→ policy-guard: local output is feedback, not authorization; required CI must run ${POLICY_MANIFEST} from a trusted ref and block exit 1 and 2 (protected CI wiring is #44, not installed here)`);
 		say(`→ policy-guard: the enrollment must be reviewed and landed at the trusted ref before the local guard can run; until then it exits 2, not clean`);

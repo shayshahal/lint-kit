@@ -174,7 +174,7 @@ test('a fresh install copies the command and README, enrolls the config it can r
 		['health.maxCognitive', 'health.maxCrap', 'ignorePatterns', 'rules'],
 	);
 	assert.deepEqual(bySource(dir, 'tools/python/structure_check.py'), {
-		id: 'tools-python-structure-check-py',
+		id: 'tools/python/structure_check.py',
 		source: 'tools/python/structure_check.py',
 		format: 'opaque',
 	});
@@ -304,7 +304,7 @@ test('an executable Fallow shape is protected opaque without evaluation', async 
 	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'policy-guard']);
 	assert.equal(text(dir, 'fallow.config.js'), source, 'the source is untouched');
 	assert.deepEqual(bySource(dir, 'fallow.config.js'), {
-		id: 'fallow-config-js',
+		id: 'fallow.config.js',
 		source: 'fallow.config.js',
 		format: 'opaque',
 	});
@@ -313,12 +313,18 @@ test('an executable Fallow shape is protected opaque without evaluation', async 
 
 // ── pre-push wiring ─────────────────────────────────────────────────────────────
 
-test('with no lefthook, nothing is wired and the script to add is printed', async () => {
+test('with no lefthook, nothing is wired and the complete script to add is printed', async () => {
 	const dir = project('no-hook', { 'package.json': '{"name":"c"}\n' });
 	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'policy-guard']);
 	assert.equal(fs.existsSync(path.join(dir, 'lefthook.yml')), false);
 	assert.ok(fs.existsSync(path.join(dir, 'lint-kit.policy.json')));
 	assert.match(said, /this repository has no lefthook\.yml, so no pre-push script was added/);
+	// the printed action is complete: the script body with explicit base and trusted-ref, and the yml
+	assert.match(said, /create \.lefthook\/pre-push\/policy-guard\.sh with/);
+	assert.match(
+		said,
+		/--base origin\/main --target HEAD --trusted-ref origin\/main --policy lint-kit\.policy\.json --mode working-tree/,
+	);
 	assert.match(said, /scripts:\n\s+policy-guard\.sh:\n\s+runner: bash/);
 	assert.doesNotMatch(said, /already runs the copied guard/);
 });
@@ -380,6 +386,127 @@ test('a step that only mentions the copied command is a manual action, not succe
 	}
 });
 
+test('a same-named script step that is not exactly { runner: bash } is a manual action, not success', async () => {
+	const body = scriptBody('origin/main');
+	const shapes = {
+		echoRunner: '      runner: echo',
+		skipTrue: '      runner: bash\n      skip: true',
+		globbed: '      runner: bash\n      glob: "*.json"',
+		rooted: '      runner: bash\n      root: apps/web/',
+		envd: '      runner: bash\n      env: FOO=bar',
+	};
+	for (const [name, shape] of Object.entries(shapes)) {
+		const own = `pre-push:\n  scripts:\n    ${POLICY_SCRIPT}:\n${shape}\n`;
+		const dir = project(`script-step-${name}`, {
+			'lefthook.yml': own,
+			'package.json': '{"name":"c"}\n',
+			[`.lefthook/pre-push/${POLICY_SCRIPT}`]: body,
+		});
+		const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'policy-guard']);
+		assert.equal(text(dir, 'lefthook.yml'), own, `${name}: the step is untouched`);
+		assert.equal(text(dir, `.lefthook/pre-push/${POLICY_SCRIPT}`), body, `${name}: the body is untouched`);
+		assert.doesNotMatch(said, /already runs the copied guard/, name);
+		assert.match(said, /is not the supported working-tree run/, name);
+	}
+});
+
+test('a canonical-shaped run that names HEAD or an unsafe ref is a manual action, not a wired step', async () => {
+	for (const ref of ['HEAD', 'origin/main;false']) {
+		const own = `pre-push:\n  commands:\n    policy-check:\n      run: ${COMMAND} --base ${ref} --target HEAD --trusted-ref ${ref} --policy lint-kit.policy.json --mode working-tree\n`;
+		const commandDir = project(`ref-command-${ref.replace(/[^A-Za-z]/g, '-')}`, { 'lefthook.yml': own, 'package.json': '{"name":"c"}\n' });
+		const said = await capture(['init', '--no-install', '--cwd', commandDir, '--sets', 'policy-guard']);
+		assert.equal(text(commandDir, 'lefthook.yml'), own, `${ref}: the command is untouched`);
+		assert.doesNotMatch(said, /already runs the copied guard/, ref);
+		assert.match(said, /names the copied guard but is not/, ref);
+
+		const scriptDir = project(`ref-script-${ref.replace(/[^A-Za-z]/g, '-')}`, {
+			'lefthook.yml': `pre-push:\n  scripts:\n    ${POLICY_SCRIPT}:\n      runner: bash\n`,
+			'package.json': '{"name":"c"}\n',
+			[`.lefthook/pre-push/${POLICY_SCRIPT}`]: scriptBody(ref),
+		});
+		const scriptSaid = await capture(['init', '--no-install', '--cwd', scriptDir, '--sets', 'policy-guard']);
+		assert.doesNotMatch(scriptSaid, /already runs the copied guard/, ref);
+		assert.match(scriptSaid, /is not the supported working-tree run/, ref);
+	}
+});
+
+test('an orphan consumer-owned script file is preserved and never overwritten', async () => {
+	const custom = '#!/usr/bin/env bash\necho consumer-owned\n';
+	const dir = project('orphan', {
+		'lefthook.yml': 'pre-push:\n  commands: {}\n',
+		'package.json': '{"name":"c"}\n',
+		[`.lefthook/pre-push/${POLICY_SCRIPT}`]: custom,
+	});
+	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'policy-guard']);
+	assert.equal(text(dir, `.lefthook/pre-push/${POLICY_SCRIPT}`), custom, 'the consumer file is untouched');
+	assert.equal(hooks(dir)['pre-push']?.scripts?.[POLICY_SCRIPT], undefined, 'no step is wired to it');
+	assert.doesNotMatch(said, /already runs the copied guard/);
+	assert.match(said, /already exists but is not the supported working-tree run/);
+});
+
+test('an orphan file with the exact canonical body is wired without rewriting it', async () => {
+	const body = scriptBody('origin/develop');
+	const dir = project('orphan-canonical', {
+		'lefthook.yml': 'pre-push:\n  commands: {}\n',
+		'package.json': '{"name":"c"}\n',
+		[`.lefthook/pre-push/${POLICY_SCRIPT}`]: body,
+	});
+	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'policy-guard']);
+	assert.equal(text(dir, `.lefthook/pre-push/${POLICY_SCRIPT}`), body, 'the canonical body is left byte-for-byte');
+	assert.deepEqual(hooks(dir)['pre-push'].scripts[POLICY_SCRIPT], { runner: 'bash' });
+	assert.match(said, /wired to the existing canonical script/);
+});
+
+test('configs whose paths a slug would fold together get distinct enrollment ids the guard accepts', async () => {
+	const dir = project('collision', {
+		'pnpm-workspace.yaml': "packages:\n  - 'apps/*'\n",
+		'pnpm-lock.yaml': '',
+		'package.json': '{"name":"root"}\n',
+		'apps/a-b/package.json': '{"name":"a-b"}\n',
+		'apps/a_b/package.json': '{"name":"a_b"}\n',
+		'apps/a-b/.fallowrc.json': fallowText(25),
+		'apps/a_b/.fallowrc.json': fallowText(25),
+	});
+	assert.equal(await init(dir, '--sets', 'policy-guard'), 0);
+	const ids = enrollments(dir).map((enrollment) => enrollment.id);
+	assert.equal(new Set(ids).size, ids.length, 'every enrollment id is unique');
+	assert.deepEqual(ids.filter((id) => id.includes('fallowrc')).sort(), ['apps/a-b/.fallowrc.json', 'apps/a_b/.fallowrc.json']);
+});
+
+test('a config that is not a regular file is left unchanged and enrolled nowhere', async () => {
+	const dir = project('config-dir', { 'package.json': '{"name":"c"}\n' });
+	fs.mkdirSync(path.join(dir, '.fallowrc.json'));
+	fs.writeFileSync(path.join(dir, '.fallowrc.json', 'keep.txt'), 'consumer data\n');
+	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'policy-guard']);
+	assert.ok(fs.statSync(path.join(dir, '.fallowrc.json')).isDirectory(), 'the directory is untouched');
+	assert.equal(bySource(dir, '.fallowrc.json'), undefined, 'nothing is enrolled for the directory');
+	assert.match(said, /not a regular, readable file/);
+});
+
+test('a config with invalid UTF-8 is protected opaque, never read as parsed JSONC', async () => {
+	const dir = project('config-bytes', { 'package.json': '{"name":"c"}\n' });
+	const bytes = Buffer.from('{"health":{"maxCognitive":25},"x":"', 'utf8');
+	fs.writeFileSync(path.join(dir, '.fallowrc.json'), Buffer.concat([bytes, Buffer.from([0xff, 0xfe]), Buffer.from('"}', 'utf8')]));
+	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'policy-guard']);
+	assert.equal(bySource(dir, '.fallowrc.json')?.format, 'opaque');
+	assert.doesNotMatch(text(dir, 'lint-kit.policy.json'), /fallow-jsonc/);
+	assert.match(said, /it is not valid UTF-8/);
+});
+
+test('a config that is a symbolic link is not followed or enrolled', async (t) => {
+	const dir = project('config-link', { 'package.json': '{"name":"c"}\n', 'real.json': fallowText(25) });
+	try {
+		fs.symlinkSync('real.json', path.join(dir, '.fallowrc.json'));
+	} catch {
+		t.skip('symlinks are not permitted here');
+		return;
+	}
+	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'policy-guard']);
+	assert.equal(fs.lstatSync(path.join(dir, '.fallowrc.json')).isSymbolicLink(), true, 'the link is untouched');
+	assert.equal(bySource(dir, '.fallowrc.json'), undefined, 'the link is not enrolled');
+	assert.match(said, /not a regular, readable file/);
+});
+
 test('an unusual --base is not embedded in a generated shell command', async () => {
 	const dir = project('unusual-base', { 'lefthook.yml': 'pre-commit:\n  commands: {}\n', 'package.json': '{"name":"c"}\n' });
 	const said = await capture(['init', '--no-install', '--cwd', dir, '--sets', 'policy-guard', '--base', 'origin/main; touch pwned']);
@@ -387,6 +514,13 @@ test('an unusual --base is not embedded in a generated shell command', async () 
 	assert.doesNotMatch(said, /pwned/);
 	assert.match(said, /the resolved base is not a plain ref/);
 	assert.equal(hooks(dir)['pre-push']?.scripts?.[POLICY_SCRIPT], undefined);
+
+	// the no-lefthook path prints the same complete action with the same `<base-ref>` placeholder
+	const noHook = project('unusual-base-no-hook', { 'package.json': '{"name":"c"}\n' });
+	const noHookSaid = await capture(['init', '--no-install', '--cwd', noHook, '--sets', 'policy-guard', '--base', 'origin/main; touch pwned']);
+	assert.doesNotMatch(noHookSaid, /pwned/);
+	assert.match(noHookSaid, /--base <base-ref> --target HEAD --trusted-ref <base-ref>/);
+	assert.equal(fs.existsSync(path.join(noHook, 'lefthook.yml')), false, 'no lefthook.yml is created');
 });
 
 // ── dependency provisioning ─────────────────────────────────────────────────────
@@ -484,6 +618,81 @@ test('an unsupported declared jsonc-parser version is preserved, with a manual m
 });
 
 // ── the real generated hook ─────────────────────────────────────────────────────
+
+test('the printed no-lefthook instructions can be applied and the generated guard blocks', async () => {
+	const work = clonedRepository('no-hook-manual');
+	fs.writeFileSync(path.join(work, 'package.json'), '{"name":"consumer"}\n');
+	fs.writeFileSync(path.join(work, 'pnpm-lock.yaml'), '');
+	fs.writeFileSync(path.join(work, '.fallowrc.json'), fallowText(25));
+	// the manual action is complete enough to apply: it names the base, the trusted ref and the body
+	const said = await capture(['init', '--no-install', '--cwd', work, '--sets', 'policy-guard', '--base', 'main']);
+	assert.match(said, /--base origin\/main --target HEAD --trusted-ref origin\/main --policy lint-kit\.policy\.json --mode working-tree/);
+	assert.match(said, /scripts:\n\s+policy-guard\.sh:\n\s+runner: bash/);
+	fs.mkdirSync(path.join(work, '.lefthook', 'pre-push'), { recursive: true });
+	fs.writeFileSync(path.join(work, '.lefthook', 'pre-push', POLICY_SCRIPT), scriptBody('origin/main'));
+	fs.writeFileSync(path.join(work, 'lefthook.yml'), `pre-push:\n  scripts:\n    ${POLICY_SCRIPT}:\n      runner: bash\n`);
+	installJsoncParser(work);
+	git(work, ['add', '-A']);
+	git(work, ['commit', '-qm', 'base']);
+	git(work, ['branch', '-M', 'main']);
+	assert.equal(push(work, ['-q', '-u', 'origin', 'main']).code, 0, 'the base push is clean');
+	installLefthook(work);
+	git(work, ['checkout', '-qb', 'feature']);
+	fs.writeFileSync(path.join(work, '.fallowrc.json'), fallowText(40));
+	git(work, ['add', '-A']);
+	git(work, ['commit', '-qm', 'weaken the ceiling']);
+	const rejected = push(work, ['origin', 'feature']);
+	assert.notEqual(rejected.code, 0, rejected.output);
+	assert.match(rejected.output, /enrolled-weakened: health\.maxCognitive raised from 25 to 40/);
+});
+
+test('an existing canonical command without a file filter blocks a deletion-only push (real lefthook)', async () => {
+	const work = clonedRepository('command-deletion');
+	fs.writeFileSync(path.join(work, 'package.json'), '{"name":"consumer"}\n');
+	fs.writeFileSync(path.join(work, 'pnpm-lock.yaml'), '');
+	fs.writeFileSync(
+		path.join(work, 'lefthook.yml'),
+		`pre-push:\n  commands:\n    policy-check:\n      run: ${COMMAND} --base origin/main --target HEAD --trusted-ref origin/main --policy lint-kit.policy.json --mode working-tree\n`,
+	);
+	fs.writeFileSync(path.join(work, '.fallowrc.json'), fallowText(25));
+	assert.equal(await init(work, '--sets', 'policy-guard', '--base', 'main'), 0);
+	assert.equal(hooks(work)['pre-push'].scripts, undefined, 'the unfiltered canonical command is recognised; no script is added');
+	installJsoncParser(work);
+	git(work, ['add', '-A']);
+	git(work, ['commit', '-qm', 'base']);
+	git(work, ['branch', '-M', 'main']);
+	assert.equal(push(work, ['-q', '-u', 'origin', 'main']).code, 0, 'the base push is clean');
+	installLefthook(work);
+	git(work, ['checkout', '-qb', 'feature']);
+	git(work, ['rm', '-q', '.fallowrc.json']);
+	git(work, ['commit', '-qm', 'delete the enrolled config']);
+	const rejected = push(work, ['origin', 'feature']);
+	assert.notEqual(rejected.code, 0, rejected.output);
+	assert.match(rejected.output, /enrolled-change: \.fallowrc\.json/);
+});
+
+test('the generated manifest for colliding-looking paths is accepted by the real copied guard', async () => {
+	const work = realRepository('collision-real');
+	fs.writeFileSync(path.join(work, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n");
+	fs.writeFileSync(path.join(work, 'pnpm-lock.yaml'), '');
+	fs.writeFileSync(path.join(work, 'package.json'), '{"name":"root"}\n');
+	for (const member of ['a-b', 'a_b']) {
+		fs.mkdirSync(path.join(work, 'apps', member), { recursive: true });
+		fs.writeFileSync(path.join(work, 'apps', member, 'package.json'), `{"name":"${member}"}\n`);
+		fs.writeFileSync(path.join(work, 'apps', member, '.fallowrc.json'), fallowText(25));
+	}
+	assert.equal(await init(work, '--sets', 'policy-guard', '--base', 'main'), 0);
+	installJsoncParser(work);
+	excludeNodeModules(work);
+	git(work, ['add', '-A']);
+	git(work, ['commit', '-qm', 'base']);
+	const args = ['--base', 'main', '--target', 'HEAD', '--trusted-ref', 'HEAD', '--policy', 'lint-kit.policy.json', '--mode', 'working-tree'];
+	assert.equal(runCopied(work, args).code, 0, 'the reviewed baseline passes with every id unique');
+	fs.writeFileSync(path.join(work, 'apps', 'a-b', '.fallowrc.json'), fallowText(40));
+	const weakened = runCopied(work, args);
+	assert.equal(weakened.code, 1, weakened.output);
+	assert.match(weakened.stdout, /enrolled-weakened: health\.maxCognitive raised from 25 to 40/);
+});
 
 test('the generated pre-push script blocks a deletion-only change to an enrolled config (real lefthook)', async () => {
 	const work = await hookedClone('deletion');

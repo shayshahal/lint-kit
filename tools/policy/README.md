@@ -160,16 +160,23 @@ policy-guard: enrolled-weakened: health.maxCognitive raised from 25 to 40 (a max
 
 - The script is a shell script, not a file-filtered command, so a deletion-only push still runs it.
   It runs `--mode working-tree` with an explicit `--base` and `--trusted-ref`, and exits `2` (never
-  clean) when the trusted enrollment, the base or the parser is missing.
+  clean) when the trusted enrollment, the base or the parser needed for a parsed enrollment is
+  missing. An existing command is recognised only when it has no file filter and the step is
+  exactly `{ run }` for the supported run with an approved ref; a filtered command is a manual
+  action.
 - The generated manifest enrolls only what a fresh install can verify: the copied command as
   `opaque`, each real Fallow JSONC source with only the identities it provably has, and each copied
-  checker/config source the release protects whole as `opaque`. A repeat never rewrites or broadens
-  an existing manifest; an enrollment edit is a reviewed policy change.
+  checker/config source the release protects whole as `opaque`. An enrollment's `id` is its source
+  path, so two configs a slug would fold together stay distinct. A config that is not a regular
+  UTF-8 file is left unchanged and enrolled nowhere. A repeat never rewrites or broadens an
+  existing manifest; an enrollment edit is a reviewed policy change.
 - The `jsonc` adapter loads `jsonc-parser` `3.3.1` from the repository root, because the command
   lives at `tools/policy/`. A dependency in a single workspace member does not resolve there.
-  `init` adds `jsonc-parser@3.3.1` to a root `package.json`; a repository without one, an
-  unsupported declared version, or `--no-install` is a manual action, and the guard exits `2` until
-  the parser is available.
+  `init` adds `jsonc-parser@3.3.1` to a root `package.json`; a repository without one or
+  `--no-install` is a manual action. A different declared version is preserved as it is: the copied
+  guard does not check the declared version and loads the parser only when a parsed enrollment
+  needs it, so that version is untested here. A missing parser (needed to compare a parsed
+  enrollment) exits `2`.
 - A fresh enrollment must be reviewed and landed at the trusted ref before the local guard can run;
   until then the guard exits `2`. The local hook is feedback, not authorization: required CI must
   run the same command from a trusted ref and block exit `1` and `2`. That CI wiring is not

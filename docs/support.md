@@ -48,16 +48,20 @@ Opt-in. `init` copies `tools/policy/policy-guard.mjs` and its README, writes one
 | `tools/policy/policy-guard.mjs` | `opaque`, so a silent edit to the guard itself is an enrolled change. |
 | `tools/python/structure_check.py`, when present | `opaque`. |
 | An existing `lint-kit.policy.json` | Left byte-for-byte. A repeat never rewrites or broadens it; a new enrollment is a reviewed policy change made by hand. |
-| A pre-push step that already runs the guard | A canonical repository-root script or command is recognised and nothing is added. Any other shape that names the copied command is preserved with the supported step printed, never called equivalent. |
-| No `lefthook.yml` | No step is wired; the script to add is printed. |
-| No root `package.json` | `jsonc-parser@3.3.1` is not installed; a manual action is printed and `init` creates no package. An unsupported declared version is preserved, with a manual message. |
+| A pre-push step that already runs the guard | A repository-root script whose step is exactly `{ runner: bash }` and whose body is the exact generated body, or a command that is exactly `{ run }` for the supported repository-root working-tree run with an approved (plain, non-`HEAD`) ref, is recognised and nothing is added. Any other shape that names the copied command is preserved with the supported step printed, never called equivalent. |
+| An orphan `.lefthook/pre-push/policy-guard.sh` with no configured step | Left byte-for-byte unless its body is the exact generated body, in which case the step is wired without rewriting it. A directory, symbolic link or unreadable file is never followed or overwritten. |
+| No `lefthook.yml` | No step is wired and no file or config is created; the complete manual action (the script body with an explicit base and trusted ref, and the yml) is printed. |
+| No root `package.json` | `jsonc-parser@3.3.1` is not installed; a manual action is printed and `init` creates no package. A different declared version is preserved as it is, with a manual message: the copied guard does not check the declared version and loads the parser only when a parsed enrollment needs it, so that version is untested here. |
 
 The script is not file-filtered, so a deletion-only push still runs it. It runs
 `--mode working-tree` with an explicit `--base` and `--trusted-ref`; a local run names the same ref
-for both, deliberately, and the guard never defaults the trusted snapshot to `HEAD`. The parser
-resolves from the repository root, because the command lives at `tools/policy/`: a dependency in
-one workspace member does not resolve there. A missing base, a missing enrollment at the trusted
-ref, or a missing parser exits `2`, never clean.
+for both, deliberately, and the guard never defaults the trusted snapshot to `HEAD`. An existing
+pre-push command runs either way only when it has no file filter: a command with a `glob` or
+`files` filter is skipped when the push leaves no matching file, so that shape is a manual action,
+not an equivalent. The parser resolves from the repository root, because the command lives at
+`tools/policy/`: a dependency in one workspace member does not resolve there. A missing base, a
+missing enrollment at the trusted ref, or a missing parser (needed to compare a parsed enrollment)
+exits `2`, never clean.
 
 Protected and deferred: the first release protects the copied guard as a whole, each readable
 Fallow JSONC source by its declared identities, and `tools/python/structure_check.py` whole.
