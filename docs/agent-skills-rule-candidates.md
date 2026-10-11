@@ -5,16 +5,17 @@ that can be mechanized as a lint rule or a rule, mapped onto the enforcement sur
 repository already installs.
 
 - **Source:** `https://github.com/addyosmani/agent-skills` at commit
-  **`1401c8b8030e023baeebb31781a6653fe8e93026`** (`git clone --depth 1`, read on 2026-10-09).
+  **`1401c8b8030e023baeebb31781a6653fe8e93026`** (`git clone --depth 1`).
 - **Corpus:** 210 tracked files, of which **118 are reviewable**. Excluded: 10 `*-test.*` files
   (the source repo's own regression suites, which are its fixtures rather than its guidance) and 82
   files under `evals/{cases,fixtures,plugin}/` (the eval corpus — planted-bug fixtures, trigger
   cases, grader prompts).
-- **Candidates:** 458 total — **357 mechanically enforceable**, 100 enforceable only with a heuristic.
+- **Candidates:** 456 after trimming (was 458) — **355 mechanically enforceable**, 100 enforceable only with a
+  heuristic.
 - **Method:** every file was read, and every candidate carries a verbatim quote with a file path and
   line number. All **701 citations were machine-verified** against the pinned clone: each path
   exists, each line number is in range, and each quoted string appears on exactly the lines cited.
-  The verifier is reproducible; the run reports 0 failures and 0 off-by-one citations.
+  The verifier reports 0 failures and 0 off-by-one citations.
 - **Nothing is asserted without a citation.** Where the source contradicts itself, the catalog says
   so rather than picking a side (see "Contradictions found in the source" below).
 
@@ -27,144 +28,223 @@ passing example, the false-positive risk, and an effort estimate — lives in
 
 A candidate is **mechanical** when a rule can decide it from source text, a diff, git metadata, CI
 config, or a file's structure. It is **heuristic-only** when the decision needs a judgement a rule
-can approximate but not make — those are worth reporting and not worth failing a build on.
+can approximate but not make — those are worth reporting and not worth failing a build on. The
+line is drawn at *trust*: almost anything can be made decidable by narrowing the definition, and the
+question is whether the resulting verdict is trustworthy enough to break someone's build on.
 
 ## Coverage
 
 Every reviewable file in the source repo is accounted for below. Nothing was skipped: the
 reconciliation started from `git ls-files` and the table is the whole set.
 
-| source file | area | candidates in that area |
+| source file | area | candidates |
 | --- | --- | ---: |
-| `.agents/plugins/marketplace.json` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude-plugin/marketplace.json` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude-plugin/plugin.json` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude/commands/build.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude/commands/code-simplify.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude/commands/constraints.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude/commands/plan.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude/commands/review.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude/commands/ship.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude/commands/spec.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude/commands/test.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude/commands/webperf.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.claude/rules/skills-contributing.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.codex-plugin/plugin.json` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.gemini/commands/build.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.gemini/commands/code-simplify.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.gemini/commands/constraints.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.gemini/commands/planning.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.gemini/commands/review.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.gemini/commands/ship.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.gemini/commands/spec.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.gemini/commands/test.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.gemini/commands/webperf.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.gitattributes` | [17-remaining-files](agent-skills-rule-candidates/17-remaining-files.md) | — |
-| `.github/ISSUE_TEMPLATE/skill-gap.yml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.github/workflows/test-plugin-install.yml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `.gitignore` | [17-remaining-files](agent-skills-rule-candidates/17-remaining-files.md) | — |
-| `.opencode/skills` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `AGENTS.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `CLAUDE.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `CONTRIBUTING.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `LICENSE` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `README.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `agents/code-reviewer.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `agents/security-auditor.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `agents/test-engineer.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `agents/web-performance-auditor.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `commands/build.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `commands/code-simplify.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `commands/constraints.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `commands/planning.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `commands/review.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `commands/ship.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `commands/spec.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `commands/test.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `commands/webperf.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/adoption-guide.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/advanced-per-agent-configuration.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/agents.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/antigravity-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/codex-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/commandcode-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/comparison.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/copilot-cli-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/copilot-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/cursor-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/developer-onboarding.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/gemini-cli-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/getting-started.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/opencode-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/other-hosts.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/skill-anatomy.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `docs/windsurf-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `evals/README.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `evals/skill-impact.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `hooks/SDD-CACHE.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `hooks/SIMPLIFY-IGNORE.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `hooks/sdd-cache-post.sh` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `hooks/sdd-cache-pre.sh` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `hooks/session-start.sh` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `hooks/simplify-ignore.sh` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `plugin.json` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `references/accessibility-checklist.md` | [06-accessibility-and-security-checklists](agent-skills-rule-candidates/06-accessibility-and-security-checklists.md) | — |
-| `references/definition-of-done.md` | [05-testing-references-and-spec-driven](agent-skills-rule-candidates/05-testing-references-and-spec-driven.md) | — |
-| `references/observability-checklist.md` | [07-performance-and-observability-checklists](agent-skills-rule-candidates/07-performance-and-observability-checklists.md) | — |
-| `references/orchestration-patterns.md` | [08-meta-skill-and-orchestration](agent-skills-rule-candidates/08-meta-skill-and-orchestration.md) | — |
-| `references/performance-checklist.md` | [07-performance-and-observability-checklists](agent-skills-rule-candidates/07-performance-and-observability-checklists.md) | — |
-| `references/security-checklist.md` | [06-accessibility-and-security-checklists](agent-skills-rule-candidates/06-accessibility-and-security-checklists.md) | — |
-| `references/testing-patterns.md` | [05-testing-references-and-spec-driven](agent-skills-rule-candidates/05-testing-references-and-spec-driven.md) | — |
-| `scripts/lib/skill-lint.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `scripts/run-evals.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `scripts/validate-artifact-paths.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `scripts/validate-commands.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `scripts/validate-reference-links.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `scripts/validate-skills.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `scripts/validate-versions.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | — |
-| `skills/api-and-interface-design/SKILL.md` | [09-code-simplification-and-api-design](agent-skills-rule-candidates/09-code-simplification-and-api-design.md) | — |
-| `skills/browser-testing-with-devtools/SKILL.md` | [10-browser-testing-and-ci](agent-skills-rule-candidates/10-browser-testing-and-ci.md) | — |
-| `skills/ci-cd-and-automation/SKILL.md` | [10-browser-testing-and-ci](agent-skills-rule-candidates/10-browser-testing-and-ci.md) | — |
-| `skills/code-review-and-quality/SKILL.md` | [11-code-review](agent-skills-rule-candidates/11-code-review.md) | — |
-| `skills/code-simplification/SKILL.md` | [09-code-simplification-and-api-design](agent-skills-rule-candidates/09-code-simplification-and-api-design.md) | — |
-| `skills/constraint-driven-development/SKILL.md` | [13-constraints-floor-guard-context](agent-skills-rule-candidates/13-constraints-floor-guard-context.md) | — |
-| `skills/constraint-driven-development/references/floor-guard.md` | [13-constraints-floor-guard-context](agent-skills-rule-candidates/13-constraints-floor-guard-context.md) | — |
-| `skills/context-engineering/SKILL.md` | [13-constraints-floor-guard-context](agent-skills-rule-candidates/13-constraints-floor-guard-context.md) | — |
-| `skills/debugging-and-error-recovery/SKILL.md` | [12-docs-deprecation-debugging](agent-skills-rule-candidates/12-docs-deprecation-debugging.md) | — |
-| `skills/deprecation-and-migration/SKILL.md` | [12-docs-deprecation-debugging](agent-skills-rule-candidates/12-docs-deprecation-debugging.md) | — |
-| `skills/documentation-and-adrs/SKILL.md` | [12-docs-deprecation-debugging](agent-skills-rule-candidates/12-docs-deprecation-debugging.md) | — |
-| `skills/doubt-driven-development/SKILL.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | — |
-| `skills/frontend-ui-engineering/SKILL.md` | [15-frontend-ui-and-increments](agent-skills-rule-candidates/15-frontend-ui-and-increments.md) | — |
-| `skills/git-workflow-and-versioning/SKILL.md` | [14-git-workflow](agent-skills-rule-candidates/14-git-workflow.md) | — |
-| `skills/idea-refine/SKILL.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | — |
-| `skills/idea-refine/examples.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | — |
-| `skills/idea-refine/frameworks.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | — |
-| `skills/idea-refine/refinement-criteria.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | — |
-| `skills/idea-refine/scripts/idea-refine.sh` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | — |
-| `skills/incremental-implementation/SKILL.md` | [15-frontend-ui-and-increments](agent-skills-rule-candidates/15-frontend-ui-and-increments.md) | — |
-| `skills/interview-me/SKILL.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | — |
-| `skills/observability-and-instrumentation/SKILL.md` | [03-performance-and-observability](agent-skills-rule-candidates/03-performance-and-observability.md) | — |
-| `skills/performance-optimization/SKILL.md` | [03-performance-and-observability](agent-skills-rule-candidates/03-performance-and-observability.md) | — |
-| `skills/performance-optimization/references/optimization-patterns.md` | [03-performance-and-observability](agent-skills-rule-candidates/03-performance-and-observability.md) | — |
-| `skills/planning-and-task-breakdown/SKILL.md` | [03-performance-and-observability](agent-skills-rule-candidates/03-performance-and-observability.md) | — |
-| `skills/security-and-hardening/SKILL.md` | [02-security](agent-skills-rule-candidates/02-security.md) | — |
-| `skills/security-and-hardening/references/hardening-patterns.md` | [02-security](agent-skills-rule-candidates/02-security.md) | — |
-| `skills/shipping-and-launch/SKILL.md` | [03-performance-and-observability](agent-skills-rule-candidates/03-performance-and-observability.md) | — |
-| `skills/source-driven-development/SKILL.md` | [05-testing-references-and-spec-driven](agent-skills-rule-candidates/05-testing-references-and-spec-driven.md) | — |
-| `skills/spec-driven-development/SKILL.md` | [05-testing-references-and-spec-driven](agent-skills-rule-candidates/05-testing-references-and-spec-driven.md) | — |
-| `skills/test-driven-development/SKILL.md` | [04-test-quality-and-specs](agent-skills-rule-candidates/04-test-quality-and-specs.md) | — |
-| `skills/using-agent-skills/SKILL.md` | [08-meta-skill-and-orchestration](agent-skills-rule-candidates/08-meta-skill-and-orchestration.md) | — |
+| `.agents/plugins/marketplace.json` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude-plugin/marketplace.json` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude-plugin/plugin.json` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude/commands/build.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude/commands/code-simplify.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude/commands/constraints.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude/commands/plan.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude/commands/review.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude/commands/ship.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude/commands/spec.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude/commands/test.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude/commands/webperf.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.claude/rules/skills-contributing.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.codex-plugin/plugin.json` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.gemini/commands/build.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.gemini/commands/code-simplify.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.gemini/commands/constraints.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.gemini/commands/planning.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.gemini/commands/review.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.gemini/commands/ship.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.gemini/commands/spec.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.gemini/commands/test.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.gemini/commands/webperf.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.gitattributes` | [17-remaining-files](agent-skills-rule-candidates/17-remaining-files.md) | 8 |
+| `.github/ISSUE_TEMPLATE/skill-gap.yml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.github/workflows/test-plugin-install.yml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `.gitignore` | [17-remaining-files](agent-skills-rule-candidates/17-remaining-files.md) | 8 |
+| `.opencode/skills` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `AGENTS.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `CLAUDE.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `CONTRIBUTING.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `LICENSE` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `README.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `agents/code-reviewer.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `agents/security-auditor.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `agents/test-engineer.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `agents/web-performance-auditor.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `commands/build.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `commands/code-simplify.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `commands/constraints.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `commands/planning.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `commands/review.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `commands/ship.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `commands/spec.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `commands/test.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `commands/webperf.toml` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/adoption-guide.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/advanced-per-agent-configuration.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/agents.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/antigravity-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/codex-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/commandcode-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/comparison.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/copilot-cli-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/copilot-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/cursor-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/developer-onboarding.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/gemini-cli-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/getting-started.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/opencode-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/other-hosts.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/skill-anatomy.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `docs/windsurf-setup.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `evals/README.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `evals/skill-impact.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `hooks/SDD-CACHE.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `hooks/SIMPLIFY-IGNORE.md` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `hooks/sdd-cache-post.sh` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `hooks/sdd-cache-pre.sh` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `hooks/session-start.sh` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `hooks/simplify-ignore.sh` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `plugin.json` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `references/accessibility-checklist.md` | [06-accessibility-and-security-checklists](agent-skills-rule-candidates/06-accessibility-and-security-checklists.md) | 30 |
+| `references/definition-of-done.md` | [05-testing-references-and-spec-driven](agent-skills-rule-candidates/05-testing-references-and-spec-driven.md) | 33 |
+| `references/observability-checklist.md` | [07-performance-and-observability-checklists](agent-skills-rule-candidates/07-performance-and-observability-checklists.md) | 28 |
+| `references/orchestration-patterns.md` | [08-meta-skill-and-orchestration](agent-skills-rule-candidates/08-meta-skill-and-orchestration.md) | 15 |
+| `references/performance-checklist.md` | [07-performance-and-observability-checklists](agent-skills-rule-candidates/07-performance-and-observability-checklists.md) | 28 |
+| `references/security-checklist.md` | [06-accessibility-and-security-checklists](agent-skills-rule-candidates/06-accessibility-and-security-checklists.md) | 30 |
+| `references/testing-patterns.md` | [05-testing-references-and-spec-driven](agent-skills-rule-candidates/05-testing-references-and-spec-driven.md) | 33 |
+| `scripts/lib/skill-lint.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `scripts/run-evals.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `scripts/validate-artifact-paths.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `scripts/validate-commands.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `scripts/validate-reference-links.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `scripts/validate-skills.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `scripts/validate-versions.js` | [01-governance-and-validators](agent-skills-rule-candidates/01-governance-and-validators.md) | 62 |
+| `skills/api-and-interface-design/SKILL.md` | [09-code-simplification-and-api-design](agent-skills-rule-candidates/09-code-simplification-and-api-design.md) | 27 |
+| `skills/browser-testing-with-devtools/SKILL.md` | [10-browser-testing-and-ci](agent-skills-rule-candidates/10-browser-testing-and-ci.md) | 22 |
+| `skills/ci-cd-and-automation/SKILL.md` | [10-browser-testing-and-ci](agent-skills-rule-candidates/10-browser-testing-and-ci.md) | 22 |
+| `skills/code-review-and-quality/SKILL.md` | [11-code-review](agent-skills-rule-candidates/11-code-review.md) | 13 |
+| `skills/code-simplification/SKILL.md` | [09-code-simplification-and-api-design](agent-skills-rule-candidates/09-code-simplification-and-api-design.md) | 27 |
+| `skills/constraint-driven-development/SKILL.md` | [13-constraints-floor-guard-context](agent-skills-rule-candidates/13-constraints-floor-guard-context.md) | 30 |
+| `skills/constraint-driven-development/references/floor-guard.md` | [13-constraints-floor-guard-context](agent-skills-rule-candidates/13-constraints-floor-guard-context.md) | 30 |
+| `skills/context-engineering/SKILL.md` | [13-constraints-floor-guard-context](agent-skills-rule-candidates/13-constraints-floor-guard-context.md) | 30 |
+| `skills/debugging-and-error-recovery/SKILL.md` | [12-docs-deprecation-debugging](agent-skills-rule-candidates/12-docs-deprecation-debugging.md) | 30 |
+| `skills/deprecation-and-migration/SKILL.md` | [12-docs-deprecation-debugging](agent-skills-rule-candidates/12-docs-deprecation-debugging.md) | 30 |
+| `skills/documentation-and-adrs/SKILL.md` | [12-docs-deprecation-debugging](agent-skills-rule-candidates/12-docs-deprecation-debugging.md) | 30 |
+| `skills/doubt-driven-development/SKILL.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | 30 |
+| `skills/frontend-ui-engineering/SKILL.md` | [15-frontend-ui-and-increments](agent-skills-rule-candidates/15-frontend-ui-and-increments.md) | 23 |
+| `skills/git-workflow-and-versioning/SKILL.md` | [14-git-workflow](agent-skills-rule-candidates/14-git-workflow.md) | 17 |
+| `skills/idea-refine/SKILL.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | 30 |
+| `skills/idea-refine/examples.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | 30 |
+| `skills/idea-refine/frameworks.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | 30 |
+| `skills/idea-refine/refinement-criteria.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | 30 |
+| `skills/idea-refine/scripts/idea-refine.sh` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | 30 |
+| `skills/incremental-implementation/SKILL.md` | [15-frontend-ui-and-increments](agent-skills-rule-candidates/15-frontend-ui-and-increments.md) | 23 |
+| `skills/interview-me/SKILL.md` | [16-doubt-interview-ideation](agent-skills-rule-candidates/16-doubt-interview-ideation.md) | 30 |
+| `skills/observability-and-instrumentation/SKILL.md` | [03-performance-and-observability](agent-skills-rule-candidates/03-performance-and-observability.md) | 36 |
+| `skills/performance-optimization/SKILL.md` | [03-performance-and-observability](agent-skills-rule-candidates/03-performance-and-observability.md) | 36 |
+| `skills/performance-optimization/references/optimization-patterns.md` | [03-performance-and-observability](agent-skills-rule-candidates/03-performance-and-observability.md) | 36 |
+| `skills/planning-and-task-breakdown/SKILL.md` | [03-performance-and-observability](agent-skills-rule-candidates/03-performance-and-observability.md) | 36 |
+| `skills/security-and-hardening/SKILL.md` | [02-security](agent-skills-rule-candidates/02-security.md) | 37 |
+| `skills/security-and-hardening/references/hardening-patterns.md` | [02-security](agent-skills-rule-candidates/02-security.md) | 37 |
+| `skills/shipping-and-launch/SKILL.md` | [03-performance-and-observability](agent-skills-rule-candidates/03-performance-and-observability.md) | 36 |
+| `skills/source-driven-development/SKILL.md` | [05-testing-references-and-spec-driven](agent-skills-rule-candidates/05-testing-references-and-spec-driven.md) | 33 |
+| `skills/spec-driven-development/SKILL.md` | [05-testing-references-and-spec-driven](agent-skills-rule-candidates/05-testing-references-and-spec-driven.md) | 33 |
+| `skills/test-driven-development/SKILL.md` | [04-test-quality-and-specs](agent-skills-rule-candidates/04-test-quality-and-specs.md) | 15 |
+| `skills/using-agent-skills/SKILL.md` | [08-meta-skill-and-orchestration](agent-skills-rule-candidates/08-meta-skill-and-orchestration.md) | 15 |
+
+## Already enforced by lint-kit
+
+These were candidates in the first pass of this catalog. They are not listed
+below because `lint-kit` already enforces the same constraint on the same kind of
+artifact, so implementing them would add a second rule for one job. Recorded here so
+the work is not lost and so nobody re-derives them.
+
+| lint-kit rule | candidates it already covers | how it was decided | area |
+| --- | --- | --- | --- |
+| `slop-patterns/no-trivial-wrapper` | `no-async-function-that-only-returns-await` | measured | 09-code-simplification-and-api-design |
+| `structure_check.py / jscpd (new duplication)` | `no-duplicated-business-logic` | judged | 05-testing-references-and-spec-driven |
+
+
+
+## Partial overlaps — implement with care
+
+`lint-kit` already decides part of these candidates. They stay in the catalog — the
+uncovered part is real work — but implementing one means extending an existing rule or
+coexisting with it deliberately, not adding a rule that collides with it. This is the
+part of the trim that carries information: it is where a new rule would fight an old one.
+
+| candidate | lint-kit already decides | what is left to do | area |
+| --- | --- | --- | --- |
+| `animations-use-compositor-friendly-properties` | `tailwind-patterns` `no-restricted-syntax` (transition-all pattern) fires on the candidate's stated fail example `class="transition-all duration-300"` — MEASURED: `node ./wf-probe/measure.mjs` (which runs `lint('<div class="transition-all duration-300">x</div>', 'src/routes/+page.svelte', config())` from `tools/eslint/tailwind-patterns.mjs` via `test/helpers.js`) output `no-restricted-syntax: "No transition-all: list what changes. ..."`. | The candidate's other half — plain-CSS transitions/animations on layout properties (`width`/`height`/`top`/`left`/`margin`/`padding`) outside Tailwind class tokens — is not covered by any lint-kit rule. Candidate kept. | 07-performance-and-observability-checklists |
+| `change-size-thresholds` | `structure_check.py` computes a merge-base diff and flags new/crossed complexity thresholds | the candidate's raw changed-line bands (~100 target, ~300 warning, ~1000 failure) on PR size; lint-kit has no line-count size gate | 11-code-review |
+| `clean-console-standard-is-a-gate` | `svelte/no-at-debug-tags` covers `{@debug}` and `svelte/no-inspect` covers `$inspect` (adjacent console-hygiene surface) | the candidate's zero-errors-and-warnings gate on runtime `console.error`/`console.warn` output collected from an E2E run; MEASURED: `svelte.configs.recommended` reports exit 0 on a probe containing `console.log`, `console.warn`, `document.cookie`, and `fetch` (no console rule fires) | 10-browser-testing-and-ci |
+| `color-is-not-the-only-signal` | `tailwind-patterns` reads Tailwind class tokens and `untranslated-text` reads user-visible text, so both halves of the sibling-node check are visible to lint-kit | no rule requires a non-color signal (icon/text/border) alongside a color-only error state | 06-accessibility-and-security-checklists |
+| `component-line-ceiling` | `structure_check.py` watches a new/crossed complexity threshold and `jscpd` watches duplication against the merge-base | neither decides a 200-line component file ceiling; no line-count rule exists. Candidate stays. | 15-frontend-ui-and-increments |
+| `damp-over-dry-in-tests` | `structure_check.py`/jscpd flags new duplication on the branch diff | it has no test-file exemption (`**/*.test.*`, `**/*.spec.*`, `**/tests/**`); the candidate asks that duplication detection skip test files, which lint-kit does not do | 04-test-quality-and-specs |
+| `dead-code-identified-before-deletion` | `fallow` `error` rules detect dead code the branch introduced; `fallow` `warn` rules cover unused-exports/unused-types | the candidate requires a `DEAD CODE IDENTIFIED` evidence block in the PR body; lint-kit has no PR-body surface | 11-code-review |
+| `empty-error-and-loading-states-are-handled` | `svelte/require-each-key` constrains `{#each}` keys, not empty/loading/error branches | missing empty/loading/error branches. Candidate stays. | 15-frontend-ui-and-increments |
+| `error-response-exposes-no-internals` | `error-handling/*` (3 rules) govern catch blocks that drop/stringify errors | nothing forbids `err.message`/`err.stack`/`err.sql` in a response body. MEASURED: `try { doWork(); } catch (err) { res.status(500).json({ error: err.message, stack: err.stack }); }` under all three `error-handling` rules → exit 0, no findings | 06-accessibility-and-security-checklists |
+| `eval-rank1-floor-must-not-be-lowered` | `structure_check.py` — the same branch-vs-merge-base comparison shape | monotonic non-decrease assertion on the `--min-rank1` value in CI config | 01-governance-and-validators |
+| `file-size-boundary-with-decomposition` | `fallow` complexity rules and `structure_check.py` complexity thresholds cover function complexity | the candidate's total-file-length signal (~1000 total lines) and decompose-before-adding requirement; lint-kit has no file-length rule | 11-code-review |
+| `floor-guard-detects-the-five-step-6-moves` | same `error-handling/no-swallowed-catch` partial for its "unfinished work (a stub or empty `catch`)" sub-case (judged) | the other four moves (weakened threshold, test made easier incl. assertion-removed-from-test-that-stayed, new suppression comment, new Exceptions row); the guard-contract framing (merge-base input, exit codes, ignore file) | 13-constraints-floor-guard-context |
+| `floor-no-unimplemented-stubs` | `error-handling/no-swallowed-catch` covers the empty-`catch {}` half (an empty catch block is reported unless it carries an explanatory comment); ruff `B001` (bare `except: pass`) is adjacent but is NOT a lint-kit-installed rule — lint-kit installs only `FAST`+`ASYNC`, so per inventory §3 this is partial, not coverage (judged, not measured — §6 gives no command for the error-handling set) | the `throw new Error("Not implemented")` / `NotImplementedError` / `todo!()` stub half; the branch-diff scoping; the abstract-method exemption; the `TODO(#issue)` escape | 13-constraints-floor-guard-context |
+| `form-input-has-an-associated-label` | `untranslated-text/no-untranslated-text` reads literal `aria-label`/`label` values | nothing requires a `<label>`/`aria-label` association on inputs | 06-accessibility-and-security-checklists |
+| `generic-error-bodies` | Adjacent only: `error-handling/no-stringified-error` constrains `String(e)` / `` `${e}` `` / `e.toString()` on a caught error (read from `tools/eslint/error-handling.mjs`). | The candidate's fail shape is untouched (MEASURED with the error-handling config at full inspection: `res.status(500).json({ error: err.stack })` produces no finding). | 02-security |
+| `icon-only-controls-have-an-accessible-name` | `untranslated-text/no-untranslated-text` reads literal `aria-label` values | nothing requires an accessible name on icon-only buttons/links (same class as `img-has-alt-text`, which was MEASURED to not fire when the attribute is absent) | 06-accessibility-and-security-checklists |
+| `img-has-alt-text` | `untranslated-text/no-untranslated-text` reads literal `alt` values (must come from `m.key()`), so it sees `alt` text when present | nothing requires `alt` to be present. MEASURED: `<img src="/logo.svg" />` under `svelte.configs.recommended` + `prefer-style-directive` + `require-each-key` + `untranslated-text/no-untranslated-text` → exit 0, no findings | 06-accessibility-and-security-checklists |
+| `imports-resolve-to-real-modules` | the `svelte-check --tsgo` and `pyright` type gates would flag an unresolvable import as a type error as a side effect (judged — §6 provides no type-gate probe command, and per instructions this stays PARTIAL) | a dedicated resolvable-import check on added lines (file / manifest / path-alias resolution); the hallucinated-API intent; the virtual-module allowlist | 13-constraints-floor-guard-context |
+| `instrumentation-added-for-a-bug-is-removed` | Adjacent only: `svelte/no-at-debug-tags` (`{@debug}`) and `svelte/no-inspect` (`$inspect`) ban Svelte debug constructs. MEASURED: both fire on `{@debug value}` / `$inspect(value)` in a `.svelte` file, and a `console.log` + commented-out code in the same `.svelte` file produced exit 0 — neither rule touches `console.log`. | The candidate's constraint — a `console.log` added while debugging must be removed before merge. No lint-kit rule covers `console.log`. | 12-docs-deprecation-debugging |
+| `loading-uses-skeletons-with-aria-busy` | `untranslated-text/no-untranslated-text` reads `aria-label` but only to require catalogue keys (`m.key()`), not skeletons or `aria-busy` | spinner-vs-skeleton choice and `aria-busy` presence. Candidate stays. | 15-frontend-ui-and-increments |
+| `never-mix-formatting-with-behavior` | `structure_check.py` — the same merge-base diff-comparison shape already used for complexity/duplication/cycles | formatting-only vs behaviour-affecting hunk classification and the "split the formatting commit" rule | 01-governance-and-validators |
+| `no-abstraction-before-the-third-use` | `slop-patterns/no-trivial-wrapper` covers only trivial argument-forwarding functions; `fallow` covers dead code the branch introduced | a generic <3-call-site abstraction threshold. Candidate stays. | 15-frontend-ui-and-increments |
+| `no-commented-out-code` | `prose/prefer-jsdoc` incidentally fires when a `//` line sits directly above an export or member (MEASURED: `// const oldImplementation = () => { old(); }` above `export function` → `probe/prefer-jsdoc` error "Use `/** */`"; the same comment mid-function → no findings, exit 0). Its intent is opposite (convert to JSDoc vs delete). | The candidate's constraint — commented-out code must be deleted, anywhere in a file. No lint-kit rule parses a comment body as code. | 12-docs-deprecation-debugging |
+| `no-console-log-debugging-in-production` | Same adjacency as above: `{@debug}` / `$inspect` covered, `console.log` is not — covered by the same MEASURED probe (exit 0) | Release-gate check for `console.log` / `console.debug` / `print(` added by the release branch; no logger precondition; unenforced | 03-performance-and-observability |
+| `no-dead-code-debug-output-or-commented-blocks` | fallow `error` dead-code rules cover the "unreferenced added declaration" third of the candidate (branch-introduced dead code) | the candidate's delta — added `console.log` debug output and added commented-out code blocks — is not enforced: MEASURED that `svelte/no-at-debug-tags` / `svelte/no-inspect` do not fire on `console.log` (ESLint `svelte.configs.recommended` + `prefer-style-directive` + `require-each-key` on a `case.svelte` containing `console.log('here')` exited 0 with no findings), and there is no commented-out-code or markdown surface | 05-testing-references-and-spec-driven |
+| `no-dead-code-left-behind-by-a-refactor` | fallow `error` rules flag dead code the branch introduced | the candidate's scope (imports/bindings the refactor diff itself orphaned, as a branch-scoped check); fallow's exact dead-code shapes are an external tool's surface and unverified here | 09-code-simplification-and-api-design |
+| `no-deleting-code-or-comments-the-task-did-not-touch` | `fallow` `error` rules report dead code the branch introduced | the candidate forbids *removing* comments/code the task did not touch without approval — a removal constraint, not an introduction report | 08-meta-skill-and-orchestration |
+| `no-duplicated-content-between-skills` | `jscpd` / `structure_check.py` — new-duplication detection against the merge-base, same copy-paste-detection mechanism the candidate proposes | prose-tuned threshold (>= 15 lines / >= 100 tokens), `skills/**/*.md` scope, fenced-code/short-list exclusions, and the `references/` home rule — lint-kit's duplication check targets code, not markdown prose | 01-governance-and-validators |
+| `no-eval-on-untrusted-input` | Adjacent only: oxlint's *built-in* `eslint(no-eval)` warns on any `eval` (MEASURED: `eval(modelOutput)` drew `warning eslint(no-eval): eval can be harmful` during the probe). | That default is not lint-kit's surface — lint-kit installs only the two `slop-patterns` rules, neither of which fired on `eval(modelOutput)`, `new Function`, or `exec(modelOutput)` (MEASURED, same probe run). No non-literal-argument distinction exists. | 02-security |
+| `no-inline-styles-or-arbitrary-values` | `svelte/prefer-style-directive` covers the inline-`style="…"` string half: MEASURED to fire on `style="color: red"` and `style="margin-top: 2.3rem"` (command: `./node_modules/.bin/eslint --no-config-lookup --config wf-probe/eslint.config.mjs wf-probe/case.svelte` on a probe with `...svelte.configs.recommended` plus `svelte/prefer-style-directive: error` → `2:13 error Can use style directives instead svelte/prefer-style-directive`, `3:13 error Can use style directives instead svelte/prefer-style-directive`; and MEASURED to not fire on `class="p-[13px]"` or `style={expr}` — same command on a second probe exited 0 with no errors) | the off-scale / arbitrary-value half: `p-[13px]`, bare `13px`, `2.3rem` as spacing values. No `tailwind-patterns` rule (viewport-vh, transition-all, dark-override, light-only, untitled-overlay, lucide-barrel) decides arbitrary spacing values. Candidate stays. | 15-frontend-ui-and-increments |
+| `no-one-time-utility-file` | same as above (`no-trivial-wrapper` for forwarding wrappers; `fallow unused-exports` for dead code) | a new single-caller file under `utils/`/`lib/`/`helpers/`. Candidate stays. | 15-frontend-ui-and-increments |
+| `no-raw-html-with-untrusted-data` | `svelte/no-at-html-tags` flags the template form `{@html}` | the imperative DOM sinks this candidate targets (`el.innerHTML = ...`, `dangerouslySetInnerHTML`, `document.write`). MEASURED: an ESLint probe with svelte.configs.recommended + svelte/no-dom-manipulating on `el.innerHTML = comment.body;` exited 0 with no findings - different artifacts, so NOT covered | 02-security |
+| `no-redundant-boolean-return` | ruff `SIM103` (needless bool) is adjacent, but same caveat as above: Python-only and not installed by `init`; oxlint `slop-patterns` was MEASURED on the candidate's fail shape (`if` returning `true` followed by `return false`) and did not fire | the TS `if`-returns-`true`/`return false` shape | 09-code-simplification-and-api-design |
+| `no-reimplementing-an-existing-utility` | `structure_check.py` / `jscpd` new-duplication check covers verbatim duplicated blocks the branch introduces (judged) | near-identical utility reimplementation under a different name (semantic duplication, e.g. new `formatIsoDate()` vs existing `toIso()`); the new-code-vs-whole-tree comparison framing | 13-constraints-floor-guard-context |
+| `no-sensitive-data-in-debug-logging` | Same adjacency as above (`no-at-debug-tags` / `no-inspect` cover `{@debug}` / `$inspect`, not log content). | The candidate's constraint — debug logging must not carry sensitive payloads such as `req.body`. No lint-kit rule inspects log arguments. | 12-docs-deprecation-debugging |
+| `no-sensitive-data-in-logs` | `error-handling/no-swallowed-catch` fires when a catch block *only logs* (MEASURED: `catch (e) { logger.info('login', { password: req.body.password }); }` reports "This catch logs the error and carries on as if nothing failed"). | Nothing inspects identifiers in log arguments. The firing above is about the catch shape, not the `password` key — it fires identically on `{ userId }`, and a `password`/`token` log call outside a log-only catch passes silently. | 02-security |
+| `no-skill-body-duplicated-into-rules-files` | `jscpd` / `structure_check.py` — the same duplication-detection mechanism | comparison pointed at host rules files (`.cursor/rules/**`, `AGENTS.md`, `CLAUDE.md`, etc.) versus `skills/**/*.md`, with the >= 10-line block threshold — lint-kit never points jscpd at markdown rules-vs-skills | 01-governance-and-validators |
+| `no-speculative-abstraction` | fallow `warn` rules (`unused-exports`, `unused-types`, `unused-class-members`) flag unreferenced exports in JS/TS | advisory only and JS/TS only; the candidate states the remove-don't-preserve policy and argues for `error` on the branch's own additions | 09-code-simplification-and-api-design |
+| `no-unstructured-console-log` | Adjacent only: `svelte/no-at-debug-tags` covers `{@debug}`, `svelte/no-inspect` covers `$inspect` — MEASURED no fire on `console.log` (ESLint probe with `svelte.configs.recommended` + `prefer-style-directive` + `require-each-key` on a `.svelte` file calling `console.log`, exit 0, no warnings) | `console.log` / `console.error` / `print` with a structured logger available; nothing in lint-kit flags it | 03-performance-and-observability |
+| `no-verbose-conditional-assignment` | ruff `SIM108` (use-ternary) is adjacent, but it is Python-only and lint-kit `init` installs only `FAST` and `ASYNC` (`RUFF_RULES` in `bin/lint-kit.js:931`), so it is not lint-kit's installed surface; oxlint `slop-patterns` was MEASURED on the candidate's fail shape (`let` + `if`/`else` assigning the same variable) and did not fire | the TS `let` + `if`/`else`-assigns-same-variable shape | 09-code-simplification-and-api-design |
+| `pii-out-of-telemetry` | Same adjacent surface as above (log-only catch blocks). | Telemetry/metric attributes carrying PII are untouched (MEASURED: `metrics.increment('signup', { email: user.email })` alongside the error-handling rules produces no finding). | 02-security |
+| `presumptive-blockers-are-surfaced` | `structure_check.py` (via `jscpd`) covers new duplication, `structure_check.py` covers complexity-threshold crossings, `error-handling/no-swallowed-catch` covers catch blocks that drop the error | file-length boundary, shared-module feature logic, `??`/`\ | \ | ` fallbacks, and the review-side presume-and-surface behavior on PR artifacts; lint-kit does not observe review artifacts | 11-code-review |
+| `public-api-has-parameter-and-return-documentation` | `prose/prefer-jsdoc` governs the *form* of an existing `//` doc above an export (must be JSDoc). | The candidate's constraint — an export must *have* parameter/return documentation or types. MEASURED: `export function createTask(input)` with no doc at all → no findings from `probe/no-jargon` + `probe/prefer-jsdoc`, exit 0. | 12-docs-deprecation-debugging |
+| `public-interface-changes-are-additive-and-optional` | `structure_check.py` branch-vs-base "no-worse than base" comparison shape | the metric: public-contract field set and type narrowing vs complexity/duplication/import cycles | 09-code-simplification-and-api-design |
+| `python-guard-clauses-over-nesting` | `structure_check.py` complexity gate fires on nesting-depth-driven complexity threshold crossings | the fix itself (invert conditions, return early); fires only on threshold crossings, not on any 3-deep guard nesting | 09-code-simplification-and-api-design |
+| `session-cookie-flags` | Adjacent only: `svelte-skills/no-set-cookie-header` (`set-cookie` passed to SvelteKit `setHeaders` must be `cookies.set`) — judged from `tools/eslint/svelte-skills.md`. | None of the four flag sub-checks (`httpOnly`, `secure`, `sameSite`, `maxAge`) on Express-style `res.cookie` / session-middleware options objects. Different API, different constraint. | 02-security |
+| `simplicity-check-before-finishing` | `structure_check.py` gates new complexity-threshold crossings and new duplication; `slop-patterns` README records single-use-function detection as tried and rejected | the candidate checks branch size proportional to task scope and single-call-site abstractions, which neither check enforces | 08-meta-skill-and-orchestration |
+| `status-codes-follow-the-stated-mapping` | `FAP017` flags bare status numbers and deprecated `fastapi.status` names | which status code is semantically correct (400 vs 422, 401 vs 403, 500 carrying internals); `FAP017` decides only spelling | 09-code-simplification-and-api-design |
+| `urls-validated-before-redirect` | `svelte/no-navigation-without-resolve` is the adjacent navigation rule (requires `resolve()` for SvelteKit navigation targets) | nothing validates redirect targets against an allowlist/relative-path check, and nothing covers non-SvelteKit redirects (`res.redirect(req.query.returnTo)`). MEASURED: `goto(u)` with a dynamic target under `svelte.configs.recommended` → `svelte/no-navigation-without-resolve` does not fire | 06-accessibility-and-security-checklists |
+| `use-button-for-actions-and-a-for-navigation` | `untranslated-text/no-untranslated-text` fires on the literal button text inside the `div` (different constraint: catalogue source, not element choice) | no rule forbids `onClick` on `<div>`/`<span>` or action-only `<a>`. MEASURED: `<div onClick={handleDelete}>Delete</div>` under `svelte.configs.recommended` (+`prefer-style-directive`, +`require-each-key`) → no `svelte/*` finding (only the `untranslated-text` hit on `Delete`); `svelte/no-dom-manipulating` does not fire | 06-accessibility-and-security-checklists |
+| `validate-user-input` | `eslint:error-handling` — adjacent boundary/error surface (`no-swallowed-catch`, `no-default-promise-catch`, `no-stringified-error`) | the "validated at the boundary" shape: requiring a schema-validation call (`zod`/`pydantic`/etc.) before use of `req.body`/`req.query`/argv/env fields | 01-governance-and-validators |
+
+
 
 ## The index
 
-### flake8 / tools/python — Python
+### flake8 / tools/python — Python (2)
 
 | candidate | classification | source |
 | --- | --- | --- |
 | `no-loop-built-dict-comprehension` | mechanical | `skills/code-simplification/SKILL.md` |
 | `python-guard-clauses-over-nesting` | mechanical | `skills/code-simplification/SKILL.md` |
 
-### md-lint — documents and their structure (a NEW surface; see the conventions section)
+### md-lint — documents and their structure (a NEW surface; see the conventions section) (94)
 
 | candidate | classification | source |
 | --- | --- | --- |
@@ -263,13 +343,13 @@ reconciliation started from `git ls-files` and the table is the whole set.
 | `vendor-field-belongs-under-metadata` | mechanical | `docs/advanced-per-agent-configuration.md` |
 | `webperf-not-for-server-only-code` | heuristic-only | `.claude/commands/webperf.md` |
 
-### other
+### other (1)
 
 | candidate | classification | source |
 | --- | --- | --- |
 | `host-guide-in-readme-requires-a-maintainer-run` | not | `CONTRIBUTING.md` |
 
-### oxlint:slop-patterns — the AST plugin in tools/oxlint/slop-patterns
+### oxlint:slop-patterns — the AST plugin in tools/oxlint/slop-patterns (91)
 
 | candidate | classification | source |
 | --- | --- | --- |
@@ -306,7 +386,6 @@ reconciliation started from `git ls-files` and the table is the whole set.
 | `mock-only-at-boundaries` | mechanical | `references/testing-patterns.md` |
 | `negative-results-cached-with-a-shorter-ttl` | mechanical | `references/performance-checklist.md` |
 | `no-abstraction-before-the-third-use` | mechanical | `skills/incremental-implementation/SKILL.md` |
-| `no-async-function-that-only-returns-await` | mechanical | `skills/code-simplification/SKILL.md` |
 | `no-auth-tokens-in-client-storage` | mechanical | `skills/security-and-hardening/SKILL.md` |
 | `no-blanket-react-memo` | heuristic-only | `skills/performance-optimization/SKILL.md` |
 | `no-content-flashes-more-than-three-times-per-second` | mechanical | `references/accessibility-checklist.md` |
@@ -366,7 +445,7 @@ reconciliation started from `git ls-files` and the table is the whole set.
 | `validation-only-at-boundaries` | heuristic-only | `skills/api-and-interface-design/SKILL.md` |
 | `validation-uses-allowlists-and-constrains-length-and-range` | mechanical | `references/security-checklist.md` |
 
-### pre-push / CI / hooks — diffs, git metadata, config, file presence
+### pre-push / CI / hooks — diffs, git metadata, config, file presence (185)
 
 | candidate | classification | source |
 | --- | --- | --- |
@@ -556,21 +635,20 @@ reconciliation started from `git ls-files` and the table is the whole set.
 | `wcag-contrast-threshold` | mechanical | `skills/shipping-and-launch/SKILL.md` |
 | `zombie-code-gets-an-owner-or-removal` | mechanical | `skills/deprecation-and-migration/SKILL.md` |
 
-### structure_check.py and jscpd — duplication and complexity against a merge-base
+### structure_check.py and jscpd — duplication and complexity against a merge-base (8)
 
 | candidate | classification | source |
 | --- | --- | --- |
 | `damp-over-dry-in-tests` | mechanical | `skills/test-driven-development/SKILL.md` |
 | `file-size-boundary-with-decomposition` | mechanical | `skills/code-review-and-quality/SKILL.md` |
 | `never-mix-formatting-with-behavior` | mechanical | `docs/copilot-setup.md` |
-| `no-duplicated-business-logic` | mechanical | `references/definition-of-done.md` |
 | `no-duplicated-content-between-skills` | mechanical | `docs/skill-anatomy.md` |
 | `no-reimplementing-an-existing-utility` | mechanical | `skills/context-engineering/SKILL.md` |
 | `no-skill-body-duplicated-into-rules-files` | mechanical | `docs/cursor-setup.md` |
 | `no-speculative-abstraction` | mechanical | `skills/code-simplification/SKILL.md` |
 | `simplicity-check-before-finishing` | heuristic-only | `skills/using-agent-skills/SKILL.md` |
 
-### the ESLint sets in tools/eslint
+### the ESLint sets in tools/eslint (40)
 
 | candidate | classification | source |
 | --- | --- | --- |
@@ -615,7 +693,7 @@ reconciliation started from `git ls-files` and the table is the whole set.
 | `validate-input-at-boundary` | heuristic-only | `skills/security-and-hardening/SKILL.md` |
 | `validate-user-input` | heuristic-only | `docs/copilot-setup.md` |
 
-### transcript / harness checks — agent behaviour, not repo state
+### transcript / harness checks — agent behaviour, not repo state (35)
 
 | candidate | classification | source |
 | --- | --- | --- |
@@ -731,8 +809,8 @@ So that a candidate's `target` field names a real API rather than an approximati
 
 ### What has no surface yet
 
-`md-lint` and the transcript/harness checks are **new surfaces**. 87 candidates target document
-structure and 37 target agent behaviour; nothing in this repository implements either today. They
+`md-lint` and the transcript/harness checks are **new surfaces**. 96 candidates target document
+structure and 42 target agent behaviour; nothing in this repository implements either today. They
 are listed with that target named explicitly rather than dropped, per the no-silent-narrowing rule,
 and they are the largest single body of unimplemented work in the catalog.
 

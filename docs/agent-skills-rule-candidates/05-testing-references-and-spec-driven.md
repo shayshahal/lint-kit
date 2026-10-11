@@ -22,16 +22,6 @@ shape of a lint rule.
 - false positives: a commented-out block that is documentation (a code sample in a doc comment), and a debug print behind an explicit flag. Exempt `**/*.md` and require the block to be inside a function body.
 - effort: M
 
-### no-duplicated-business-logic
-- source: references/definition-of-done.md:30 — "No duplicated business logic"
-- classification: mechanical
-- target: structure_check.py / jscpd
-- detection: the duplication half of the merge-base structure check, scoped to non-test source. Note the direct conflict with `damp-over-dry-in-tests` (batch E): the duplication gate must include source and exclude tests, which is the opposite of a naive whole-repo jscpd run.
-- fail: the same discount calculation in `checkout.ts` and `invoice.ts`.
-- pass: one shared `applyDiscount` called from both.
-- false positives: structurally similar but semantically independent code (two different parsers); needs a token threshold.
-- effort: M
-
 ### changes-scoped-to-the-task
 - source: references/definition-of-done.md:32 — "Changes are scoped to the task; no unrelated refactors snuck in"
 - classification: heuristic-only

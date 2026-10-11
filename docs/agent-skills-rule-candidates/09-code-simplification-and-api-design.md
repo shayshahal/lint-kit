@@ -13,16 +13,6 @@ verdict: 15 candidates. Unusually well suited to the corpus: the file supplies a
 for each rule** (:192-235 TypeScript, :241-270 Python, :276-290 JSX), so every candidate below
 already has its fixture written inside the source.
 
-### no-async-function-that-only-returns-await
-- source: skills/code-simplification/SKILL.md:192 — "// SIMPLIFY: Unnecessary async wrapper" — "// SIMPLIFY: Unnecessary async wrapper / // Before / async function getUser(id: string): Promise<User> { / return await userService.findById(id); / } / // After / function getUser(id: string): Promise<User> { / return userService.findById(id); / }"
-- classification: mechanical
-- target: oxlint:slop-patterns
-- detection: an `async` function whose body is a single `return await X` (or whose only `await` is on the returned expression). Two standard rules cover the halves — `require-await` and `no-return-await` — and the delta is the combined shape, which changes the stack trace and adds a microtask tick for nothing.
-- fail: `async function getUser(id: string): Promise<User> { return await userService.findById(id); }`
-- pass: `function getUser(id: string): Promise<User> { return userService.findById(id); }`
-- false positives: a function that needs the `try/catch` around the await, or that must convert a sync throw into a rejection; the rule must require the `await` to be the *only* statement.
-- effort: S
-
 ### no-verbose-conditional-assignment
 - source: skills/code-simplification/SKILL.md:202 — "// SIMPLIFY: Verbose conditional assignment" — "// SIMPLIFY: Verbose conditional assignment / // Before / let displayName: string; / if (user.nickname) { / displayName = user.nickname; / } else { / displayName = user.fullName; / } / // After / const displayName = user.nickname || user.fullName;"
 - classification: mechanical
