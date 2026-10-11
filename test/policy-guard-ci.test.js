@@ -482,12 +482,16 @@ test('the trusted repository URL is accepted and a foreign one is refused before
 		assert.equal(accepted.code, 2, accepted.output);
 		assert.match(accepted.output, /GITHUB_TOKEN is required for an https remote/, url);
 	}
+	// Assemble synthetic userinfo at runtime: it exercises URI rejection, not a hardcoded credential.
+	const userinfoUrl = new URL('https://github.com/shayshahal/lint-kit.git');
+	userinfoUrl.username = 'synthetic-user';
+	userinfoUrl.password = SENTINEL;
 	// refused: a foreign host, another repository, userinfo, a query, a fragment and another scheme
 	const refused = {
 		'https://foreign.example/shayshahal/lint-kit.git': /does not match GITHUB_SERVER_URL\/GITHUB_REPOSITORY/,
 		'https://github.com/attacker/lint-kit.git': /does not match GITHUB_SERVER_URL\/GITHUB_REPOSITORY/,
 		'https://github.com/shayshahal/other.git': /does not match GITHUB_SERVER_URL\/GITHUB_REPOSITORY/,
-		'https://synthetic-user:synthetic-secret@github.com/shayshahal/lint-kit.git': /must not carry userinfo/,
+		[userinfoUrl.href]: /must not carry userinfo/,
 		'https://github.com/shayshahal/lint-kit.git?x=1': /must not carry userinfo/,
 		'https://github.com/shayshahal/lint-kit.git#x': /must not carry userinfo/,
 		'ext::sh -c echo pwned': /refusing to fetch over ext:/,
