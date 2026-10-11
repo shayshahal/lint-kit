@@ -216,6 +216,76 @@ test('the fingerprint is LF-normalized, so a CRLF checkout of the same call matc
 	assert.deepEqual(skipMessages(dir, crlf, 'a.test.js'), []);
 });
 
+// ── canonical paths: Windows 8.3 aliases and links out of the root ────────────────
+
+/** The Windows 8.3 short form of an existing directory, or null where the platform has none. */
+function shortPathOf(dir) {
+	if (process.platform !== 'win32') return null;
+	const result = spawnSync(
+		'powershell',
+		['-NoProfile', '-Command', `(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${dir}').ShortPath`],
+		{ encoding: 'utf8' },
+	);
+	return result.stdout.trim() || null;
+}
+
+/** Lint `code` for the `vitest/no-disabled-tests` rule when the caller names `file` under `cwd`. */
+function rawSkipMessages(cwd, code, file) {
+	return new Linter({ cwd, configType: 'flat' })
+		.verify(code, [PARSER, ...config()], path.join(cwd, file))
+		.filter((message) => message.ruleId === 'vitest/no-disabled-tests');
+}
+
+test('a live entry excuses a synthetic file named through a Windows 8.3 short parent', (t) => {
+	// The GitHub Windows runner sets TMP to a short `RUNNER~1` path. A synthetic (never written)
+	// Linter filename therefore has a short parent while the Git root resolves to its long name; the
+	// rule must canonicalize the existing parent so the two compare, or every live waiver misses.
+	const dir = repo('short-alias');
+	const short = shortPathOf(dir);
+	if (!short || short.toLowerCase() === dir.toLowerCase()) {
+		t.skip('this filesystem has no distinct 8.3 short name for the fixture');
+		return;
+	}
+	const code = "test.skip('a');";
+	writeLedger(dir, [entry({ sourceCallSha256: sha256("test.skip('a')") })]);
+	// The same virtual file is excused through the long and the short spelling of its parent.
+	assert.deepEqual(rawSkipMessages(dir, code, 'a.test.js'), []);
+	assert.deepEqual(rawSkipMessages(short, code, 'a.test.js'), []);
+	// A leaf that exists under the short parent resolves through its own realpath, unchanged.
+	fs.writeFileSync(path.join(dir, 'a.test.js'), code);
+	assert.deepEqual(rawSkipMessages(short, code, 'a.test.js'), []);
+});
+
+test('a virtual file under a directory link out of the root is not waived', (t) => {
+	const dir = repo('alias-junction');
+	const outside = path.join(TMP, 'alias-outside');
+	fs.mkdirSync(outside, { recursive: true });
+	try {
+		fs.symlinkSync(outside, path.join(dir, 'linkdir'), process.platform === 'win32' ? 'junction' : 'dir');
+	} catch {
+		t.skip('this platform cannot create a directory link without elevation');
+		return;
+	}
+	const code = "test.skip('a', () => {});";
+	writeLedger(dir, [entry({ file: 'linkdir/x.test.js' })]);
+	// The canonicalized parent leaves the root, so the entry grants nothing.
+	assert.equal(rawSkipMessages(dir, code, path.join('linkdir', 'x.test.js')).length, 1);
+});
+
+test('a leaf symlink to an existing file outside the root is not waived', (t) => {
+	const dir = repo('alias-leaf');
+	const outside = path.join(TMP, 'alias-leaf-outside.test.js');
+	fs.writeFileSync(outside, "test.skip('a', () => {});");
+	try {
+		fs.symlinkSync(outside, path.join(dir, 'leaf.test.js'), 'file');
+	} catch {
+		t.skip('this platform cannot create a file symlink without elevation');
+		return;
+	}
+	writeLedger(dir, [entry({ file: 'leaf.test.js' })]);
+	assert.equal(rawSkipMessages(dir, "test.skip('a', () => {});", 'leaf.test.js').length, 1);
+});
+
 // ── structural validity fails closed ──────────────────────────────────────────────
 
 test('a structural problem anywhere makes the whole ledger grant nothing', () => {

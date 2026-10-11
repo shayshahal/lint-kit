@@ -43,8 +43,11 @@
  * legitimate forms from the defect: `.todo`, `.fails` and `skipIf`/`runIf` stay valid, and only
  * `.skip`, the `x*` names and `pending()` report. The quarantine layer above it computes the
  * *enclosing call* (file plus the call's 1-based start line/column and the SHA-256 of its exact
- * source) and drops a report only for a live entry at that identity. A `test.skip('a')` with no
- * body keeps both native diagnostics (`missingFunction` plus `disabledTest`) — one entry covers
+ * source) and drops a report only for a live entry at that identity. The file path is canonicalized
+ * against the repository root — resolving an existing ancestor for a synthetic file the checker
+ * never wrote — so a Windows 8.3 short parent (`RUNNER~1`) still compares, while a path that
+ * resolves through a link outside the root does not. A `test.skip('a')` with no body keeps both
+ * native diagnostics (`missingFunction` plus `disabledTest`) — one entry covers
  * both; the layer invents no name filter. The rule never re-derives a title, so dynamic titles and
  * two tests with the same title at different sites stay distinct.
  *
@@ -67,7 +70,7 @@
  */
 
 import { createRequire } from 'node:module';
-import { realpathSync } from 'node:fs';
+import { lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { defineRule, isEligible, settings } from './inspection.mjs';
 import {
@@ -250,17 +253,51 @@ function enclosingCall(node) {
 	return anchor.type === 'CallExpression' ? anchor : null;
 }
 
+/**
+ * The filesystem-canonical form of a linted file, so a short 8.3 parent (or any alias) compares
+ * against the canonical repository root. ESLint hands the rule the file as the caller named it,
+ * and a synthetic file the checker never wrote does not exist, so `realpath` on the whole path
+ * fails; then the nearest existing ancestor is canonicalized and the missing tail re-appended. A
+ * leaf that does exist keeps its own `realpath`, so a symlink or junction pointing outside the
+ * root stays outside, and a dangling link is not inside either. Returns null when nothing on the
+ * path can be resolved.
+ */
+function canonicalLintedPath(target) {
+	let leafExists = true;
+	try {
+		lstatSync(target);
+	} catch (error) {
+		if (error?.code !== 'ENOENT') return null;
+		leafExists = false;
+	}
+	if (leafExists) {
+		try {
+			return realpathSync.native(target);
+		} catch {
+			return null; // a dangling link resolves nowhere and is not inside the root
+		}
+	}
+	let current = path.dirname(target);
+	const tail = [path.basename(target)];
+	for (;;) {
+		try {
+			return path.join(realpathSync.native(current), ...tail);
+		} catch (error) {
+			if (error?.code !== 'ENOENT') return null;
+			const parent = path.dirname(current);
+			if (parent === current) return null;
+			tail.unshift(path.basename(current));
+			current = parent;
+		}
+	}
+}
+
 /** The repository-relative path of the linted file, or null for stdin and files outside the root. */
 function quarantineFile(context, root) {
 	const filename = context.physicalFilename || context.filename;
 	if (!filename || filename.startsWith('<')) return null;
-	const resolved = path.resolve(context.cwd, filename);
-	let absolute;
-	try {
-		absolute = realpathSync.native(resolved);
-	} catch {
-		absolute = resolved;
-	}
+	const absolute = canonicalLintedPath(path.resolve(context.cwd, filename));
+	if (!absolute) return null;
 	const relative = path.relative(root, absolute);
 	if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
 	return relative.split(path.sep).join('/');

@@ -142,7 +142,9 @@ An unconditional skip is excused only by one entry in the repository-root `test-
 
 - `file` is repository-relative with `/` separators; `line`/`column` are 1-based and name the
   **enclosing test/describe call** (`.skip.each(…)(…)`, `concurrent.skip`, `x*`, dynamic titles and
-  duplicate titles all resolve to the call, never to a title).
+  duplicate titles all resolve to the call, never to a title). The path is canonicalized against
+  the repository root, so a Windows 8.3 short parent (`RUNNER~1`) still matches the same call, while
+  a name that resolves through a link outside the root is not in the repository at all.
 - `sourceCallSha256` is the SHA-256 of that call's exact source text with CRLF normalized to LF.
   Replacement or broadening an inline group body changes the fingerprint; moving an unchanged
   call changes its position, not its fingerprint. Either breaks the entry's identity, so it cannot
