@@ -71,12 +71,17 @@ Fallow JSONC source by its declared identities, and `tools/python/structure_chec
 YAML/TOML checker adapters (Python thresholds in `pyproject.toml`, `.flake8`, ruff) are deferred;
 those files are not enrolled.
 
-Trusted CI: the shipped `tools/policy/policy-guard-ci.yml` template runs the guard from the
-protected base revision and reads the pull request only as Git data. It is a manual candidate: no
-workflow is written by `init`, and the template alone does not enforce anything. The maintained
-protection is external — a protected base branch and this exact workflow bound as a required check
-through a ruleset required-workflows entry or an equivalent trusted source; the job name alone is
-not a unique check identity. See `tools/policy/README.md`, "Trusted CI".
+Trusted CI: the shipped `tools/policy/policy-guard-ci.yml` template runs the guard from one
+supported protected base branch (`branches` and `TRUSTED_BASE_BRANCH` name the same branch; `main`
+in the shipped file) and reads the pull request only as Git data. A pull request against any other
+branch cannot make the job read that branch's code, policy or credential: the helper requires the
+event's action, base repository and base branch to be the trusted ones, and it binds the read-only
+token to `GITHUB_SERVER_URL`/`GITHUB_REPOSITORY` (a foreign host, userinfo, query, fragment or other
+repository is refused before a credential exists). It is a manual candidate: no workflow is written
+by `init`, and the template alone does not enforce anything. The maintained protection is external
+— that base branch protected and this exact workflow bound as a required check through a ruleset
+required-workflows entry or an equivalent trusted source; the job name alone is not a unique check
+identity. See `tools/policy/README.md`, "Trusted CI".
 
 ## Baseline selection
 

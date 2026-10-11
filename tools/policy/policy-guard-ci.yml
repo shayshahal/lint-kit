@@ -2,21 +2,26 @@
 #
 # This file is shipped as guidance, NOT installed or activated. Copy it to
 # `.github/workflows/policy-guard.yml` by hand, and only after a maintainer has done the two
-# external setup actions in `tools/policy/README.md`, "Trusted CI": the base branch is protected,
-# and this exact workflow is bound as a required check (a ruleset required-workflows entry or an
-# equivalent trusted check binding). A job or workflow name alone is not a unique check identity:
-# a pull request can add a same-named workflow, so without that binding a green "policy-guard"
-# reported by the branch can be spoofed.
+# external setup actions in `tools/policy/README.md`, "Trusted CI": the base branch below is
+# protected, and this exact workflow is bound as a required check (a ruleset required-workflows
+# entry or an equivalent trusted check binding). A job or workflow name alone is not a unique check
+# identity: a pull request can add a same-named workflow, so without that binding a green
+# "policy-guard" reported by the branch can be spoofed.
 #
 # The workflow runs `pull_request_target`, so the workflow file itself is taken from the protected
-# base branch, and it checks out the PR's base commit. The pull request is fetched by commit id as
-# data by `tools/policy/policy-guard-ci.mjs`; no PR file is checked out or executed. Permissions
-# are `contents: read` only, so a PR cannot obtain write or secret access through this job.
+# base branch, and the `branches` filter below names the one supported base branch (replace `main`
+# with your protected default branch, in both places). The helper re-checks the event's base
+# repository and base branch against this context, so a pull request against an unprotected branch
+# cannot make this job read its code, policy or credential. The checkout is the base commit — the
+# trusted immutable revision — and the pull request is fetched by commit id as data by
+# `tools/policy/policy-guard-ci.mjs`; no PR file is checked out or executed. Permissions are
+# `contents: read` only, so a PR cannot obtain write or secret access through this job.
 name: policy-guard
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
+    branches: [main]
 
 permissions:
   contents: read
@@ -54,6 +59,7 @@ jobs:
       - name: Run the trusted policy guard against the pull request
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRUSTED_BASE_BRANCH: main
           TRUSTED_SHA: ${{ github.event.pull_request.base.sha }}
           POLICY_PATH: lint-kit.policy.json
         run: node tools/policy/policy-guard-ci.mjs

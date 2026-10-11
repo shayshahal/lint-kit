@@ -23,6 +23,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from 'yaml';
 import { main } from '../bin/lint-kit.js';
 
+/** The trusted GitHub context the workflow supplies; every fixture event is held against it. */
+const TRUSTED_REPO = 'shayshahal/lint-kit';
+const TRUSTED_SERVER = 'https://github.com';
+const TRUSTED_BASE = 'main';
+/** A synthetic secret: it must never appear in the helper's stdout, stderr or the guard's env. */
+const SENTINEL = 'synthetic-secret-sentinel-do-not-log';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const POLICY_DIR = path.join(ROOT, 'tools', 'policy');
 const JSONC_PARSER_SOURCE = path.join(ROOT, 'node_modules', 'jsonc-parser');
@@ -151,28 +158,40 @@ function pinnedCommit(fx, name, files) {
 
 const cloneUrl = (fx) => pathToFileURL(fx.origin).href;
 
+/** A `pull_request_target` payload with the trusted repo and base branch GitHub would report. */
+function ciEvent({ baseSha, headSha, baseRef = TRUSTED_BASE, baseRepository = TRUSTED_REPO, cloneUrl: url, action = 'opened' }) {
+	return {
+		action,
+		pull_request: {
+			number: 1,
+			base: { ref: baseRef, sha: baseSha, repo: { full_name: baseRepository, clone_url: url } },
+			head: { ref: 'feature', sha: headSha, repo: { full_name: baseRepository, clone_url: url } },
+		},
+	};
+}
+
 /** The GitHub context a workflow step would set; no token is needed for a `file://` remote. */
-function ciEnv(fx, { baseSha, headSha, trustedSha = fx.baseSha, policy = 'lint-kit.policy.json', overrides = {} }) {
+function ciEnv(fx, { baseSha, headSha, trustedSha = fx.baseSha, policy = 'lint-kit.policy.json', event = {}, overrides = {} }) {
 	const eventPath = path.join(TMP, unique('event'), 'event.json');
 	fs.mkdirSync(path.dirname(eventPath), { recursive: true });
-	fs.writeFileSync(
-		eventPath,
-		JSON.stringify({
-			pull_request: {
-				number: 1,
-				base: { sha: baseSha, repo: { clone_url: cloneUrl(fx) } },
-				head: { sha: headSha, repo: { clone_url: cloneUrl(fx) } },
-			},
-		}),
-	);
+	fs.writeFileSync(eventPath, JSON.stringify(ciEvent({ baseSha, headSha, cloneUrl: cloneUrl(fx), ...event })));
 	return {
 		GITHUB_EVENT_PATH: eventPath,
-		GITHUB_REPOSITORY: 'shayshahal/lint-kit',
-		GITHUB_SERVER_URL: 'https://github.com',
+		GITHUB_REPOSITORY: TRUSTED_REPO,
+		GITHUB_SERVER_URL: TRUSTED_SERVER,
+		TRUSTED_BASE_BRANCH: TRUSTED_BASE,
 		TRUSTED_SHA: trustedSha,
 		POLICY_PATH: policy,
 		...overrides,
 	};
+}
+
+/** Rewrite the fixture event's fields and return the path, for a malformed-context case. */
+function editEvent(env, change) {
+	const event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
+	change(event);
+	fs.writeFileSync(env.GITHUB_EVENT_PATH, JSON.stringify(event));
+	return env;
 }
 
 /** Run the real trusted helper from the trusted checkout with a clean environment plus context. */
@@ -374,12 +393,15 @@ test('a non-https, non-file remote URL exits 2 instead of fetching over a comman
 	assert.match(result.output, /is not a valid URL|refusing to fetch over/);
 });
 
-test('a missing TRUSTED_SHA exits 2, never clean', () => {
+test('a missing or malformed TRUSTED_SHA exits 2, never clean', () => {
 	const fx = fixture('no-trust');
 	const headSha = openPullRequest(fx, { '.fallowrc.json': fallow(20) });
-	const result = runCi(fx, { ...ciEnv(fx, { baseSha: fx.baseSha, headSha }), TRUSTED_SHA: '' });
-	assert.equal(result.code, 2, result.output);
-	assert.match(result.output, /TRUSTED_SHA must be a full commit id/);
+	const missing = runCi(fx, { ...ciEnv(fx, { baseSha: fx.baseSha, headSha }), TRUSTED_SHA: '' });
+	assert.equal(missing.code, 2, missing.output);
+	assert.match(missing.output, /TRUSTED_SHA is required/);
+	const malformed = runCi(fx, { ...ciEnv(fx, { baseSha: fx.baseSha, headSha }), TRUSTED_SHA: 'not-a-commit' });
+	assert.equal(malformed.code, 2, malformed.output);
+	assert.match(malformed.output, /TRUSTED_SHA must be a full commit id/);
 });
 
 // ── separate roles, advanced base, different pull requests ──────────────────────
@@ -423,6 +445,164 @@ test('a different pull request commit is judged, not the branch the event did no
 	assert.equal(weak.code, 1, weak.output);
 });
 
+// ── the remote and the credential are bound to the trusted repository ───────────
+
+test('the trusted repository URL is accepted and a foreign one is refused before any fetch', () => {
+	const fx = fixture('remote-binding');
+	const headSha = openPullRequest(fx, { 'README.md': 'base\n\nchange\n' });
+	// accepted: the exact runner server and repository, proven by the credential stage being reached
+	for (const url of ['https://github.com/shayshahal/lint-kit.git', 'https://github.com/shayshahal/lint-kit']) {
+		const accepted = runCi(
+			fx,
+			ciEnv(fx, { baseSha: fx.baseSha, headSha, event: { cloneUrl: url }, overrides: { GITHUB_TOKEN: '' } }),
+		);
+		assert.equal(accepted.code, 2, accepted.output);
+		assert.match(accepted.output, /GITHUB_TOKEN is required for an https remote/, url);
+	}
+	// refused: a foreign host, another repository, userinfo, a query, a fragment and another scheme
+	const refused = {
+		'https://foreign.example/shayshahal/lint-kit.git': /does not match GITHUB_SERVER_URL\/GITHUB_REPOSITORY/,
+		'https://github.com/attacker/lint-kit.git': /does not match GITHUB_SERVER_URL\/GITHUB_REPOSITORY/,
+		'https://github.com/shayshahal/other.git': /does not match GITHUB_SERVER_URL\/GITHUB_REPOSITORY/,
+		'https://synthetic-user:synthetic-secret@github.com/shayshahal/lint-kit.git': /must not carry userinfo/,
+		'https://github.com/shayshahal/lint-kit.git?x=1': /must not carry userinfo/,
+		'https://github.com/shayshahal/lint-kit.git#x': /must not carry userinfo/,
+		'ext::sh -c echo pwned': /refusing to fetch over ext:/,
+	};
+	for (const [url, expected] of Object.entries(refused)) {
+		const result = runCi(fx, ciEnv(fx, { baseSha: fx.baseSha, headSha, event: { cloneUrl: url } }));
+		assert.equal(result.code, 2, `${url}: ${result.output}`);
+		assert.match(result.output, expected, url);
+	}
+});
+
+test('the trusted server and repository are validated, never defaulted', () => {
+	const fx = fixture('validated-context');
+	const headSha = openPullRequest(fx, { 'README.md': 'base\n\nchange\n' });
+	const cases = [
+		[{ GITHUB_REPOSITORY: 'owner' }, /GITHUB_REPOSITORY must be owner\/repo/],
+		[{ GITHUB_REPOSITORY: 'owner/repo/extra' }, /GITHUB_REPOSITORY must be owner\/repo/],
+		[{ GITHUB_SERVER_URL: 'http://github.com' }, /GITHUB_SERVER_URL must be an https origin/],
+		[{ GITHUB_SERVER_URL: 'https://user:pass@github.com' }, /GITHUB_SERVER_URL must be a bare https origin/],
+		[{ GITHUB_SERVER_URL: 'https://github.com/sub' }, /GITHUB_SERVER_URL must be a bare https origin/],
+	];
+	for (const [overrides, expected] of cases) {
+		const result = runCi(fx, ciEnv(fx, { baseSha: fx.baseSha, headSha, overrides }));
+		assert.equal(result.code, 2, `${JSON.stringify(overrides)}: ${result.output}`);
+		assert.match(result.output, expected);
+	}
+});
+
+test('a pull request against a branch other than the supported base exits 2', () => {
+	const fx = fixture('wrong-branch');
+	const headSha = openPullRequest(fx, { 'README.md': 'base\n\nchange\n' });
+	const result = runCi(fx, ciEnv(fx, { baseSha: fx.baseSha, headSha, event: { baseRef: 'unprotected' } }));
+	assert.equal(result.code, 2, result.output);
+	assert.match(result.output, /not TRUSTED_BASE_BRANCH/);
+});
+
+test('a pull request whose base is another repository, or has no base branch, exits 2', () => {
+	const fx = fixture('wrong-base');
+	const headSha = openPullRequest(fx, { 'README.md': 'base\n\nchange\n' });
+	const otherRepo = runCi(fx, ciEnv(fx, { baseSha: fx.baseSha, headSha, event: { baseRepository: 'attacker/lint-kit' } }));
+	assert.equal(otherRepo.code, 2, otherRepo.output);
+	assert.match(otherRepo.output, /not GITHUB_REPOSITORY/);
+	const noRef = runCi(fx, editEvent(ciEnv(fx, { baseSha: fx.baseSha, headSha }), (event) => delete event.pull_request.base.ref));
+	assert.equal(noRef.code, 2, noRef.output);
+	assert.match(noRef.output, /not TRUSTED_BASE_BRANCH/);
+});
+
+test('an unsupported or missing event action exits 2', () => {
+	const fx = fixture('wrong-action');
+	const headSha = openPullRequest(fx, { 'README.md': 'base\n\nchange\n' });
+	const closed = runCi(fx, ciEnv(fx, { baseSha: fx.baseSha, headSha, event: { action: 'closed' } }));
+	assert.equal(closed.code, 2, closed.output);
+	assert.match(closed.output, /not a supported pull_request_target action/);
+	const missing = runCi(fx, editEvent(ciEnv(fx, { baseSha: fx.baseSha, headSha }), (event) => delete event.action));
+	assert.equal(missing.code, 2, missing.output);
+	assert.match(missing.output, /not a supported pull_request_target action/);
+});
+
+test('a missing trusted context input exits 2, never clean', () => {
+	const fx = fixture('missing-context');
+	const headSha = openPullRequest(fx, { 'README.md': 'base\n\nchange\n' });
+	for (const name of ['GITHUB_REPOSITORY', 'GITHUB_SERVER_URL', 'TRUSTED_BASE_BRANCH']) {
+		const result = runCi(fx, { ...ciEnv(fx, { baseSha: fx.baseSha, headSha }), [name]: '' });
+		assert.equal(result.code, 2, `${name}: ${result.output}`);
+		assert.match(result.output, new RegExp(`${name} is required`));
+	}
+});
+
+test('a foreign clone_url is refused before a token exists and the token is never printed', () => {
+	const fx = fixture('foreign-host');
+	const headSha = openPullRequest(fx, { 'README.md': 'base\n\nchange\n' });
+	const env = ciEnv(fx, {
+		baseSha: fx.baseSha,
+		headSha,
+		event: { cloneUrl: 'https://foreign.example/shayshahal/lint-kit.git' },
+		overrides: { GITHUB_TOKEN: SENTINEL },
+	});
+	const result = runCi(fx, env);
+	assert.equal(result.code, 2, result.output);
+	assert.match(result.output, /does not match GITHUB_SERVER_URL\/GITHUB_REPOSITORY/);
+	assert.doesNotMatch(result.output, new RegExp(SENTINEL), 'the token is never printed');
+});
+
+test('a clone_url with userinfo is refused and its secret is never printed', () => {
+	const fx = fixture('userinfo');
+	const headSha = openPullRequest(fx, { 'README.md': 'base\n\nchange\n' });
+	const env = ciEnv(fx, {
+		baseSha: fx.baseSha,
+		headSha,
+		event: { cloneUrl: `https://user:${SENTINEL}@github.com/shayshahal/lint-kit.git` },
+		overrides: { GITHUB_TOKEN: SENTINEL },
+	});
+	const result = runCi(fx, env);
+	assert.equal(result.code, 2, result.output);
+	assert.match(result.output, /must not carry userinfo/);
+	assert.doesNotMatch(result.output, new RegExp(SENTINEL));
+});
+
+test('the guard runs with the token and inherited Git configuration removed', () => {
+	const fx = fixture('scrubbed-guard');
+	const headSha = openPullRequest(fx, { 'README.md': 'base\n\nchange\n' });
+	// stand in for the trusted guard to observe the environment it is actually given
+	fs.writeFileSync(
+		path.join(fx.trusted, 'tools', 'policy', 'policy-guard.mjs'),
+		"process.stdout.write(JSON.stringify({token: 'GITHUB_TOKEN' in process.env, config: 'GIT_CONFIG_COUNT' in process.env, trace: 'GIT_TRACE' in process.env, curl: 'GIT_CURL_VERBOSE' in process.env}) + '\\n');\nprocess.exit(0);\n",
+	);
+	const env = ciEnv(fx, {
+		baseSha: fx.baseSha,
+		headSha,
+		overrides: {
+			GITHUB_TOKEN: SENTINEL,
+			GIT_CONFIG_COUNT: '1',
+			GIT_CONFIG_KEY_0: 'http.extraheader',
+			GIT_CONFIG_VALUE_0: `Authorization: basic ${SENTINEL}`,
+			GIT_TRACE: '1',
+			GIT_CURL_VERBOSE: '1',
+		},
+	});
+	const result = runCi(fx, env);
+	assert.equal(result.code, 0, result.output);
+	assert.deepEqual(JSON.parse(result.stdout.trim()), { token: false, config: false, trace: false, curl: false });
+	assert.doesNotMatch(result.output, new RegExp(SENTINEL), 'no inherited credential reaches the stream');
+});
+
+test('a fetch failure is a fixed category, never Git stderr, and never leaks the token', () => {
+	const fx = fixture('fixed-error');
+	const env = ciEnv(fx, {
+		baseSha: fx.baseSha,
+		headSha: 'a'.repeat(40),
+		overrides: { GITHUB_TOKEN: SENTINEL, GIT_TRACE: '1', GIT_CURL_VERBOSE: '1' },
+	});
+	const result = runCi(fx, env);
+	assert.equal(result.code, 2, result.output);
+	assert.match(result.output, /could not fetch a{40}/);
+	assert.doesNotMatch(result.output, /fatal:|error:|Authorization/, 'no raw Git channel is printed');
+	assert.doesNotMatch(result.output, new RegExp(SENTINEL));
+});
+
 // ── the template is a real, inactive, minimal candidate ─────────────────────────
 
 test('init copies the trusted-CI helper and template but writes no workflow', async () => {
@@ -451,9 +631,17 @@ test('the template is shipped as guidance and not activated in this repository',
 	assert.equal(fs.existsSync(path.join(ROOT, '.github', 'workflows', 'policy-guard.yml')), false, 'not activated here');
 	const workflow = parse(fs.readFileSync(TEMPLATE, 'utf8'));
 	assert.deepEqual(Object.keys(workflow.on), ['pull_request_target']);
+	assert.deepEqual(workflow.on.pull_request_target.branches, ['main'], 'one explicit protected base branch');
+	assert.deepEqual(workflow.on.pull_request_target.types, ['opened', 'synchronize', 'reopened']);
 	assert.equal(workflow.permissions.contents, 'read');
 	assert.equal(workflow.jobs['policy-guard'].permissions.contents, 'read');
 	assert.equal(workflow.jobs['policy-guard']['runs-on'], 'ubuntu-latest');
+	const runStep = workflow.jobs['policy-guard'].steps.find((candidate) => /policy-guard-ci\.mjs/.test(candidate.run ?? ''));
+	assert.equal(runStep.env.TRUSTED_BASE_BRANCH, 'main', 'the helper re-checks the base branch');
+	assert.equal(runStep.env.TRUSTED_SHA, '${{ github.event.pull_request.base.sha }}');
+	const checkout = workflow.jobs['policy-guard'].steps.find((candidate) => candidate.uses === 'actions/checkout@v4');
+	assert.equal(checkout.with.ref, '${{ github.event.pull_request.base.sha }}', 'the trusted base commit is checked out');
+	assert.equal(checkout.with['persist-credentials'], false);
 	assert.doesNotMatch(JSON.stringify(workflow), /secrets\.(?!GITHUB_TOKEN)/);
 });
 

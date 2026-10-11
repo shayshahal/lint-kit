@@ -139,28 +139,50 @@ exemption. It is **guidance, not an installed check**: `init` copies it beside t
 writes anything under `.github/workflows/`. Copy it to `.github/workflows/policy-guard.yml` by
 hand, and only after the external protections below are in place.
 
-The job checks out the PR's **base commit** — not the PR — and runs
-`node tools/policy/policy-guard-ci.mjs`. That helper fetches the base, head and trusted commits by
-id into a fresh throwaway data repository and runs the guard in `committed` mode. Only `git fetch`
-and `git cat-file` read the PR; no PR file is checked out, imported, sourced, installed or executed,
-and no title, branch name or owner string is interpolated into a shell. The workflow permissions
-are `contents: read`; it holds no write or secret privilege, so the job can never push, change a
-check or a setting. Both exit `1` (an unapproved enrolled change) and exit `2` (the check could not
-run) fail the job, so a missing trusted input is never clean.
+The supported invocation is one explicit protected base branch. The template runs
+`pull_request_target` with a `branches` filter on that branch (`main` in the shipped file; replace
+it with your protected default branch in both places), so the workflow file and the checkout come
+from that branch and the trigger does not fire for a pull request against another branch. The
+helper re-checks the event: its action must be one this job supports, the base repository must be
+`GITHUB_REPOSITORY`, and the base branch must be `TRUSTED_BASE_BRANCH`. A pull request an attacker
+opens against an unprotected branch therefore cannot make this job read, provision or run that
+branch's code, policy or credential.
+
+The job checks out that base commit — the trusted immutable revision — and runs
+`node tools/policy/policy-guard-ci.mjs` with `TRUSTED_SHA` set to the same base commit. That helper
+fetches the base, head and trusted commits by id into a fresh throwaway data repository and runs the
+guard in `committed` mode. Only `git fetch` and `git cat-file` read the PR; no PR file is checked
+out, imported, sourced, installed or executed, and no title or branch name is interpolated into a
+shell. The workflow permissions are `contents: read`; it holds no write or secret privilege, so the
+job can never push, change a check or a setting. Both exit `1` (an unapproved enrolled change) and
+exit `2` (the check could not run) fail the job, so a missing trusted input is never clean.
+
+The read-only token is bound to the repository before it is used. `GITHUB_SERVER_URL`/
+`GITHUB_REPOSITORY` are the authority for the remote; the event's `clone_url` is only checked
+against them, and a userinfo part, a query, a fragment, a foreign host or another repository is
+refused. The token becomes a `http.<remote>.extraheader` scoped to exactly that server and
+repository, with redirects refused, so the header is never sent to another host; it is never a
+command-line argument, a remote URL or a plain environment value. The guard subprocess runs with
+the token and every inherited `GIT_CONFIG_*`/`GIT_TRACE*` variable removed, and a failure is
+reported as a fixed category — never raw Git stderr, a trace line or a stack that could carry a
+URL or the token.
 
 What this guarantees, and only this: the guard binary, the enrollment and the parser are the
-trusted revision's, and the PR is read as data. It does **not** by itself prove that the reported
-check is the one a branch protection rule requires. A required status check is identified by its
-name, and a branch can add a same-named workflow; the name `policy-guard` alone is not a unique
-identity. To bind the check, a maintainer must use a protected mechanism that pins this exact
-workflow — a ruleset **required workflows** entry, or an equivalent trusted check source — and keep
-the base branch protected. `pull_request_target` is used so the workflow file comes from the base
-branch, but that is a starting point, not the binding.
+trusted revision's, the pull request is read as data, and the credential is not sent anywhere but
+that repository. It does **not** by itself prove that the reported check is the one a branch
+protection rule requires. A required status check is identified by its name, and a branch can add a
+same-named workflow; the name `policy-guard` alone is not a unique identity. To bind the check, a
+maintainer must use a protected mechanism that pins this exact workflow — a ruleset **required
+workflows** entry, or an equivalent trusted check source — and keep the base branch protected.
+`pull_request_target` and the `branches` filter are a starting point, not the binding. GitHub's
+own aggregation of the pull request head commit, and the association between that head and the
+merge, remain forge-side properties this repository neither runs nor measures.
 
 External actions a maintainer must take (none installed here):
 
-1. Protect the base branch (require reviews; no force push; no direct push). A weakening policy
-   pushed straight to base would become the trusted policy.
+1. Protect the supported base branch (require reviews; no force push; no direct push). A weakening
+   policy pushed straight to base would become the trusted policy. The workflow's `branches` filter
+   and `TRUSTED_BASE_BRANCH` must name that same branch.
 2. Bind this exact workflow as a required check through a ruleset required-workflows entry or an
    equivalent trusted source, rather than relying on the job name.
 3. Keep the workflow and `lint-kit.policy.json` under that protected review.
@@ -173,14 +195,18 @@ External actions a maintainer must take (none installed here):
 - Tested locally on Windows with a real local Git repository and the real copied helper: clean,
   weakened and tightened heads; a replaced guard, a package install hook, a `.npmrc` and a marker
   script that must never run; a deleted trusted enrollment; a missing parser; an unresolvable head;
-  a malformed event; a refused non-`https`/`file` remote; a source base distinct from the trusted
-  policy; an advanced base that still finds the merge base; and two different pull request heads.
-  The template's own `run` command is parsed and executed against the fixture.
-- Not tested here: GitHub Actions/Ubuntu execution, and the head-association and protection binding
-  above. This repository's `main` is currently **unprotected** and has no effective rules, and there
-  is no authorized external consumer, so a required-check binding was neither created nor observed.
-  Those are release-gate blockers recorded, not adopter evidence. A local run is feedback, not
-  authorization, and only the protected forge process approves a policy change.
+  a malformed event; a base branch, repository or action that is not the trusted one; a foreign,
+  userinfo, query, fragment or non-`https`/`file` remote refused before any credential; the trusted
+  repository URL accepted; a synthetic token that never reaches the guard's environment or any
+  output; a source base distinct from the trusted policy; an advanced base that still finds the
+  merge base; and two different pull request heads. The template's own `run` command is parsed and
+  executed against the fixture.
+- Not tested here: GitHub Actions/Ubuntu execution, the binding of the base commit the runner
+  checks out, and the head-association and protection binding above. This repository's `main` is
+  currently **unprotected** and has no effective rules, and there is no authorized external
+  consumer, so a required-check binding was neither created nor observed. Those are release-gate
+  blockers recorded, not adopter evidence. A local run is feedback, not authorization, and only the
+  protected forge process approves a policy change.
 
 ## Limits
 

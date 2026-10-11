@@ -339,12 +339,15 @@ is untested here. A missing parser (needed to compare a parsed enrollment) exits
 
 The local hook is **feedback, not authorization**. Required CI runs the same command from a
 trusted ref and blocks exit `1` and `2`. `init` also copies a manual template
-(`tools/policy/policy-guard-ci.yml`) that runs the guard from the protected base revision and reads
-the pull request only as Git data, but it is not activated and installs no check: the enforced
-check depends on external protections (a protected base branch and this exact workflow bound as a
-required check through a ruleset required-workflows entry or an equivalent trusted source). Writing
-the hook installs no required check or branch protection, and a job name alone is not a unique
-check identity. See [docs/support.md](docs/support.md) and
+(`tools/policy/policy-guard-ci.yml`) that runs the guard from one supported protected base branch
+(the template's `branches` filter and `TRUSTED_BASE_BRANCH` name the same branch) and reads the
+pull request only as Git data; the helper refuses a foreign event base and binds its read-only
+token to `GITHUB_SERVER_URL`/`GITHUB_REPOSITORY`, so no credential is sent to another host or
+repository. The template is not activated and installs no check: the enforced check depends on
+external protections (that base branch protected, and this exact workflow bound as a required
+check through a ruleset required-workflows entry or an equivalent trusted source). Writing the hook
+installs no required check or branch protection, and a job name alone is not a unique check
+identity. See [docs/support.md](docs/support.md) and
 [tools/policy/README.md](tools/policy/README.md).
 
 ## Develop
