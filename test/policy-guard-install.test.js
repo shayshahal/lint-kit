@@ -30,7 +30,13 @@ const scriptBody = (base) =>
 	`#!/usr/bin/env bash\nset -e\n${COMMAND} --base ${base} --target HEAD --trusted-ref ${base} --policy lint-kit.policy.json --mode working-tree\n`;
 const fallowText = (maxCognitive, rules = '{\n\t\t"unused-exports": "warn"\n\t}') =>
 	`{\n\t"health": { "maxCognitive": ${maxCognitive} },\n\t"rules": ${rules}\n}\n`;
-const installFiles = ['tools/policy/policy-guard.mjs', 'tools/policy/README.md', 'lint-kit.policy.json'];
+const installFiles = [
+	'tools/policy/policy-guard.mjs',
+	'tools/policy/policy-guard-ci.mjs',
+	'tools/policy/policy-guard-ci.yml',
+	'tools/policy/README.md',
+	'lint-kit.policy.json',
+];
 
 const quiet = async (argv) => {
 	const log = console.log;

@@ -38,8 +38,11 @@ that already runs `fallow audit` in a command keeps it and gets no script.
 
 ## Policy guard (`policy-guard`)
 
-Opt-in. `init` copies `tools/policy/policy-guard.mjs` and its README, writes one
-`lint-kit.policy.json`, and wires one repository-root pre-push script.
+Opt-in. `init` copies `tools/policy/policy-guard.mjs`, the trusted-CI helper
+`tools/policy/policy-guard-ci.mjs` and the manual template `tools/policy/policy-guard-ci.yml` into
+`tools/policy/`, writes one `lint-kit.policy.json`, and wires one repository-root pre-push script.
+It writes no `.github/workflows/` file and activates no check; the template is copied by hand to
+`.github/workflows/` only after the maintainer enables the external protections.
 
 | Config shape | Handling |
 | --- | --- |
@@ -67,6 +70,18 @@ Protected and deferred: the first release protects the copied guard as a whole, 
 Fallow JSONC source by its declared identities, and `tools/python/structure_check.py` whole.
 YAML/TOML checker adapters (Python thresholds in `pyproject.toml`, `.flake8`, ruff) are deferred;
 those files are not enrolled.
+
+Trusted CI: the shipped `tools/policy/policy-guard-ci.yml` template runs the guard from one
+supported protected base branch (`branches` and `TRUSTED_BASE_BRANCH` name the same branch; `main`
+in the shipped file) and reads the pull request only as Git data. A pull request against any other
+branch cannot make the job read that branch's code, policy or credential: the helper requires the
+event's action, base repository and base branch to be the trusted ones, and it binds the read-only
+token to `GITHUB_SERVER_URL`/`GITHUB_REPOSITORY` (a foreign host, userinfo, query, fragment or other
+repository is refused before a credential exists). It is a manual candidate: no workflow is written
+by `init`, and the template alone does not enforce anything. The maintained protection is external
+— that base branch protected and this exact workflow bound as a required check through a ruleset
+required-workflows entry or an equivalent trusted source; the job name alone is not a unique check
+identity. See `tools/policy/README.md`, "Trusted CI".
 
 ## Baseline selection
 

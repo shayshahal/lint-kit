@@ -131,6 +131,86 @@ policy-guard: enrolled-change: .fallowrc.json (modified)
 policy-guard: enrolled-weakened: health.maxCognitive raised from 25 to 40 (a max ceiling must not rise)
 ```
 
+## Trusted CI (#44)
+
+The template at `tools/policy/policy-guard-ci.yml` runs the guard from a protected revision so a
+pull request cannot replace the checker, change its base, delete the enrollment or grant its own
+exemption. It is **guidance, not an installed check**: `init` copies it beside the guard and never
+writes anything under `.github/workflows/`. Copy it to `.github/workflows/policy-guard.yml` by
+hand, and only after the external protections below are in place.
+
+The supported invocation is one explicit protected base branch. The template runs
+`pull_request_target` with a `branches` filter on that branch (`main` in the shipped file; replace
+it with your protected default branch in both places), so the workflow file and the checkout come
+from that branch and the trigger does not fire for a pull request against another branch. The
+helper re-checks the event: its action must be one this job supports, the base repository must be
+`GITHUB_REPOSITORY`, and the base branch must be `TRUSTED_BASE_BRANCH`. A pull request an attacker
+opens against an unprotected branch therefore cannot make this job read, provision or run that
+branch's code, policy or credential.
+
+The job checks out that base commit — the trusted immutable revision — and runs
+`node tools/policy/policy-guard-ci.mjs` with `TRUSTED_SHA` set to the same base commit. That helper
+fetches the base, head and trusted commits by id into a fresh throwaway data repository and runs the
+guard in `committed` mode. Only `git fetch` and `git cat-file` read the PR; no PR file is checked
+out, imported, sourced, installed or executed, and no title or branch name is interpolated into a
+shell. The workflow permissions are `contents: read`: the job's `GITHUB_TOKEN` can read repository
+contents only, so the job can never push, change a check or a setting. That permission does not
+remove the Actions `secrets` context; the only credential the job passes to the helper is that
+read-only token, and no pull-request code is executed, so a PR has no execution route in this job
+and cannot reach its secrets. Both exit `1` (an unapproved enrolled change) and exit `2` (the check
+could not run) fail the job, so a missing trusted input is never clean.
+
+The read-only token is bound to the repository before it is used. `GITHUB_SERVER_URL`/
+`GITHUB_REPOSITORY` are the authority for the remote; the event's `clone_url` is only checked
+against them, and a userinfo part, a query, a fragment, a foreign host or another repository is
+refused. The token becomes a `http.<remote>.extraheader` scoped to exactly that server and
+repository, with redirects refused, so the header is never sent to another host; it is never a
+command-line argument, a remote URL or a plain environment value. The guard subprocess runs with
+the token and every inherited `GIT_CONFIG_*`/`GIT_TRACE*` variable removed whatever its casing
+(Windows environment names are case-insensitive), and a failure is reported as a fixed category —
+never raw Git stderr, a trace line or a stack that could carry a URL or the token.
+
+What this guarantees, and only this: the guard binary, the enrollment and the parser are the
+trusted revision's, the pull request is read as data, and the credential is not sent anywhere but
+that repository. It does **not** by itself prove that the reported check is the one a branch
+protection rule requires. A required status check is identified by its name, and a branch can add a
+same-named workflow; the name `policy-guard` alone is not a unique identity. To bind the check, a
+maintainer must use a protected mechanism that pins this exact workflow — a ruleset **required
+workflows** entry, or an equivalent trusted check source — and keep the base branch protected.
+`pull_request_target` and the `branches` filter are a starting point, not the binding. GitHub's
+own aggregation of the pull request head commit, and the association between that head and the
+merge, remain forge-side properties this repository neither runs nor measures.
+
+External actions a maintainer must take (none installed here):
+
+1. Protect the supported base branch (require reviews; no force push; no direct push). A weakening
+   policy pushed straight to base would become the trusted policy. The workflow's `branches` filter
+   and `TRUSTED_BASE_BRANCH` must name that same branch.
+2. Bind this exact workflow as a required check through a ruleset required-workflows entry or an
+   equivalent trusted source, rather than relying on the job name.
+3. Keep the workflow and `lint-kit.policy.json` under that protected review.
+4. Provision the frozen parser from the trusted revision's own lockfile, not the PR's (the template
+   uses `pnpm install --frozen-lockfile --ignore-scripts`; substitute the repository's package
+   manager). `init --sets policy-guard` adds `jsonc-parser` `3.3.1` to the root `package.json`.
+
+### What is tested, and what is not
+
+- Tested locally on Windows with a real local Git repository and the real copied helper: clean,
+  weakened and tightened heads; a replaced guard, a package install hook, a `.npmrc` and a marker
+  script that must never run; a deleted trusted enrollment; a missing parser; an unresolvable head;
+  a malformed event; a base branch, repository or action that is not the trusted one; a foreign,
+  userinfo, query, fragment or non-`https`/`file` remote refused before any credential; the trusted
+  repository URL accepted; a synthetic token that never reaches the guard's environment or any
+  output; a source base distinct from the trusted policy; an advanced base that still finds the
+  merge base; and two different pull request heads. The template's own `run` command is parsed and
+  executed against the fixture.
+- Not tested here: GitHub Actions/Ubuntu execution, the binding of the base commit the runner
+  checks out, and the head-association and protection binding above. This repository's `main` is
+  currently **unprotected** and has no effective rules, and there is no authorized external
+  consumer, so a required-check binding was neither created nor observed. Those are release-gate
+  blockers recorded, not adopter evidence. A local run is feedback, not authorization, and only the
+  protected forge process approves a policy change.
+
 ## Limits
 
 - `working-tree` mode compares the enrolled file's raw working-tree bytes with the trusted blob,
@@ -142,9 +222,10 @@ policy-guard: enrolled-weakened: health.maxCognitive raised from 25 to 40 (a max
 - `working-tree` mode reads the working tree directly for every enrolled path, so an enrolled
   change committed and then reverted in the working tree still has its committed form in the
   object-to-object change and is compared against the trusted snapshot. CI runs `committed` mode.
-- No `pre-commit`/index mode or CI approval integration. `working-tree` mode is what the installed
-  pre-push script runs, so partial staging is judged by the working tree, not the index. Protected
-  CI wiring is a separate issue (#44), and no local run is authorization.
+- No `pre-commit`/index mode. `working-tree` mode is what the installed pre-push script runs, so
+  partial staging is judged by the working tree, not the index. No local run is authorization; the
+  trusted CI template above is a manual maintainer action, and a branch's own copy of the guard,
+  workflow or policy never authorizes anything.
 - Numeric floor identities (a `min` numeric threshold such as a coverage percentage) are **not**
   supported: the frozen Fallow format has no such identity, so no floor key is fabricated. The
   `min` direction is exercised by the `rules` severity floors. YAML/TOML checker adapters remain
@@ -154,9 +235,11 @@ policy-guard: enrolled-weakened: health.maxCognitive raised from 25 to 40 (a max
 
 ## Installed by `init`
 
-`init --sets policy-guard` copies this command and its README into `tools/policy/`, writes a single
+`init --sets policy-guard` copies this command, the trusted-CI helper `policy-guard-ci.mjs` and
+the manual template `policy-guard-ci.yml` into `tools/policy/`, writes a single
 `lint-kit.policy.json`, wires one repository-root pre-push script, and provisions the parser the
-`jsonc` adapter needs. What that set can and cannot do:
+`jsonc` adapter needs. It writes no `.github/workflows/` file and activates no check. What that set
+can and cannot do:
 
 - The script is a shell script, not a file-filtered command, so a deletion-only push still runs it.
   It runs `--mode working-tree` with an explicit `--base` and `--trusted-ref`, and exits `2` (never
