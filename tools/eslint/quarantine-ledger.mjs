@@ -7,8 +7,8 @@
  * and the opaque `lint-kit.policy.json` enrollment the installer names). An entry is addressed by
  * the repository-relative `file` and the 1-based start `line`/`column` of the *enclosing*
  * test/describe call, plus `sourceCallSha256`, the SHA-256 of that call's exact source text with
- * CRLF normalized to LF. The hash is what keeps a move, a replacement or a broadened group body
- * from reusing a waiver: the source bytes change, so the entry no longer matches.
+ * CRLF normalized to LF. The position binds a move; the hash binds a replacement or a broadened
+ * group body. Moving an unchanged call preserves its hash but still breaks the entry's identity.
  *
  * `reason` and `owner` are free text, trimmed and non-empty. `expires` is an inclusive UTC
  * calendar date; an entry is valid through the end of that day. The module never logs an entry's

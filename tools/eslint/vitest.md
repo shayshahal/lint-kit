@@ -143,9 +143,10 @@ An unconditional skip is excused only by one entry in the repository-root `test-
 - `file` is repository-relative with `/` separators; `line`/`column` are 1-based and name the
   **enclosing test/describe call** (`.skip.each(…)(…)`, `concurrent.skip`, `x*`, dynamic titles and
   duplicate titles all resolve to the call, never to a title).
-- `sourceCallSha256` is the SHA-256 of that call's exact source text with CRLF normalized to LF. A
-  changed fingerprint — a moved call, a replaced one, or a broadened inline group body — no longer
-  matches, so it cannot reuse the waiver. A moved call is forced even on an inherited line.
+- `sourceCallSha256` is the SHA-256 of that call's exact source text with CRLF normalized to LF.
+  Replacement or broadening an inline group body changes the fingerprint; moving an unchanged
+  call changes its position, not its fingerprint. Either breaks the entry's identity, so it cannot
+  reuse the waiver. A moved call is forced even on an inherited line.
 - `reason` and `owner` are free text, trimmed and non-empty. They are not an approval.
 - `expires` is an inclusive UTC date; the entry is valid through the end of that day. An expired
   or structurally invalid entry is never accepted (fail closed, no exception).
