@@ -1,11 +1,13 @@
 /**
- * The installed vitest set (#47): the maintained focused-test rule from @vitest/eslint-plugin,
- * narrowed to the lines a branch added, on the project's tests inside and outside src/.
+ * The installed vitest set (#47, #48): the maintained focused-test and async-assertion rules from
+ * @vitest/eslint-plugin, narrowed to the lines a branch added, on the project's tests inside and
+ * outside src/.
  *
- * The foundation evidence for what the plugin's rule accepts is
- * test/agent-skills-testing-plugin.test.js. This file proves the shipped set wraps exactly that
- * one rule, keeps the documented counterexamples, and charges only what a branch introduced; the
- * installer's hook wiring is test/agent-skills-vitest-install.test.js.
+ * The foundation evidence for what the plugin's rules accept is
+ * test/agent-skills-testing-plugin.test.js. This file proves the shipped set wraps exactly those
+ * rules, keeps the documented counterexamples, charges only what a branch introduced, and measures
+ * the one shape where the two async rules overlap; the installer's hook wiring and the actual
+ * installed ESLint run are test/agent-skills-vitest-install.test.js.
  */
 
 import assert from 'node:assert/strict';
@@ -40,16 +42,25 @@ function lint(code, filename, options, extra = []) {
 	return messages;
 }
 
-test('the set turns on one rule: the maintained focused-test rule, at error', () => {
+/**
+ * The public rule roster this set ships, spelled out here so the assertion does not read it back
+ * from the implementation. The production list is private; this literal is the independent check.
+ */
+const RULES = ['vitest/no-focused-tests', 'vitest/valid-expect', 'vitest/valid-expect-in-promise'];
+
+test('the set turns on the maintained focus and async-assertion rules, at error', () => {
 	const [entry] = config();
-	assert.deepEqual(Object.keys(vitest.plugin.rules), ['no-focused-tests']);
-	assert.deepEqual(Object.keys(entry.rules), ['vitest/no-focused-tests']);
-	assert.equal(entry.rules['vitest/no-focused-tests'], 'error');
+	assert.deepEqual(
+		Object.keys(vitest.plugin.rules).map((name) => `vitest/${name}`),
+		RULES,
+	);
+	assert.deepEqual(Object.keys(entry.rules), RULES);
+	for (const id of RULES) assert.equal(entry.rules[id], 'error', id);
 	assert.equal(entry.plugins.vitest.rules['no-focused-tests'].meta.fixable, 'code');
+	assert.equal(entry.plugins.vitest.rules['valid-expect'].meta.fixable, 'code');
 	assert.deepEqual(DEFAULT_FILES, ['**/*.test.*', '**/*.spec.*']);
-	// The plugin's recommended config turns on async and skip rules; none of them leaks in (#48, #49).
-	for (const rule of ['vitest/valid-expect', 'vitest/valid-expect-in-promise', 'vitest/no-disabled-tests'])
-		assert.ok(!(rule in entry.rules), rule);
+	// The plugin's recommended config would also enable the skip rule; it stays out (#49).
+	assert.ok(!('vitest/no-disabled-tests' in entry.rules));
 });
 
 test('the fix drops .only and leaves the rest of the call', () => {
@@ -99,6 +110,233 @@ for (const [name, code] of ALLOWED)
 		assert.deepEqual(lint(code, 'src/a.test.js'), []);
 	});
 
+/**
+ * Async assertions the set blocks. Each shape is handled by exactly one rule: an unawaited async
+ * assertion by `valid-expect`, a floating expectation chain by `valid-expect-in-promise`. The one
+ * shape both report on is measured separately below.
+ */
+const ASYNC_FAILING = [
+	['an unawaited .resolves', "test('x', () => { expect(fetch('u')).resolves.toBe('y'); });", 'vitest/valid-expect'],
+	['an unawaited .rejects', "test('x', () => { expect(fetch('u')).rejects.toThrow(); });", 'vitest/valid-expect'],
+	['an unawaited async matcher', "test('x', () => { expect(fetch('u')).toResolve(); });", 'vitest/valid-expect'],
+	[
+		'an aliased expect',
+		"import { expect as e, test } from 'vitest';\ntest('x', () => { e(fetch('u')).resolves.toBe('y'); });",
+		'vitest/valid-expect',
+	],
+	[
+		'an aliased test',
+		"import { test as t } from 'vitest';\nt('x', () => { expect(fetch('u')).resolves.toBe('y'); });",
+		'vitest/valid-expect',
+	],
+	[
+		'a floating .then chain',
+		"test('x', () => { fetch('u').then((r) => { expect(r).toBe('y'); }); });",
+		'vitest/valid-expect-in-promise',
+	],
+	[
+		'a floating .catch chain',
+		"test('x', () => { fetch('u').catch(() => { expect(x).toBe(1); }); });",
+		'vitest/valid-expect-in-promise',
+	],
+	[
+		'a chain assigned and dropped',
+		"test('x', () => { const p = fetch('u').then((r) => { expect(r).toBe('y'); }); });",
+		'vitest/valid-expect-in-promise',
+	],
+];
+
+for (const [name, code, ruleId] of ASYNC_FAILING)
+	test(`${name} is one blocker`, () => {
+		const messages = lint(code, 'src/a.test.js');
+		assert.equal(messages.length, 1, JSON.stringify(messages));
+		assert.equal(messages[0].ruleId, ruleId);
+		assert.equal(messages[0].severity, 2);
+	});
+
+/** The awaited/returned counterpart of every failing shape, plus the shapes that must stay quiet. */
+const ASYNC_ALLOWED = [
+	['an awaited assertion', "test('x', async () => { await expect(fetch('u')).resolves.toBe('y'); });"],
+	['a returned assertion', "test('x', () => { return expect(fetch('u')).resolves.toBe('y'); });"],
+	['a returned chain', "test('x', () => { return fetch('u').then((r) => { expect(r).toBe('y'); }); });"],
+	['an awaited chain', "test('x', async () => { await fetch('u').then((r) => { expect(r).toBe('y'); }); });"],
+	['a synchronous expectation', "test('x', () => { expect(1).toBe(1); });"],
+	['a shadowed expect', "test('x', () => { const expect = (v) => v; expect(1); });"],
+	[
+		'an expect imported from another library',
+		"import { expect } from 'some-other-lib';\ntest('x', () => { expect(fetch('u')).resolves.toBe('y'); });",
+	],
+	// An async test that needs no await is not a finding: there is no blanket "await in every async
+	// test". This async callback contains no `await` at all and is still allowed.
+	['an async test with no await', "test('x', async () => { runs(); });"],
+	['a synchronous test with no assertion', "test('x', () => { runs(); });"],
+	// The rule accepts the callback `done` form; the pinned runner deprecates it, so the runner
+	// fixture (test/agent-skills-vitest-runner.test.js) proves it is not a passing shape.
+	['the callback done form', "test('x', (done) => { expect(1).toBe(1); done(); });"],
+];
+
+for (const [name, code] of ASYNC_ALLOWED)
+	test(`${name} passes`, () => {
+		assert.deepEqual(lint(code, 'src/a.test.js'), []);
+	});
+
+test('the async rules are syntactic: a helper or a reassigned alias is not resolved', () => {
+	// Neither rule asks for type information, and no type-aware setup is configured or claimed. The
+	// bindings it cannot follow are the documented limits, not a missing install.
+	const opaque = [
+		"import { assertOk } from './assert-ok';\ntest('x', () => { assertOk(fetch('u')); });",
+		"const e = expect;\ntest('x', () => { e(fetch('u')).resolves.toBe('y'); });",
+		"test('x', () => { globalThis.expect(fetch('u')).resolves.toBe('y'); });",
+		// `expect.poll` has its own plugin rule, which this set does not turn on.
+		"test('x', () => { expect.poll(() => x).toBe(1); });",
+		// A floating outer chain whose callback returns a nested chain is not seen (upstream limit).
+		"test('x', () => { fetch('u').then((r) => { return fetch('v').then((s) => { expect(s).toBe('y'); }); }); });",
+	];
+	for (const code of opaque) assert.deepEqual(lint(code, 'src/a.test.js'), [], code);
+});
+
+test('measured overlap: the concise form is one owned finding, the block form two', () => {
+	// Block body: the floating chain (valid-expect-in-promise) and the inner assertion
+	// (valid-expect) are different nodes with different fixes, so both reports stay.
+	const blockCode = "test('x', () => { fetch('u').then((r) => { expect(r).resolves.toBe('y'); }); });";
+	const block = lint(blockCode, 'src/a.test.js');
+	assert.deepEqual(
+		block.map((m) => `${m.ruleId}@${m.line}:${m.column}`).sort(),
+		['vitest/valid-expect@1:44', 'vitest/valid-expect-in-promise@1:19'].sort(),
+	);
+	// valid-expect's autofix awaits the inner assertion and leaves the outer chain floating, so the
+	// two fixes are genuinely independent and the promise rule's report remains.
+	const blockFixed = new Linter({ configType: 'flat' }).verifyAndFix(blockCode, [PARSER, ...config()], 'src/a.test.js');
+	assert.deepEqual(blockFixed.messages.map((m) => m.ruleId), ['vitest/valid-expect-in-promise']);
+
+	// Concise arrow: the two rules report the same promise expression, and one valid-expect fix —
+	// await the chain — clears both. The owner keeps the single finding and the held report is
+	// dropped.
+	const conciseCode = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	const concise = lint(conciseCode, 'src/a.test.js');
+	assert.deepEqual(concise.map((m) => `${m.ruleId}@${m.line}:${m.column}`), ['vitest/valid-expect@1:19']);
+	const conciseFixed = new Linter({ configType: 'flat' }).verifyAndFix(conciseCode, [PARSER, ...config()], 'src/a.test.js');
+	assert.deepEqual(conciseFixed.messages, []);
+	assert.equal(conciseFixed.output, "test('x', async () => { await fetch('u').then((r) => expect(r).resolves.toBe('y')); });");
+
+	// Assignment: the held report's node is the declarator and the owner's is the promise expression
+	// inside it. They are the same promise, so one owner keeps one finding, and the owner's single
+	// upstream fix — await the chain — clears both.
+	const assignedCode = "test('x', () => { const p = fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	const assigned = lint(assignedCode, 'src/a.test.js');
+	assert.deepEqual(assigned.map((m) => `${m.ruleId}@${m.line}:${m.column}`), ['vitest/valid-expect@1:29']);
+	const assignedFixed = new Linter({ configType: 'flat' }).verifyAndFix(assignedCode, [PARSER, ...config()], 'src/a.test.js');
+	assert.deepEqual(assignedFixed.messages, []);
+	assert.equal(assignedFixed.output, "test('x', async () => { const p = await fetch('u').then((r) => expect(r).resolves.toBe('y')); });");
+});
+
+test('a reused SourceCode is not owned by a previous run (owner-on, then owner-off)', () => {
+	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	const linter = new Linter({ configType: 'flat' });
+	// The first run reports the concise chain once, through its owner.
+	assert.deepEqual(linter.verify(concise, config(), 'src/a.test.js').map((m) => m.ruleId), ['vitest/valid-expect']);
+	// The *same* SourceCode object, now with the owner off. If the ownership state survived the run,
+	// the held report would still see the owner's promise expression and be dropped — a false clean.
+	// The owner-off fallback must report instead.
+	const sourceCode = linter.getSourceCode();
+	assert.deepEqual(
+		linter.verify(sourceCode, config({ rules: { 'vitest/valid-expect': 'off' } }), 'src/a.test.js').map((m) => m.ruleId),
+		['vitest/valid-expect-in-promise'],
+	);
+	// Back to the owner on, on the same SourceCode: still exactly one finding.
+	assert.deepEqual(
+		linter.verify(sourceCode, config(), 'src/a.test.js').map((m) => m.ruleId),
+		['vitest/valid-expect'],
+	);
+});
+
+test('an owner-only run leaves nothing for a held-only run on the same SourceCode', () => {
+	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	const linter = new Linter({ configType: 'flat' });
+	const ownerOnly = config({ rules: { 'vitest/valid-expect-in-promise': 'off' } });
+	const heldOnly = config({ rules: { 'vitest/valid-expect': 'off' } });
+	assert.deepEqual(linter.verify(concise, ownerOnly, 'src/a.test.js').map((m) => m.ruleId), ['vitest/valid-expect']);
+	const sourceCode = linter.getSourceCode();
+	assert.deepEqual(
+		linter.verify(sourceCode, heldOnly, 'src/a.test.js').map((m) => m.ruleId),
+		['vitest/valid-expect-in-promise'],
+	);
+});
+
+test('the release does not depend on the order the two producers are registered', () => {
+	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	const [entry] = config();
+	// The same public config, with the two async rule entries reversed. Both rules report from
+	// Program:exit, so releasing the held report at the first exit would duplicate the finding; the
+	// release waits for every enabled participant, so the order does not matter.
+	const reversed = {
+		...entry,
+		rules: {
+			'vitest/valid-expect-in-promise': entry.rules['vitest/valid-expect-in-promise'],
+			'vitest/valid-expect': entry.rules['vitest/valid-expect'],
+			'vitest/no-focused-tests': entry.rules['vitest/no-focused-tests'],
+		},
+	};
+	assert.deepEqual(
+		new Linter({ configType: 'flat' }).verify(concise, [reversed], 'src/a.test.js').map((m) => m.ruleId),
+		['vitest/valid-expect'],
+	);
+});
+
+test('reversed producers release independent reports through their original rule contexts', () => {
+	const [entry] = config({ inspection: 'full' });
+	const reversed = {
+		...entry,
+		rules: { 'vitest/valid-expect-in-promise': 'warn', 'vitest/valid-expect': 'error' },
+	};
+	const linter = new Linter({ configType: 'flat' });
+	const reports = (code) => linter.verify(code, [reversed], 'src/a.test.js')
+		.map((message) => [message.ruleId, message.severity])
+		.sort((left, right) => left[0].localeCompare(right[0]));
+	assert.deepEqual(
+		reports("test('x', () => { fetch('u').then((r) => { expect(r).toBe('y'); }); });"),
+		[['vitest/valid-expect-in-promise', 1]],
+	);
+	assert.deepEqual(
+		reports("test('x', () => { fetch('u').then((r) => { expect(r).resolves.toBe('y'); }); });"),
+		[['vitest/valid-expect', 2], ['vitest/valid-expect-in-promise', 1]],
+	);
+});
+
+test('the owner keeps the finding, and the held report is not stale across runs or files', () => {
+	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	// A repeated verify of the same file, and the same code under another filename, each start from
+	// empty: the state is released when a run's participants finish. The stronger case — one actual
+	// SourceCode object reused across configuration changes — is the test above, not this string
+	// loop.
+	for (const file of ['src/a.test.js', 'src/a.test.js', 'src/b.test.js']) {
+		assert.deepEqual(lint(concise, file).map((m) => m.ruleId), ['vitest/valid-expect'], file);
+	}
+	// With the owner off, the promise rule still reports the same assertion instead of staying
+	// silent, and its own entry is the one that survives.
+	assert.deepEqual(
+		lint(concise, 'src/a.test.js', { rules: { 'vitest/valid-expect': 'off' } }).map((m) => m.ruleId),
+		['vitest/valid-expect-in-promise'],
+	);
+});
+
+test('the surviving report carries its own rule and severity', () => {
+	const concise = "test('x', () => { fetch('u').then((r) => expect(r).resolves.toBe('y')); });";
+	// The owner's entry decides the severity of the one surviving finding: a warn owner is a warn,
+	// not an error reintroduced by the held rule.
+	assert.deepEqual(
+		lint(concise, 'src/a.test.js', { rules: { 'vitest/valid-expect': 'warn' } }).map((m) => [m.ruleId, m.severity]),
+		[['vitest/valid-expect', 1]],
+	);
+	// With the owner disabled there is no override to inherit: the held report uses its own entry.
+	assert.deepEqual(
+		lint(concise, 'src/a.test.js', {
+			rules: { 'vitest/valid-expect': 'off', 'vitest/valid-expect-in-promise': 'warn' },
+		}).map((m) => [m.ruleId, m.severity]),
+		[['vitest/valid-expect-in-promise', 1]],
+	);
+});
+
 test('tests inside and outside src/ are checked, and an application path is not', () => {
 	for (const file of ['src/x.test.ts', 'test/outside.test.js', 'deep/nested/y.spec.ts', 'a.test.mjs'])
 		assert.equal(lint("test.only('x', () => {});", file).length, 1, file);
@@ -141,7 +379,11 @@ function isolatedPlugin(dir, marker) {
 		`module.exports = {
 	meta: { name: 'vitest', marker: ${JSON.stringify(marker)} },
 	environments: { env: { globals: { test: true } } },
-	rules: { 'no-focused-tests': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) } },
+	rules: {
+		'no-focused-tests': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) },
+		'valid-expect': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) },
+		'valid-expect-in-promise': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) },
+	},
 };
 `,
 	);
@@ -311,5 +553,17 @@ test('full: the inherited finding is reported too, so the gate is what changed',
 			inspection: 'full',
 		}),
 		[1],
+	);
+});
+
+test('branch: an async assertion the branch introduced is reported, an inherited one is not', () => {
+	const assertion = "test('x', () => { expect(fetch('u')).resolves.toBe('y'); });";
+	// introduced.test.js is new, so every line is the branch's.
+	assert.deepEqual(branchMessages(REPO, `${assertion}\n`, 'test/introduced.test.js'), [1]);
+	// inherited.test.js line 1 is from main; the branch added line 2.
+	assert.deepEqual(branchMessages(REPO, `${assertion}\ntest('added by the branch', () => {});\n`, 'test/inherited.test.js'), []);
+	assert.deepEqual(
+		branchMessages(REPO, "test('base line', () => {});\n" + `${assertion}\n`, 'test/inherited.test.js'),
+		[2],
 	);
 });

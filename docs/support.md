@@ -40,7 +40,8 @@ script). A step that already runs the same tool for the project is left alone, a
 that already runs `fallow audit` in a command keeps it and gets no script. When the `vitest` set is
 installed, the eslint step also matches the project's `*.test.*` / `*.spec.*` files, wherever they
 are, so tests outside `src/` are checked; an upgrade that adds the set widens the step a previous
-run wrote. A repository whose own command runs ESLint keeps it, and the run names the pattern to add.
+run wrote. A repository whose own command runs ESLint keeps it, and the run names the pattern to
+add.
 
 ## Policy guard (`policy-guard`)
 
