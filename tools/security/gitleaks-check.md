@@ -15,6 +15,32 @@ or leave it out to use `gitleaks` on `PATH`. A different version is refused. Run
 repository root or pass that root with `--source`; a subdirectory is rejected rather than
 mixing full-repository history with a partial content scan. Timeouts accept 1–2147483 whole seconds.
 
+## Provisioning the pinned scanner
+
+This command never downloads or installs anything. Provision Gitleaks **8.30.1** yourself and
+point at it with `--gitleaks`, or put it on `PATH` as `gitleaks`. The official release publishes
+one archive per platform; check the recorded SHA-256 before you use it.
+
+| Platform | Asset | SHA-256 |
+| --- | --- | --- |
+| Windows x64 | `gitleaks_8.30.1_windows_x64.zip` | `d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e` |
+| Linux x64 | `gitleaks_8.30.1_linux_x64.tar.gz` | `551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb` |
+| macOS arm64 | `gitleaks_8.30.1_darwin_arm64.tar.gz` | `b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5` |
+
+```sh
+# Linux x64, into a path you control (never a branch's own tools/):
+curl -fsSLo /tmp/gitleaks.tar.gz \
+  https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum -c -
+tar -xzf /tmp/gitleaks.tar.gz -C /tmp
+node tools/security/gitleaks-check.mjs --gitleaks /tmp/gitleaks
+```
+
+A platform with no recorded asset, or a repository that needs its own reviewed exceptions, is a
+manual action: provision the binary yourself and pass your own `--config`. Offline, an
+already-provisioned binary is passed with `--gitleaks`; with none, the command exits `2`, and a
+push that runs it is blocked — never reported as clean or skipped.
+
 ## Exit codes
 
 | Code | Meaning |

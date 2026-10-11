@@ -18,7 +18,15 @@ A finding fails the commit or push.
 | `pyright` (Python projects) | pre-push | pyright exits 1 |
 | fallow `"error"` rules: dead code the branch introduced | pre-push (script) | `fallow audit` exits 1 |
 | `structure_check.py`: a new / crossed complexity, new duplication, a new import cycle | pre-push | exits 1 |
+| `gitleaks-check.mjs --mode branch` (opt-in `secret-scanning` set) | pre-push (`node tools/security/gitleaks-check.mjs --base <branch>`) | exit 1: an introduced secret; exit 2: the check could not run |
 | policy guard: an unapproved change to an enrolled checker configuration (opt-in) | pre-push (script) | the guard exits 1 |
+
+Secret scanning is opt-in: like `prose`, a dependency never selects it, so a repository asks for
+it with `--sets secret-scanning` and it stays off by default. Its local step is feedback only —
+writing the hook installs no required check and changes no forge protection, so an introduced
+secret is caught in CI only when CI is wired to run the command from a trusted revision, with a
+trusted tool and config, and block on both exit `1` and exit `2`. The history audit (`--mode
+history`) is remediation, not a gate, and is not wired to a hook.
 
 The policy guard is opt-in: `init --sets policy-guard` installs its pre-push script, which reports
 an unapproved change to an enrolled checker configuration. That local hook is feedback, not
