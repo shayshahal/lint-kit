@@ -97,7 +97,8 @@ none of the three rules reads parser services. The two async rules share one sha
 it (`valid-expect`, which carries the fix), so the concise-arrow form is one finding and one fix;
 a block-bodied chain stays two findings with two fixes. Ownership is scoped to one lint run and does
 not depend on the order the rules are registered. The limits above still hold: the rules are
-syntactic, `valid-expect-in-promise` has no fix of its own, and the callback-`done` form is lint-valid
+syntactic, `valid-expect` is the only one of the two with a fixer (upstream `valid-expect-in-promise`
+declares none), and the callback-`done` form is lint-valid
 but runner-deprecated.
 
 ### 2.3 Unconditional skips — owner [#49](https://github.com/shayshahal/lint-kit/issues/49)

@@ -25,8 +25,8 @@ synthetic shapes.
 
 - **Three opt-in sets, one parsed adapter.** `policy-guard`, `secret-scanning` and `vitest` are
   never selected from a dependency; a repository asks for each by name and it stays on a re-run. The
-  only parsed checker configuration frozen now is the `fallow-jsonc` adapter for `.fallowrc.json`;
-  every other reviewed file is protected whole (`opaque`) rather than evaluated.
+  only parsed checker configuration frozen now is the `fallow-jsonc` adapter for `.fallowrc.json` /
+  `.fallowrc.jsonc`; every other reviewed file is protected whole (`opaque`) rather than evaluated.
 - **Consumer configuration is preserved.** A repeat run changes nothing; an upgrade refreshes the
   copied tool code, widens an ESLint step for a newly added set, and leaves user configs and
   reviewed policy files byte-for-byte. No set broadens an existing `lint-kit.policy.json`.
@@ -62,11 +62,15 @@ policy change.
 
 The one new test this gate adds installs `--sets policy-guard,secret-scanning,vitest` into a
 generated consumer and runs the combined hooks and the copied commands. It is written to cover
-fresh, repeat and stale-code upgrade installation, a nested pnpm workspace and a spaced path,
-combined detection of a focused test, an unawaited assertion, an unconditional skip, a synthetic
-credential and a weakened enrollment, the legitimate counterexamples, secret attribution and
-redaction, the deletion-only and docs-only lifecycle, and a missing-evidence failure that cannot
-read as clean.
+fresh, repeat and stale-code upgrade installation, a nested pnpm workspace and a spaced path; the
+focused, async and disabled-test ESLint findings through the real generated **pre-commit** hook; the
+guard, scanner and ledger findings through the combined **pre-push** hook; an all-green result on
+both hooks; secret attribution and redaction; the deletion-only and docs-only lifecycle; and a
+missing-evidence failure that cannot read as clean.
+
+The `vitest` ESLint rules are **pre-commit only**: a push never runs them, so a combined detection
+claim is never made from a push alone. The pre-commit ESLint step and the combined pre-push hook are
+exercised separately.
 
 Results are recorded with the change after independent review and the final CI run. Until then
 every case below is **pending and unmeasured**: no count, runtime or false-positive rate is claimed
@@ -78,10 +82,13 @@ here.
 | `init` argv | `init --sets policy-guard,secret-scanning,vitest [--no-install]` | pending |
 | Installed artifacts | all copied files present; one `lint-kit.policy.json`; the four hook entries; no step dropped | pending |
 | Repeat / upgrade | second run byte-identical; stale tool copies refreshed; consumer `gitleaks.toml` and manifest preserved | pending |
-| Combined detection | non-zero push naming the owning ESLint, scanner and guard findings | pending |
-| Legitimate counterexamples | one all-green push: awaited/returned assertions, `todo`, `skipIf`, a tightened ceiling, a live ledger entry | pending |
+| Pre-commit detection | a staged change with `test.only`, an unawaited `expect(...).resolves` and an unconditional skip gets the owning `vitest/*` errors from the real `eslint {staged_files}` hook | pending |
+| Pre-push detection | the combined pre-push hook (policy-guard and quarantine scripts plus the secret-scanning command) reports the weakened enrollment and the introduced credential, and runs the ledger step | pending |
+| All green (both hooks) | a clean staged change passes the pre-commit ESLint step and an all-legitimate push passes the combined pre-push hook | pending |
+| Pre-commit counterexamples | awaited/returned assertions, `test.todo` and `skipIf` produce no `vitest/*` error on a staged test file | pending |
+| Pre-push counterexamples | a tightened `.fallowrc.json` and a live ledger entry stay green through the combined pre-push hook | pending |
 | Attribution and redaction | introduced vs inherited; the synthetic value absent from output and report | pending |
-| Lifecycle | the unfiltered scripts fire on a docs-only and a deletion-only push; expired ledger fails, absent ledger is clean | pending |
+| Lifecycle | the unfiltered pre-push scripts fire on a docs-only and a deletion-only push; expired ledger fails, absent ledger is clean | pending |
 | No evidence | a missing parser or scanner makes only its own step exit 2; the combined push is non-zero | pending |
 | Versions | Node, pnpm, Git, ESLint, `@vitest/eslint-plugin`, Vitest, Gitleaks, lefthook, OS | pending |
 | Runtime cost | measured wall-clock per case and total | pending |
@@ -95,9 +102,9 @@ A case is recorded only from a completed run: an unfinished or skipped case stay
   matrix.
 - The CI matrix used Node `22.23.3`; the local run used Node `22.23.3`, pnpm `11.3` and Git
   `2.54.0.windows.1`, and the prerequisite CI observed Git `2.55.0` (`2.55.0.windows.5`).
-- The Ubuntu CI that ran on the merged prerequisites executed the real checksum-pinned Linux
-  Gitleaks `8.30.1` asset, so the scanner's Linux provider path is observed there; only the Windows
-  and macOS assets remain unexecuted here.
+- The pinned Gitleaks `8.30.1` ran on Windows through the merged main's Node suite (628 tests) and
+  the Windows CI job, and the Ubuntu CI job executed the checksum-pinned Linux asset. Only the macOS
+  asset and its runtime stay unobserved here.
 - A read-only forge observation recorded `main` unprotected (`protected=false`), no effective branch
   rules (`[]`) and ADMIN viewer permission. Nothing was changed.
 
