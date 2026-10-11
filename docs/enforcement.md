@@ -11,7 +11,7 @@ A finding fails the commit or push.
 
 | Check | Where | Fails with |
 | --- | --- | --- |
-| ESLint sets (`svelte-skills`, `untranslated-text`, `tailwind-patterns`, `error-handling`, `prose`), every rule at `error`, on the lines the branch added | pre-commit (`eslint {staged_files}`) | ESLint exits 1 |
+| ESLint sets (`svelte-skills`, `untranslated-text`, `tailwind-patterns`, `error-handling`, `prose`, `vitest`), every rule at `error`, on the lines the branch added | pre-commit (`eslint {staged_files}`) | ESLint exits 1 |
 | flake8 FAP rules | pre-commit | flake8 exits 1 |
 | ruff `FAST` / `ASYNC` | pre-commit | ruff exits 1 |
 | `svelte-check --tsgo` (Svelte projects) | pre-push | svelte-check exits 1 |
