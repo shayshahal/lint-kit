@@ -21,6 +21,8 @@ the repository owns the copies, and only whoever runs `init` needs access here.
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
 | `structure` | fallow, `structure_check.py` | lefthook pre-push steps that fail when a branch adds complexity, duplication, an import cycle or dead code its base did not have, and never on what was already there ([docs](docs/structure.md)) |
+| `secret-scanning` | Gitleaks | a pre-push branch scan for credentials the branch introduced, with the pinned Gitleaks 8.30.1 (opt-in; you provision the pinned binary) |
+| `policy-guard` | policy-guard | an opt-in pre-push guard that reports an unapproved change to enrolled checker configuration; the local hook is feedback, not CI authorization |
 
 Each ESLint rule links to its section in the `.md` copied beside it in `tools/eslint/` (editors
 show the link with the message); the FAP rules are listed in `tools/python/fastapi_rules.py`'s
@@ -107,8 +109,8 @@ The supported config shapes and the fallback for anything else are in
 to add, never reported as wired.
 
 Options: `--sets svelte-skills,fastapi` and `--yes` skip the questions, `--no-install` writes
-files only, `--base <branch>` names the branch structure compares with, `--cwd <dir>` runs it on
-another repository.
+files only, `--base <branch>` names the branch structure, secret-scanning and the policy guard
+compare with, `--cwd <dir>` runs it on another repository.
 
 ## ESLint sets
 
@@ -276,6 +278,88 @@ that tree.
 
 The set lands at `warn`. Rules are checked with `node --test test/slop-patterns.test.js`.
 
+## secret-scanning
+
+A pre-push branch scan for credentials the branch introduced, using the pinned **Gitleaks 8.30.1**
+scanner. No dependency selects it: ask for it with `--sets secret-scanning`, and it stays on a
+re-run. The set is repository-wide — it needs no project dependency, because the command uses Node
+built-ins only. It copies `tools/security/gitleaks-check.mjs`, its `gitleaks-report.mjs` reader and
+`gitleaks-check.md`, writes the selected `gitleaks.toml`, and adds one repository-root lefthook step:
+
+```yaml
+pre-push:
+  commands:
+    secret-scanning:
+      run: node tools/security/gitleaks-check.mjs --base origin/main
+```
+
+The base is chosen the way the structure steps choose theirs: `--base`, the base an existing
+structure step names, the `origin/<branch>...HEAD` lefthook's pre-push `files` diffs against,
+`origin/HEAD`, else `origin/main`.
+
+The command answers three questions separately — what this branch introduced, what it inherited,
+and whether the check could run at all. It exits `0` clean, `1` on an introduced finding, and `2`
+when it could not run (a missing or wrong-version binary, an invalid config, a timeout, a source
+`.gitleaksignore`). A push that reaches it fails on `1` **and** `2`; a skip is never reported as
+success. `init` does **not** install the scanner: put Gitleaks 8.30.1 on `PATH`, or pass
+`--gitleaks <path>`. The official release assets, their recorded SHA-256, and the offline and
+unsupported-platform behaviour are in `tools/security/gitleaks-check.md`. Do not substitute a
+package from a registry.
+
+The initial/history audit is a separate remediation workflow, never a push step:
+
+```sh
+node tools/security/gitleaks-check.mjs --mode history   # or: npm run secret-scanning:history
+```
+
+It scans every ref and the working tree and reports every finding, including a credential a later
+commit deleted. `init` adds the `secret-scanning:history` script when a root `package.json` exists;
+otherwise run the command directly. A re-run never duplicates the step, and never rewrites or
+broadens `tools/security/gitleaks.toml`: reviewed exceptions live there, so an edited config is
+left byte-for-byte.
+
+A pre-push step counts as already wired only when it is exactly this repository-root command with
+an optional plain `--base` ref. A step that merely mentions `gitleaks-check` — `echo
+gitleaks-check`, `... || true`, a subfolder `root:`, a file `glob:`, `skip:`, or `--mode history` —
+is left untouched and reported as a manual action, never as wired. A base that is not a plain ref
+is not embedded in the generated shell command; `init` prints the step to add by hand instead.
+
+**CI.** The local hook is feedback only. A required check needs CI to run the command from a
+**trusted revision**, with the tool and config in trusted paths, before the untrusted checkout
+executes. Start with a source checkout containing full history (`fetch-depth: 0` in
+`actions/checkout`), so a branch and an advanced main still have a discoverable merge-base.
+This Linux x64 sample is a snippet to adapt, not a protected workflow `init` installs:
+
+```yaml
+- name: Provision the pinned Gitleaks and the trusted command in temp paths
+  run: |
+    set -euo pipefail
+    rm -rf /tmp/trusted && mkdir -p /tmp/trusted
+    curl -fsSLo /tmp/gitleaks.tar.gz \
+      https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+    echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum -c -
+    tar -xzf /tmp/gitleaks.tar.gz -C /tmp
+    git fetch origin main
+    git rev-parse FETCH_HEAD > /tmp/trusted-rev
+    trusted="$(cat /tmp/trusted-rev)"
+    for f in gitleaks-check.mjs gitleaks-report.mjs gitleaks.toml; do
+      git show "${trusted}:tools/security/${f}" > "/tmp/trusted/${f}"
+    done
+- name: Scan the change with the trusted command and config
+  run: |
+    set -euo pipefail
+    node /tmp/trusted/gitleaks-check.mjs --source "$PWD" --gitleaks /tmp/gitleaks \
+      --config /tmp/trusted/gitleaks.toml --base "$(cat /tmp/trusted-rev)"
+```
+
+The revision is pinned once (`/tmp/trusted-rev`) and the temp directory is emptied first, so a
+stale or half-written trusted config is never scanned. `set -euo pipefail` fails the step on a
+download, checksum, `git show` or extraction error. Run the trusted copy, not the branch's, so a
+pull request cannot edit the command or add an allowlist. Block the job on both exit `1` and exit
+`2`. Writing the hook does **not** create a required check or any branch protection: those are
+external forge settings set by the repository's administrator, and this install makes no claim
+that they exist.
+
 ## fastapi
 
 ```toml
@@ -303,6 +387,76 @@ FAP001 follows calls through your own sync helpers across modules, so it indexes
 once per run. Common libraries (bcrypt, boto3, pandas, openpyxl, reportlab, requests, Pillow,
 sync redis / pymongo…) come classified; `python tools/python/fastapi_rules.py check-deps` fails
 while a `[project.dependencies]` entry is classified nowhere, so adding a library means deciding.
+
+## policy-guard
+
+`init --sets policy-guard` installs the opt-in policy guard: a copied command that reports a change
+to an enrolled checker configuration. No dependency selects it — ask for it by name, and it stays
+on a re-run. It copies `tools/policy/policy-guard.mjs`, the trusted-CI helper
+`tools/policy/policy-guard-ci.mjs` and the manual template `tools/policy/policy-guard-ci.yml` into
+the repository, writes one `lint-kit.policy.json`, and wires one repository-root pre-push script.
+It writes no workflow and activates no check.
+
+```json
+{
+	"version": 1,
+	"enrollments": [
+		{ "id": "tools/policy/policy-guard.mjs", "source": "tools/policy/policy-guard.mjs", "format": "opaque" },
+		{
+			"id": ".fallowrc.json",
+			"source": ".fallowrc.json",
+			"format": "jsonc",
+			"adapter": "fallow-jsonc",
+			"identities": [
+				{ "id": "health.maxCognitive", "unit": "score", "direction": "max" },
+				{ "id": "health.maxCrap", "unit": "score", "direction": "max" },
+				{ "id": "rules", "unit": "severity-map", "direction": "min" },
+				{ "id": "ignorePatterns", "unit": "glob-list", "direction": "subset" }
+			]
+		}
+	]
+}
+```
+
+The manifest links to the checker's own file; it stores no threshold, severity or ignore list. An
+enrollment's `id` is its source path, so two configs a slug would fold together (`apps/a-b` and
+`apps/a_b`) stay distinct. A fresh install enrolls only what it can verify: the copied guard
+`opaque`, each real `.fallowrc.json` with only the identities it provably has, and
+`tools/python/structure_check.py` `opaque` when present. A Fallow shape with no adapter is
+protected `opaque` without evaluation; a config that is not a regular UTF-8 file is left unchanged
+and enrolled nowhere, or protected `opaque` when it is only its bytes that are not UTF-8. A repeat
+never rewrites or broadens an existing manifest.
+
+The generated script runs `node tools/policy/policy-guard.mjs --base <resolved> --target HEAD
+--trusted-ref <resolved> --policy lint-kit.policy.json --mode working-tree`. It is a script, not a
+file-filtered command, so a deletion-only push still runs it. An existing command is recognised
+only when it has no file filter (a command with a `glob` or `files` filter is skipped when a push
+leaves no matching file, so that shape is a manual action); the step must be exactly
+`{ runner: bash }` with the exact generated body, and an orphan file of that name is left
+byte-for-byte unless it is that exact body. working-tree mode judges partial staging by the
+working tree, not the index. The trusted ref is explicit and never defaulted to `HEAD`; a fresh
+enrollment must be reviewed and landed at that ref before the local guard can run, and until then
+it exits `2`, not clean.
+
+The `jsonc` adapter needs `jsonc-parser` `3.3.1` resolvable from the repository root, where the
+copied command lives: a dependency in one workspace member does not resolve there. `init` adds
+`jsonc-parser@3.3.1` to a root `package.json`; a repository without one or `--no-install` is a
+manual action. A different declared version is preserved as it is: the copied guard does not check
+the declared version and loads the parser only when a parsed enrollment needs it, so that version
+is untested here. A missing parser (needed to compare a parsed enrollment) exits `2`.
+
+The local hook is **feedback, not authorization**. Required CI runs the same command from a
+trusted ref and blocks exit `1` and `2`. `init` also copies a manual template
+(`tools/policy/policy-guard-ci.yml`) that runs the guard from one supported protected base branch
+(the template's `branches` filter and `TRUSTED_BASE_BRANCH` name the same branch) and reads the
+pull request only as Git data; the helper refuses a foreign event base and binds its read-only
+token to `GITHUB_SERVER_URL`/`GITHUB_REPOSITORY`, so no credential is sent to another host or
+repository. The template is not activated and installs no check: the enforced check depends on
+external protections (that base branch protected, and this exact workflow bound as a required
+check through a ruleset required-workflows entry or an equivalent trusted source). Writing the hook
+installs no required check or branch protection, and a job name alone is not a unique check
+identity. See [docs/support.md](docs/support.md) and
+[tools/policy/README.md](tools/policy/README.md).
 
 ## Develop
 

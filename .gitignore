@@ -3,3 +3,5 @@ __pycache__/
 *.egg-info/
 .venv/
 .pytest_cache/
+# the pinned Gitleaks executable the secret-scanning tests download and verify
+test/.gitleaks/
