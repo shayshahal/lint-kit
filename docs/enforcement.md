@@ -19,6 +19,7 @@ A finding fails the commit or push.
 | fallow `"error"` rules: dead code the branch introduced | pre-push (script) | `fallow audit` exits 1 |
 | `structure_check.py`: a new / crossed complexity, new duplication, a new import cycle | pre-push | exits 1 |
 | `gitleaks-check.mjs --mode branch` (opt-in `secret-scanning` set) | pre-push (`node tools/security/gitleaks-check.mjs --base <branch>`) | exit 1: an introduced secret; exit 2: the check could not run |
+| policy guard: an unapproved change to an enrolled checker configuration (opt-in) | pre-push (script) | the guard exits 1 |
 
 Secret scanning is opt-in: like `prose`, a dependency never selects it, so a repository asks for
 it with `--sets secret-scanning` and it stays off by default. Its local step is feedback only —
@@ -26,6 +27,21 @@ writing the hook installs no required check and changes no forge protection, so 
 secret is caught in CI only when CI is wired to run the command from a trusted revision, with a
 trusted tool and config, and block on both exit `1` and exit `2`. The history audit (`--mode
 history`) is remediation, not a gate, and is not wired to a hook.
+
+The policy guard is opt-in: `init --sets policy-guard` installs its pre-push script, which reports
+an unapproved change to an enrolled checker configuration. That local hook is feedback, not
+authorization. A required CI check runs the same command from a trusted ref and blocks exit `1`
+and `2`; writing the hook installs no required check and no forge protection, and this repository
+installs no CI protection. A manual template (`tools/policy/policy-guard-ci.yml`, copied but not
+activated) runs the guard from one supported protected base branch — the template's `branches`
+filter and `TRUSTED_BASE_BRANCH` name the same branch, and the helper refuses an event whose
+action, base repository or base branch is not that trusted context — and reads the pull request
+only as Git data. Its read-only token is bound to `GITHUB_SERVER_URL`/`GITHUB_REPOSITORY`, so a
+foreign host, userinfo, query, fragment or other repository is refused before a credential exists.
+The enforced check nevertheless depends on external protections — that protected base branch and
+this exact workflow bound as a required check through a ruleset required-workflows entry or an
+equivalent trusted source. A job name alone is not a unique check identity, so enforcement is not
+claimed before those protections are present.
 
 A blocking check is only ever charged for what the branch introduced. The structure tools compare
 with the merge-base of the branch and its base, and fallow reports an inherited finding as
