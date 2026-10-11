@@ -36,8 +36,11 @@ Hook steps need a `lefthook.yml` or `lefthook.yaml`; without one, typecheck, str
 policy guard are not installed and the run says so. pre-commit gets eslint, flake8 (FAP), the
 FastAPI dependency check and ruff; pre-push gets svelte-check / pyright, fallow (as a script, so a
 deletion-only push still runs it), the Python structure check, and the policy guard (also as a
-script). A step that already runs the same tool for the project is left alone, and a repository
-that already runs `fallow audit` in a command keeps it and gets no script. When the `vitest` set is
+script). When the `vitest` set is installed, the pre-push hook also gets a `test-quarantine.sh`
+script that validates every `test-quarantine.json` entry independently of the changed files, so a
+docs-only, deletion-only or no-test-selected push still checks the ledger. A step that already runs
+the same tool for the project is left alone, and a repository that already runs `fallow audit` in a
+command keeps it and gets no script. When the `vitest` set is
 installed, the eslint step also matches the project's `*.test.*` / `*.spec.*` files, wherever they
 are, so tests outside `src/` are checked; an upgrade that adds the set widens the step a previous
 run wrote. A repository whose own command runs ESLint keeps it, and the run names the pattern to

@@ -11,13 +11,14 @@ A finding fails the commit or push.
 
 | Check | Where | Fails with |
 | --- | --- | --- |
-| ESLint sets (`svelte-skills`, `untranslated-text`, `tailwind-patterns`, `error-handling`, `prose`, `vitest`), every rule at `error`, on the lines the branch added | pre-commit (`eslint {staged_files}`) | ESLint exits 1 |
+| ESLint sets (`svelte-skills`, `untranslated-text`, `tailwind-patterns`, `error-handling`, `prose`, `vitest`), every rule at `error`, on the lines the branch added (quarantine exceptions below) | pre-commit (`eslint {staged_files}`) | ESLint exits 1 |
 | flake8 FAP rules | pre-commit | flake8 exits 1 |
 | ruff `FAST` / `ASYNC` | pre-commit | ruff exits 1 |
 | `svelte-check --tsgo` (Svelte projects) | pre-push | svelte-check exits 1 |
 | `pyright` (Python projects) | pre-push | pyright exits 1 |
 | fallow `"error"` rules: dead code the branch introduced | pre-push (script) | `fallow audit` exits 1 |
 | `structure_check.py`: a new / crossed complexity, new duplication, a new import cycle | pre-push | exits 1 |
+| `check-quarantine-ledger.mjs`: a malformed, non-regular, undecodable or expired `test-quarantine.json` (when the `vitest` set is installed) | pre-push (script) | exits 1, or 2 when the Git root it needs cannot be resolved |
 | `gitleaks-check.mjs --mode branch` (opt-in `secret-scanning` set) | pre-push (`node tools/security/gitleaks-check.mjs --base <branch>`) | exit 1: an introduced secret; exit 2: the check could not run |
 | policy guard: an unapproved change to an enrolled checker configuration (opt-in) | pre-push (script) | the guard exits 1 |
 
@@ -43,7 +44,7 @@ this exact workflow bound as a required check through a ruleset required-workflo
 equivalent trusted source. A job name alone is not a unique check identity, so enforcement is not
 claimed before those protections are present.
 
-A blocking check is only ever charged for what the branch introduced. The structure tools compare
+Blocking code checks normally charge only what the branch introduced. The structure tools compare
 with the merge-base of the branch and its base, and fallow reports an inherited finding as
 inherited; what the base already had never fails. The ESLint sets are narrowed the same way and
 against the same base: `init` writes `inspection: 'branch'`, so a rule keeps a report only when the
@@ -54,6 +55,12 @@ that removes the setting gets whole-file linting; and a file git does not track 
 full, because a new file is all new. Each check has its own regression test: the ESLint
 RuleTesters, `test/inspection.test.js` for the gate itself, `python/tests/test_structure.py`, and
 the real-`oxlint` deletion test for the fallow script.
+
+The opt-in quarantine lifecycle is another deliberate exception: the pre-push validator checks
+**every ledger entry**, so an inherited expired or malformed entry fails even on a docs-only push.
+The skip rule also reports an expired, moved or replaced quarantined call on an inherited line.
+An inherited skip with no ledger entry remains baseline-exempt; adopting the set does not
+automatically charge existing unquarantined debt. See [vitest.md](../tools/eslint/vitest.md).
 
 ## Advisory
 

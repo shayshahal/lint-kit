@@ -46,7 +46,7 @@ function lint(code, filename, options, extra = []) {
  * The public rule roster this set ships, spelled out here so the assertion does not read it back
  * from the implementation. The production list is private; this literal is the independent check.
  */
-const RULES = ['vitest/no-focused-tests', 'vitest/valid-expect', 'vitest/valid-expect-in-promise'];
+const RULES = ['vitest/no-focused-tests', 'vitest/valid-expect', 'vitest/valid-expect-in-promise', 'vitest/no-disabled-tests'];
 
 test('the set turns on the maintained focus and async-assertion rules, at error', () => {
 	const [entry] = config();
@@ -59,8 +59,8 @@ test('the set turns on the maintained focus and async-assertion rules, at error'
 	assert.equal(entry.plugins.vitest.rules['no-focused-tests'].meta.fixable, 'code');
 	assert.equal(entry.plugins.vitest.rules['valid-expect'].meta.fixable, 'code');
 	assert.deepEqual(DEFAULT_FILES, ['**/*.test.*', '**/*.spec.*']);
-	// The plugin's recommended config would also enable the skip rule; it stays out (#49).
-	assert.ok(!('vitest/no-disabled-tests' in entry.rules));
+	// The skip rule is the fourth; the maintenance is upstream's, the quarantine layered here.
+	assert.equal(entry.rules['vitest/no-disabled-tests'], 'error');
 });
 
 test('the fix drops .only and leaves the rest of the call', () => {
@@ -383,6 +383,7 @@ function isolatedPlugin(dir, marker) {
 		'no-focused-tests': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) },
 		'valid-expect': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) },
 		'valid-expect-in-promise': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) },
+		'no-disabled-tests': { meta: { marker: ${JSON.stringify(marker)}, docs: {} }, create: () => ({}) },
 	},
 };
 `,
@@ -462,7 +463,7 @@ test('every anchor in one project shares a wrapper; two installs never do', () =
 async function copiedAt(root) {
 	const tools = path.join(root, 'tools', 'eslint');
 	fs.mkdirSync(tools, { recursive: true });
-	for (const file of ['inspection.mjs', 'vitest.mjs', 'vitest.md'])
+	for (const file of ['inspection.mjs', 'quarantine-ledger.mjs', 'vitest.mjs', 'vitest.md'])
 		fs.copyFileSync(path.join(TOOLS, file), path.join(tools, file));
 	return import(pathToFileURL(path.join(tools, 'vitest.mjs')).href);
 }
