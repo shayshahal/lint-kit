@@ -60,7 +60,7 @@ policy change.
 
 ## Joint installed-workflow matrix
 
-The one new test this gate adds installs `--sets policy-guard,secret-scanning,vitest` into a
+The joint test file this gate adds installs `--sets policy-guard,secret-scanning,vitest` into a
 generated consumer and runs the combined hooks and the copied commands. It is written to cover
 fresh, repeat and stale-code upgrade installation, a nested pnpm workspace and a spaced path; the
 focused, async and disabled-test ESLint findings through the real generated **pre-commit** hook; the
