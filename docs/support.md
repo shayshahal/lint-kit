@@ -32,9 +32,10 @@ copied once to the root's `tools/`. Folders starting with `.`, and `node_modules
 
 ## Hooks
 
-Hook steps need a `lefthook.yml` or `lefthook.yaml`; without one, typecheck, structure and the
-policy guard are not installed and the run says so. pre-commit gets eslint, flake8 (FAP), the
-FastAPI dependency check and ruff; pre-push gets svelte-check / pyright, fallow (as a script, so a
+Hook steps need a `lefthook.yml` or `lefthook.yaml`; without one, typecheck, structure, the secret
+scan and the policy guard get no step (and the vitest quarantine validator none either), and the run
+prints what to add. pre-commit gets eslint, flake8 (FAP), the FastAPI dependency check and ruff;
+pre-push gets svelte-check / pyright, fallow (as a script, so a
 deletion-only push still runs it), the Python structure check, and the policy guard (also as a
 script). When the `vitest` set is installed, the pre-push hook also gets a `test-quarantine.sh`
 script that validates every `test-quarantine.json` entry independently of the changed files, so a

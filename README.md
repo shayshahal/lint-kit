@@ -6,8 +6,9 @@ nothing** and **FastAPI**, the type checkers, and pre-push checks that a branch 
 structure no worse than its base. Each message says what to write instead.
 
 `init` copies the rules into the repository's `tools/` folder and writes the tools' own config.
-Nothing it leaves behind is named after it, and nothing depends on this repository afterwards:
-the repository owns the copies, and only whoever runs `init` needs access here.
+Almost nothing it leaves behind is named after it — the exception is the opt-in
+`lint-kit.policy.json` the `policy-guard` set writes — and nothing depends on this repository
+afterwards: the repository owns the copies, and only whoever runs `init` needs access here.
 
 | Set | Tool | What it checks |
 | --- | --- | --- |
@@ -177,7 +178,10 @@ same kind of silent hole; it is blocking unless a live entry in the repository-r
 a project helper is not resolved. `init` adds `@vitest/eslint-plugin@1.6.27`, routes the test files
 to the pre-commit ESLint step, and wires a separate pre-push `check-quarantine-ledger.mjs` script
 that validates every `test-quarantine.json` entry even when a push changes no test file; a
-repository that already runs its own ESLint command keeps it and the run says what to add. Only
+repository that already runs its own ESLint command keeps it and the run says what to add.
+`init` neither creates nor enrolls `test-quarantine.json`: the ledger is the repository's, and
+enrolling it `opaque` in `lint-kit.policy.json` is a reviewed trusted-ref change made by hand
+([tools/eslint/vitest.md](tools/eslint/vitest.md)). Only
 Vitest is supported. The set resolves the plugin from the config's own
 folder (`from: import.meta.url`), so a pnpm workspace member whose `node_modules` holds the plugin
 works even though `tools/eslint/` is copied once at the repository root. An

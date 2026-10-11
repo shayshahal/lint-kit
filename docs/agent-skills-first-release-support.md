@@ -5,9 +5,13 @@ contract the first-release stacks ([#41](https://github.com/shayshahal/lint-kit/
 implement against; it publishes the [revised proposal](agent-skills-lint-rule-proposals.md) and the
 [roadmap](agent-skills-implementation-roadmap.md) without changing any existing default.
 
-**Nothing here is installed.** No runtime check, installer set, or default changes in #40, so
-`docs/support.md` and `docs/enforcement.md` are unchanged. Every selection below is opt-in for the
-issue that implements it. Where a decision belongs to another owner, it says so instead of guessing.
+**Nothing was installed by #40.** No runtime check, installer set, or default changed in that
+foundation slice, and `docs/support.md` and `docs/enforcement.md` were unchanged at that freeze.
+The implementing stacks have since landed their sets on `main` as unreleased, opt-in additions;
+what actually ships is in those two documents, the copied `tools/*/*.md`, and
+[agent-skills-first-release-gate.md](agent-skills-first-release-gate.md). Every decision below is
+still the frozen contract, and every selection stays opt-in. Where a decision belongs to another
+owner, it says so instead of guessing.
 
 ## Frozen decisions
 
@@ -85,6 +89,16 @@ The implementing issues must not claim more than these show.
 | Failing example | `test('x', () => { expect(fetch('u')).resolves.toBe('y'); })` and `test('x', () => { fetch('u').then((r) => expect(r).toBe('y')); })`, including aliased `expect`/`test` imports |
 | Counterexamples that must pass | `await expect(…).resolves…` inside an `async` test; `return expect(…).resolves…`; a synchronous test callback with a synchronous `expect`; a shadowed local `expect` |
 | Limits to record | The check is syntactic. `valid-expect` autofixes the unawaited form by making the callback `async` and adding `await`; `valid-expect-in-promise` offers no fix. The rule also accepts the callback-`done` form, but Vitest 4.1.11 **deprecates** it — calling `done()` fails with "done() callback is deprecated, use promise instead" — so it is not a legitimate passing counterexample for this runner. Neither rule can resolve an assertion behind a dynamic matcher or an imported helper without types, so #48 must prove any type-aware requirement before claiming it |
+
+Shipped in #48: the set turns both rules on alongside `no-focused-tests`, wrapped in
+`tools/eslint/vitest.mjs` with the set's existing branch narrowing, and adds no type-aware setup —
+none of the three rules reads parser services. The two async rules share one shape: a floating
+`.then`/`.catch`/`.finally` chain whose callback body is a single async assertion. One owner reports
+it (`valid-expect`, which carries the fix), so the concise-arrow form is one finding and one fix;
+a block-bodied chain stays two findings with two fixes. Ownership is scoped to one lint run and does
+not depend on the order the rules are registered. The limits above still hold: the rules are
+syntactic, `valid-expect-in-promise` has no fix of its own, and the callback-`done` form is lint-valid
+but runner-deprecated.
 
 ### 2.3 Unconditional skips — owner [#49](https://github.com/shayshahal/lint-kit/issues/49)
 
@@ -295,7 +309,9 @@ These are **not** decided by #40 and block [#50](https://github.com/shayshahal/l
 - A real measured pilot (reviewed findings, false positives, runtime cost) before any check becomes
   a default.
 
-Until those exist, a local hook is feedback only and must not be described as enforcement.
+Until those exist, a local hook is feedback only and must not be described as enforcement. The
+current bounded evidence and the go/no-go for each prerequisite are recorded in
+[agent-skills-first-release-gate.md](agent-skills-first-release-gate.md).
 
 ## 7. Verification performed for this freeze
 
@@ -314,3 +330,8 @@ Run in this worktree with the installed toolchain:
   JSONC with the enrolled identity paths, which a strict-JSON reader cannot parse.
 - `pnpm test` and `pnpm typecheck` — the full suite (including the integrated Svelte overlap test)
   and the shipped-tool typecheck.
+
+This records the #40 freeze. The merged stacks' per-set suites and the joint installed-workflow run
+the release gate adds are recorded with their bounded results in
+[agent-skills-first-release-gate.md](agent-skills-first-release-gate.md); until that run is complete,
+its cases stay unmeasured.
