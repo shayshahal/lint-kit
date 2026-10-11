@@ -286,6 +286,32 @@ test('a leaf symlink to an existing file outside the root is not waived', (t) =>
 	assert.equal(rawSkipMessages(dir, "test.skip('a', () => {});", 'leaf.test.js').length, 1);
 });
 
+test('a virtual file under a dangling directory link is not waived', (t) => {
+	// `realpath` of the ancestor fails with ENOENT because the link's target is gone, but the
+	// ancestor itself is present: that is not an absent ordinary directory, and the virtual tail
+	// under it must not be treated as inside the root.
+	const dir = repo('dangling-linkdir');
+	const target = path.join(TMP, 'dangling-target-dir');
+	fs.mkdirSync(target, { recursive: true });
+	try {
+		fs.symlinkSync(target, path.join(dir, 'linkdir'), process.platform === 'win32' ? 'junction' : 'dir');
+	} catch {
+		t.skip('this platform cannot create a directory link without elevation');
+		return;
+	}
+	fs.rmSync(target, { recursive: true, force: true }); // the link now dangles
+	writeLedger(dir, [entry({ file: 'linkdir/x.test.js' })]);
+	assert.equal(rawSkipMessages(dir, "test.skip('a', () => {});", path.join('linkdir', 'x.test.js')).length, 1);
+});
+
+test('a virtual file under an ordinary missing nested directory stays excused', () => {
+	// The ancestor walk is still allowed to pass over genuinely absent directories: only a present,
+	// unresolvable link stops it.
+	const dir = repo('missing-nested');
+	writeLedger(dir, [entry({ file: 'nested/deep/x.test.js' })]);
+	assert.deepEqual(rawSkipMessages(dir, "test.skip('a', () => {});", path.join('nested', 'deep', 'x.test.js')), []);
+});
+
 // ── structural validity fails closed ──────────────────────────────────────────────
 
 test('a structural problem anywhere makes the whole ledger grant nothing', () => {

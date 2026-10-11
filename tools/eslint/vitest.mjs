@@ -259,8 +259,10 @@ function enclosingCall(node) {
  * and a synthetic file the checker never wrote does not exist, so `realpath` on the whole path
  * fails; then the nearest existing ancestor is canonicalized and the missing tail re-appended. A
  * leaf that does exist keeps its own `realpath`, so a symlink or junction pointing outside the
- * root stays outside, and a dangling link is not inside either. Returns null when nothing on the
- * path can be resolved.
+ * root stays outside, and a dangling link is not inside either. An ancestor that is present but
+ * cannot be resolved (a dangling or looping link) is not an absent ordinary directory either, so
+ * the walk stops there rather than re-appending the link name as if it were missing. Returns null
+ * when nothing on the path can be resolved.
  */
 function canonicalLintedPath(target) {
 	let leafExists = true;
@@ -284,6 +286,15 @@ function canonicalLintedPath(target) {
 			return path.join(realpathSync.native(current), ...tail);
 		} catch (error) {
 			if (error?.code !== 'ENOENT') return null;
+			// `realpath` could not resolve the ancestor. A present ancestor is a link or other node
+			// whose target is gone, not an absent ordinary directory, so the virtual tail under it is
+			// not inside the root. Only a genuinely missing directory lets the walk continue upward.
+			try {
+				lstatSync(current);
+				return null;
+			} catch (lstatError) {
+				if (lstatError?.code !== 'ENOENT') return null;
+			}
 			const parent = path.dirname(current);
 			if (parent === current) return null;
 			tail.unshift(path.basename(current));
