@@ -26,6 +26,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +48,10 @@ export const SETS = {
 		kind: 'structure',
 		about: 'fail a push that adds complexity, duplication or dead code the base did not have (lefthook)',
 	},
+	'policy-guard': {
+		kind: 'policy',
+		about: 'a pre-push guard that reports an unapproved change to enrolled checker configuration (opt-in; feedback, not authorization)',
+	},
 };
 /** The JS project dependency each ESLint set is for. */
 const ESLINT_FOR = {
@@ -62,7 +67,7 @@ const ESLINT_FOR = {
  * Sets a dependency never selects: they are a taste, so a repository asks for them by name and
  * keeps them on a re-run. `detect` only offers one that is already installed.
  */
-const OPT_IN = new Set(['prose']);
+const OPT_IN = new Set(['prose', 'policy-guard']);
 const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', '@typescript-eslint/parser'];
 /** The JS project dependency each oxlint set is for. */
 const OXLINT_FOR = {
@@ -222,6 +227,10 @@ function installed(repo, projects) {
 		fastapi: projects.py.some((p) => FASTAPI_TABLE.test(p.text)),
 		typecheck: /svelte-check --tsgo|uv run pyright/.test(hooks),
 		structure: /structure_check\.py --base|fallow audit --base/.test(`${hooks}\n${hookScriptText(repo)}`),
+		policyGuard:
+			fs.existsSync(path.join(repo, 'tools', 'policy', 'policy-guard.mjs')) ||
+			fs.existsSync(path.join(repo, POLICY_MANIFEST)) ||
+			/policy-guard\.mjs/.test(`${hooks}\n${hookScriptText(repo)}`),
 	};
 }
 
@@ -245,6 +254,9 @@ function detect(repo, projects) {
 		fastapi: had.fastapi || fastapi,
 		typecheck: had.typecheck || (hooks && (anyDep('svelte') || fastapi)),
 		structure: had.structure || (hooks && (anyDep('svelte') || anyDep('typescript') || fastapi)),
+		// No dependency selects the policy guard: a repository asks for it by name, and a re-run
+		// keeps it on. `jsonc-parser` in a project is not evidence of an enrollment.
+		'policy-guard': had.policyGuard,
 	};
 }
 
@@ -1064,7 +1076,7 @@ export function findBase(args, lefthookText, repo) {
 		const options = { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] };
 		return execFileSync('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], options).trim();
 	} catch {
-		say('→ no origin/HEAD, so structure compares with origin/main; pass --base <branch> if branches merge elsewhere');
+		say('→ no origin/HEAD, so the branch checks compare with origin/main; pass --base <branch> if branches merge elsewhere');
 		return 'origin/main';
 	}
 }
@@ -1180,6 +1192,361 @@ function writeStructure(repo, projects, doc, base, args) {
 	return [...roots.map((p) => `fallow (${where(p)})`), ...projects.py.map((py) => `structure_check.py (${where(py)})`)];
 }
 
+// ── policy guard ──────────────────────────────────────────────────────────────────
+
+/** The copied command. It must run at the repository root, where the Git tree and policy are. */
+const POLICY_COMMAND = 'node tools/policy/policy-guard.mjs';
+/** The one enrollment manifest the set writes. The guard self-protects it, so it is not enrolled. */
+const POLICY_MANIFEST = 'lint-kit.policy.json';
+/** The pre-push script name. A script is not file-filtered, so a deletion-only push still runs it. */
+const POLICY_SCRIPT = 'policy-guard.sh';
+/** The copies that are tool code, refreshed on upgrade; README.md is the command's own doc. */
+const POLICY_TOOLS = ['policy/policy-guard.mjs', 'policy/README.md'];
+/** A branch ref is only embedded in the generated script when it is a plain ref. */
+const POLICY_SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+/**
+ * A ref is only accepted as an approved policy ref when it is a plain ref and is not `HEAD`: the
+ * branch's own HEAD is not a reviewed trusted snapshot, so an existing step that names it is not
+ * the supported step, and generation never embeds it.
+ */
+const isApprovedPolicyRef = (ref) => typeof ref === 'string' && ref !== 'HEAD' && POLICY_SAFE_REF.test(ref);
+
+/**
+ * The identities the frozen `fallow-jsonc` adapter knows, with the only unit and direction real
+ * Fallow configuration gives each. This mirrors `FALLOW_IDENTITIES` in
+ * `tools/policy/policy-guard.mjs`: the enrollment declares the identity's link (name, unit,
+ * direction), never a value, and the guard reads the number, severity or ignore list from the
+ * checker's own configuration. The installer declares only an identity it can verify is present
+ * and already the type its unit compares.
+ */
+const FALLOW_ENROLLMENT_IDENTITIES = [
+	{ id: 'health.maxCognitive', unit: 'score', direction: 'max' },
+	{ id: 'health.maxCrap', unit: 'score', direction: 'max' },
+	{ id: 'rules', unit: 'severity-map', direction: 'min' },
+	{ id: 'ignorePatterns', unit: 'glob-list', direction: 'subset' },
+];
+/** Fallow's severity order. Mirrors the adapter so an enrolled `rules` map is provably comparable. */
+const FALLOW_SEVERITY = ['off', 'warn', 'error'];
+/** Fallow configuration files the frozen adapter can read as JSONC, and the ones it cannot. */
+const FALLOW_JSONC_SOURCES = ['.fallowrc.json', '.fallowrc.jsonc'];
+const FALLOW_OPAQUE_SOURCES = [
+	'fallow.toml',
+	'.fallow.toml',
+	'fallow.config.js',
+	'fallow.config.mjs',
+	'fallow.config.cjs',
+	'fallow.config.ts',
+];
+/** A copied checker the first release protects whole, without parsing or evaluating it. */
+const POLICY_OPAQUE_SOURCES = ['tools/python/structure_check.py'];
+
+const isRecord = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** jsonc-parser 3.3.1, the reader the enrollment format is frozen to. */
+let jsoncParser;
+function loadJsoncParser() {
+	if (jsoncParser === undefined) {
+		try {
+			jsoncParser = createRequire(import.meta.url)('jsonc-parser');
+		} catch (error) {
+			throw new Error(`lint-kit cannot load jsonc-parser 3.3.1 to read a fallow config: ${error.message}`);
+		}
+	}
+	return jsoncParser;
+}
+
+/**
+ * The identities a real Fallow JSONC config provably has: each is present and already the type
+ * its unit compares, so the guard can read it at both snapshots. Null when the text is not JSONC,
+ * so the caller protects the file opaque instead of enrolling an identity it cannot read. A
+ * malformed document is reported by `parseTree`, not thrown, so anything thrown here is a real
+ * install error (a missing parser, a programming error) and must not be relabelled "unsupported".
+ */
+function presentFallowIdentities(text) {
+	const jsonc = loadJsoncParser();
+	const errors = [];
+	const tree = jsonc.parseTree(text, errors);
+	if (tree === undefined || errors.length > 0) return null;
+	const valueAt = (segments) => {
+		const node = jsonc.findNodeAtLocation(tree, segments);
+		return node === undefined ? undefined : jsonc.getNodeValue(node);
+	};
+	const present = [];
+	for (const identity of FALLOW_ENROLLMENT_IDENTITIES) {
+		const value = valueAt(identity.id.split('.'));
+		if (identity.unit === 'score' && typeof value === 'number' && Number.isFinite(value)) present.push(identity);
+		else if (identity.unit === 'severity-map' && isRecord(value) && Object.values(value).every((s) => FALLOW_SEVERITY.includes(s))) present.push(identity);
+		else if (identity.unit === 'glob-list' && Array.isArray(value) && value.every((p) => typeof p === 'string')) present.push(identity);
+	}
+	return present;
+}
+
+/**
+ * A guard-specific read of one enrollment candidate, at the boundary that decides what to enroll.
+ * A symbolic link is never followed and a non-regular file is never read, so no read leaves the
+ * repository through a linked path; the bytes are decoded as strict UTF-8 exactly as the copied
+ * guard decodes a parsed enrollment, so a malformed byte sequence is never reported as a readable
+ * JSONC identity. `null` means absent. `kind:'text'` is the only kind the JSONC adapter reads
+ * from; a missing parser or a programming error still throws.
+ */
+function policyCandidate(file) {
+	let stats;
+	try {
+		stats = fs.lstatSync(file);
+	} catch {
+		return null;
+	}
+	if (stats.isSymbolicLink() || !stats.isFile()) return { kind: 'not-file' };
+	let bytes;
+	try {
+		bytes = fs.readFileSync(file);
+	} catch {
+		return { kind: 'unreadable' };
+	}
+	try {
+		return { kind: 'text', text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) };
+	} catch {
+		return { kind: 'invalid-utf8' };
+	}
+}
+
+/** Whether `file` is a regular file (a symbolic link is not), for an opaque enrollment. */
+function isRegularPolicyFile(file) {
+	try {
+		return fs.lstatSync(file).isFile();
+	} catch {
+		return false;
+	}
+}
+
+/** The repository-relative, forward-slash source path a guard enrollment names. */
+const policySource = (repo, file) => posix(path.relative(repo, file));
+
+/** The folders a fallow config can sit in: the repository root and each JS project. */
+function fallowConfigDirs(repo, projects) {
+	return [...new Set([repo, ...projects.js.map((p) => p.dir)])];
+}
+
+/**
+ * The fresh manifest's enrollments. The copied guard is opaque, so a silent edit to the guard
+ * itself is an enrolled change. Each real Fallow JSONC config enrolls only the identities it
+ * provably has; a Fallow config the adapter cannot read, or an unknown/executable Fallow shape,
+ * is protected opaque without evaluation. Any copied checker source the release protects whole
+ * is opaque. No threshold, severity or ignore list is copied here.
+ */
+function buildPolicyEnrollments(repo, projects) {
+	const enrollments = [{ id: 'tools/policy/policy-guard.mjs', source: 'tools/policy/policy-guard.mjs', format: 'opaque' }];
+	const seen = new Set(['tools/policy/policy-guard.mjs']);
+	const add = (source, enrollment) => {
+		if (seen.has(source)) return;
+		seen.add(source);
+		// The source path is the id, so two configs that a slug would fold together stay distinct.
+		enrollments.push({ id: source, source, ...enrollment });
+	};
+	for (const dir of fallowConfigDirs(repo, projects)) {
+		for (const name of FALLOW_JSONC_SOURCES) {
+			const file = path.join(dir, name);
+			const candidate = policyCandidate(file);
+			if (candidate === null) continue;
+			const source = policySource(repo, file);
+			if (candidate.kind === 'text') {
+				const identities = presentFallowIdentities(candidate.text);
+				if (identities && identities.length > 0) {
+					add(source, { format: 'jsonc', adapter: 'fallow-jsonc', identities });
+				} else {
+					add(source, { format: 'opaque' });
+					say(`→ ${source}: protected opaque; the fallow-jsonc adapter found no readable enrolled identity (enroll it by hand after review)`);
+				}
+			} else if (candidate.kind === 'invalid-utf8') {
+				add(source, { format: 'opaque' });
+				say(`→ ${source}: protected opaque; it is not valid UTF-8, so the fallow-jsonc adapter does not read it (enroll it by hand after review)`);
+			} else {
+				say(`→ ${source}: not a regular, readable file; init left it unchanged and enrolled nothing (enroll it by hand after review)`);
+			}
+		}
+		for (const name of FALLOW_OPAQUE_SOURCES) {
+			const file = path.join(dir, name);
+			if (!fs.existsSync(file)) continue;
+			const source = policySource(repo, file);
+			if (!isRegularPolicyFile(file)) {
+				say(`→ ${source}: not a regular file; init left it unchanged and enrolled nothing (enroll it by hand after review)`);
+				continue;
+			}
+			add(source, { format: 'opaque' });
+			say(`→ ${source}: protected opaque; this Fallow shape has no parsed adapter in the first release (no evaluation, enroll it by hand after review)`);
+		}
+	}
+	for (const source of POLICY_OPAQUE_SOURCES) {
+		if (fs.existsSync(path.join(repo, source))) add(source, { format: 'opaque' });
+	}
+	return enrollments;
+}
+
+/**
+ * The copied command resolves `jsonc-parser` from the repository root: it lives at `tools/policy/`
+ * and Node walks up to the root `node_modules`. A dependency in one workspace member does not
+ * resolve there. With a root `package.json`, provision the frozen 3.3.1 at that root; a different
+ * declared version, a repository without a root package, or `--no-install` is a manual action.
+ */
+function provisionPolicyParser(repo, projects, args) {
+	const root = projects.js.find((p) => p.rel === '');
+	if (!root) {
+		say(
+			`→ ${POLICY_COMMAND} needs jsonc-parser 3.3.1 resolvable from tools/policy/. This repository has no root package.json, so init added none: add one, or make jsonc-parser 3.3.1 available there by hand.`,
+		);
+		return;
+	}
+	const declared = root.deps['jsonc-parser'];
+	if (declared === undefined) {
+		if (args.install) {
+			addJs(root, ['jsonc-parser@3.3.1']);
+			say('✔ package.json: jsonc-parser 3.3.1 at the repository root, where the copied guard resolves it');
+		} else {
+			const command = root.pm === 'npm' ? 'npm install --save-dev' : `${root.pm} add -D`;
+			say(`→ ${POLICY_COMMAND} needs jsonc-parser 3.3.1 at the repository root; --no-install was given, so add it by hand: ${command} jsonc-parser@3.3.1`);
+		}
+		return;
+	}
+	if (declared !== '3.3.1') {
+		say(
+			`→ package.json declares jsonc-parser@${declared}, not the 3.3.1 the copied guard is frozen to; init left it exactly as it is. The copied guard does not check the declared version and loads the parser only when a parsed enrollment needs it, so whether this version works here is preserved and untested: review it and pin jsonc-parser@3.3.1 by hand.`,
+		);
+		return;
+	}
+	say('✔ package.json: jsonc-parser 3.3.1 is already declared at the repository root');
+}
+
+/** Write the enrollment manifest only when absent: a repeat never broadens or rewrites it. */
+function writePolicyGuard(repo, projects, args) {
+	const manifestFile = path.join(repo, POLICY_MANIFEST);
+	if (fs.existsSync(manifestFile)) {
+		say(`→ ${POLICY_MANIFEST} already exists; init left it byte-for-byte (an enrollment edit is a reviewed policy change)`);
+	} else {
+		const enrollments = buildPolicyEnrollments(repo, projects);
+		write(manifestFile, `${JSON.stringify({ version: 1, enrollments }, null, '\t')}\n`);
+		say(`✔ ${POLICY_MANIFEST} (new: enrolls ${enrollments.length} checker source(s); a repeat never broadens it)`);
+	}
+	provisionPolicyParser(repo, projects, args);
+}
+
+/** The canonical run the release supports: repository root, explicit base and trusted-ref, working tree. */
+const POLICY_CANONICAL_RUN = /^node tools\/policy\/policy-guard\.mjs --base (\S+) --target HEAD --trusted-ref \1 --policy lint-kit\.policy\.json --mode working-tree$/;
+
+/**
+ * A step is the canonical run only when it is exactly `{ run }`, the run matches the supported
+ * contract, and the ref it names is an approved plain, non-HEAD ref. A wrong runner, an extra key
+ * or a ref the policy does not approve is not guessed equivalent.
+ */
+function isCanonicalPolicyStep(step) {
+	if (!isRecord(step)) return false;
+	const keys = Object.keys(step);
+	if (keys.length !== 1 || keys[0] !== 'run') return false;
+	if (typeof step.run !== 'string') return false;
+	const match = POLICY_CANONICAL_RUN.exec(step.run);
+	return match !== null && isApprovedPolicyRef(match[1]);
+}
+
+/** The supported lefthook script step: exactly `{ runner: 'bash' }`; any other key is not guessed. */
+function isCanonicalPolicyScriptStep(step) {
+	if (!isRecord(step)) return false;
+	const keys = Object.keys(step);
+	return keys.length === 1 && keys[0] === 'runner' && step.runner === 'bash';
+}
+
+/** The generated script body: base and trusted-ref are explicit, and the mode reads the working tree. */
+const policyScriptBody = (base) =>
+	`#!/usr/bin/env bash\nset -e\n${POLICY_COMMAND} --base ${base} --target HEAD --trusted-ref ${base} --policy ${POLICY_MANIFEST} --mode working-tree\n`;
+
+/** The generated body's canonical shape: the same ref is named for `--base` and `--trusted-ref`. */
+const POLICY_CANONICAL_BODY =
+	/^#!\/usr\/bin\/env bash\nset -e\nnode tools\/policy\/policy-guard\.mjs --base (\S+) --target HEAD --trusted-ref \1 --policy lint-kit\.policy\.json --mode working-tree\n$/;
+
+/**
+ * The state of `.lefthook/pre-push/<name>`: `missing`, `canonical` (the exact supported body),
+ * `other`, or `not-ours` (a symbolic link, a directory or an unreadable file, never followed).
+ */
+function policyScriptBodyState(repo, name) {
+	const candidate = policyCandidate(path.join(repo, '.lefthook', 'pre-push', name));
+	if (candidate === null) return 'missing';
+	if (candidate.kind !== 'text') return 'not-ours';
+	const match = POLICY_CANONICAL_BODY.exec(candidate.text.replaceAll('\r\n', '\n'));
+	return match !== null && isApprovedPolicyRef(match[1]) ? 'canonical' : 'other';
+}
+
+/**
+ * The complete manual action for a repository the installer cannot wire: the exact script body
+ * and the lefthook.yml entry. A base that is not an approved plain ref is printed as the literal
+ * `<base-ref>` placeholder, so nothing unsafe is ever interpolated into a runnable line.
+ */
+function manualPolicyStep(base) {
+	const ref = isApprovedPolicyRef(base) ? base : '<base-ref>';
+	const body = policyScriptBody(ref).trimEnd().replaceAll('\n', '\n    ');
+	return (
+		`create .lefthook/pre-push/${POLICY_SCRIPT} with:\n` +
+		`    ${body}\n` +
+		`and in lefthook.yml:\n` +
+		`    pre-push:\n` +
+		`      scripts:\n` +
+		`        ${POLICY_SCRIPT}:\n` +
+		`          runner: bash`
+	);
+}
+
+/**
+ * Wire one repository-root pre-push script. The set installs a script, not a file-filtered
+ * command, so a deletion-only push still runs it; an existing command that already runs the guard
+ * with no filter is left as it is (it runs either way), while a filtered or otherwise different
+ * step is preserved and reported as a manual action. A supported step is exactly
+ * `{ runner: 'bash' }` with the exact generated body; anything else, including an orphan
+ * consumer file of the same name, is never overwritten.
+ */
+function writePolicyGuardStep(repo, doc, base) {
+	const script = `pre-push script "${POLICY_SCRIPT}"`;
+	const bodyState = policyScriptBodyState(repo, POLICY_SCRIPT);
+	const scripts = doc.getIn(['pre-push', 'scripts'])?.toJSON() ?? {};
+	if (POLICY_SCRIPT in scripts) {
+		if (isCanonicalPolicyScriptStep(scripts[POLICY_SCRIPT]) && bodyState === 'canonical') {
+			say(`✔ lefthook.yml: ${script} already runs the copied guard; nothing added`);
+		} else {
+			say(`→ lefthook.yml: ${script} exists but is not the supported working-tree run; init left it unchanged. The supported step is:\n` + manualPolicyStep(base));
+		}
+		return;
+	}
+	const commands = Object.entries(doc.getIn(['pre-push', 'commands'])?.toJSON() ?? {});
+	const canonical = commands.find(([, step]) => isCanonicalPolicyStep(step));
+	if (canonical) {
+		say(`✔ lefthook.yml: pre-push "${canonical[0]}" already runs the copied guard at the repository root; nothing added`);
+		return;
+	}
+	if (bodyState === 'canonical') {
+		addScript(doc, 'pre-push', POLICY_SCRIPT, { runner: 'bash' }, null);
+		say(`✔ lefthook.yml: ${script} wired to the existing canonical script (its body is left byte-for-byte)`);
+		return;
+	}
+	if (bodyState !== 'missing') {
+		say(
+			`→ lefthook.yml: .lefthook/pre-push/${POLICY_SCRIPT} already exists but is not the supported working-tree run; init left it unchanged and added no step (migrate it by hand)`,
+		);
+		return;
+	}
+	const named =
+		commands.some(([, step]) => /policy-guard\.mjs/.test(step?.run ?? '')) || /policy-guard\.mjs/.test(hookScriptText(repo));
+	if (named) {
+		say(
+			`→ lefthook.yml: a pre-push step names the copied guard but is not the repository-root working-tree run; init left it unchanged. To run the supported step instead,\n` +
+				manualPolicyStep(base),
+		);
+		return;
+	}
+	if (!isApprovedPolicyRef(base)) {
+		say(`→ lefthook.yml: the resolved base is not a plain ref, or it is HEAD, so no ${script} was written; add the working-tree step by hand with a base you trust:\n` + manualPolicyStep(base));
+		return;
+	}
+	addScript(doc, 'pre-push', POLICY_SCRIPT, { runner: 'bash' }, null);
+	writeHookScript(repo, 'pre-push', POLICY_SCRIPT, policyScriptBody(base));
+	say('✔ lefthook.yml: pre-push policy-guard (a script, so a deletion-only push still runs it; feedback, not authorization)');
+}
+
 // ── main ────────────────────────────────────────────────────────────────────────
 
 export async function main(argv = process.argv.slice(2)) {
@@ -1208,12 +1575,14 @@ export async function main(argv = process.argv.slice(2)) {
 	const oxlintSets = Object.keys(OXLINT_FOR).filter((s) => oxlinted.some(({ wanted }) => wanted.includes(s)));
 	const fastapi = sets.includes('fastapi') ? projects.py.filter(isFastapi) : [];
 	const structure = sets.includes('structure');
+	const policy = sets.includes('policy-guard');
 	copyTools(repo, [
 		...(eslintSets.length ? ['eslint/inspection.mjs'] : []),
 		...eslintSets.flatMap((s) => [`eslint/${s}.mjs`, `eslint/${s}.md`]),
 		...oxlintSets.map((s) => `oxlint/${s}`),
 		...(fastapi.length ? ['python/fastapi_rules.py'] : []),
 		...(structure && projects.py.length ? ['python/structure_check.py'] : []),
+		...(policy ? POLICY_TOOLS : []),
 	]);
 
 	for (const { p, wanted } of linted) writeEslint(repo, p, wanted, args);
@@ -1228,13 +1597,29 @@ export async function main(argv = process.argv.slice(2)) {
 		}
 		stepsFastapi(doc, wired);
 		if (sets.includes('typecheck')) say(`✔ lefthook.yml: typecheck before each push in ${writeTypecheck(projects, doc, args).join(', ') || 'no project'}`);
-		if (structure) {
-			const base = findBase(args, doc.toString(AS_WRITTEN), repo);
-			say(`✔ lefthook.yml: ${writeStructure(repo, projects, doc, base, args).join(', ') || 'nothing'} before each push, against ${base}`);
-		}
+		// One base for every branch-comparison step, resolved by the installer's convention rather
+		// than defaulting the guard to HEAD. The policy guard names it explicitly for both --base
+		// and --trusted-ref; the guard itself never defaults the trusted snapshot.
+		const base = structure || policy ? findBase(args, doc.toString(AS_WRITTEN), repo) : undefined;
+		if (structure) say(`✔ lefthook.yml: ${writeStructure(repo, projects, doc, base, args).join(', ') || 'nothing'} before each push, against ${base}`);
+		if (policy) writePolicyGuardStep(repo, doc, base);
 	});
+	// After the lefthook edit: the structure set may have just written the .fallowrc.json the
+	// manifest enrolls, so the manifest is built from what is now on disk.
+	if (policy) writePolicyGuard(repo, projects, args);
 	if (!hooked && (sets.includes('typecheck') || structure))
 		say('→ typecheck and structure run as lefthook pre-push steps, and this repository has no lefthook.yml');
+	if (!hooked && policy) {
+		const base = findBase(args, '', repo);
+		say(
+			'→ policy-guard: this repository has no lefthook.yml, so no pre-push script was added. To wire the same guard by hand:\n' +
+				manualPolicyStep(base),
+		);
+	}
+	if (policy) {
+		say(`→ policy-guard: local output is feedback, not authorization; required CI must run ${POLICY_MANIFEST} from a trusted ref and block exit 1 and 2 (protected CI wiring is #44, not installed here)`);
+		say(`→ policy-guard: the enrollment must be reviewed and landed at the trusted ref before the local guard can run; until then it exits 2, not clean`);
+	}
 	say('done');
 	return 0;
 }
