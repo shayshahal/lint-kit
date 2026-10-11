@@ -206,6 +206,29 @@ function runCi(fx, env) {
 	return { code: result.status, stdout, stderr, output: `${stdout}${stderr}` };
 }
 
+/**
+ * Run the real helper with exactly `env` (plus the ambient process environment, with any
+ * credential/config/trace variable removed case-insensitively). This injects no uppercase alias,
+ * so a lower- or mixed-case key is the only spelling the child can see.
+ */
+function runCiExact(fx, env) {
+	const ambient = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		const name = key.toUpperCase();
+		if (name === 'GITHUB_TOKEN' || name.startsWith('GIT_CONFIG') || name.startsWith('GIT_TRACE') || name.startsWith('GIT_CURL')) continue;
+		if (name === 'GIT_ASKPASS' || name === 'SSH_ASKPASS') continue;
+		ambient[key] = value;
+	}
+	const result = spawnSync(process.execPath, [path.join(fx.trusted, 'tools', 'policy', 'policy-guard-ci.mjs')], {
+		cwd: fx.trusted,
+		encoding: 'utf8',
+		env: { ...ambient, ...env },
+	});
+	const stdout = result.stdout ?? '';
+	const stderr = result.stderr ?? '';
+	return { code: result.status, stdout, stderr, output: `${stdout}${stderr}` };
+}
+
 const findMarker = (root, name) => {
 	for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
 		const entryPath = path.join(root, entry.name);
@@ -587,6 +610,37 @@ test('the guard runs with the token and inherited Git configuration removed', ()
 	assert.equal(result.code, 0, result.output);
 	assert.deepEqual(JSON.parse(result.stdout.trim()), { token: false, config: false, trace: false, curl: false });
 	assert.doesNotMatch(result.output, new RegExp(SENTINEL), 'no inherited credential reaches the stream');
+});
+
+test('a lower- or mixed-case credential or Git variable cannot reach the guard', () => {
+	const fx = fixture('case-insensitive-env');
+	const headSha = openPullRequest(fx, { 'README.md': 'base\n\nchange\n' });
+	// The stand-in guard reports every credential/config/trace variable it can see, whatever its
+	// casing, whether the sentinel is anywhere in its environment, and that a legitimate mixed-case
+	// variable still arrives with its value.
+	fs.writeFileSync(
+		path.join(fx.trusted, 'tools', 'policy', 'policy-guard.mjs'),
+		"const names = Object.keys(process.env).map((key) => key.toUpperCase());\n" +
+			"const watched = ['GITHUB_TOKEN', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_TRACE', 'GIT_CURL_VERBOSE', 'GIT_ASKPASS', 'SSH_ASKPASS'];\n" +
+			"const kept = Object.entries(process.env).some(([key, value]) => key.toUpperCase() === 'LINT_KIT_MARKER' && value === 'kept');\n" +
+			`process.stdout.write(JSON.stringify({seen: watched.filter((name) => names.includes(name)), sentinel: JSON.stringify(process.env).includes(${JSON.stringify(SENTINEL)}), kept}) + '\\n');\n` +
+			'process.exit(0);\n',
+	);
+	// Only lower/mixed-case spellings are sent: no uppercase alias is present to shadow them.
+	const result = runCiExact(fx, {
+		...ciEnv(fx, { baseSha: fx.baseSha, headSha }),
+		github_token: SENTINEL,
+		Git_Config_Count: '1',
+		git_config_key_0: 'http.extraheader',
+		'git_config_value_0': `Authorization: basic ${SENTINEL}`,
+		Git_Trace: '1',
+		'Git_Curl_Verbose': '1',
+		git_askpass: 'synthetic-askpass',
+		Lint_Kit_Marker: 'kept',
+	});
+	assert.equal(result.code, 0, result.output);
+	assert.deepEqual(JSON.parse(result.stdout.trim()), { seen: [], sentinel: false, kept: true });
+	assert.doesNotMatch(result.output, new RegExp(SENTINEL), 'no case-variant credential reaches the stream');
 });
 
 test('a fetch failure is a fixed category, never Git stderr, and never leaks the token', () => {

@@ -153,9 +153,12 @@ The job checks out that base commit — the trusted immutable revision — and r
 fetches the base, head and trusted commits by id into a fresh throwaway data repository and runs the
 guard in `committed` mode. Only `git fetch` and `git cat-file` read the PR; no PR file is checked
 out, imported, sourced, installed or executed, and no title or branch name is interpolated into a
-shell. The workflow permissions are `contents: read`; it holds no write or secret privilege, so the
-job can never push, change a check or a setting. Both exit `1` (an unapproved enrolled change) and
-exit `2` (the check could not run) fail the job, so a missing trusted input is never clean.
+shell. The workflow permissions are `contents: read`: the job's `GITHUB_TOKEN` can read repository
+contents only, so the job can never push, change a check or a setting. That permission does not
+remove the Actions `secrets` context; the only credential the job passes to the helper is that
+read-only token, and no pull-request code is executed, so a PR has no execution route in this job
+and cannot reach its secrets. Both exit `1` (an unapproved enrolled change) and exit `2` (the check
+could not run) fail the job, so a missing trusted input is never clean.
 
 The read-only token is bound to the repository before it is used. `GITHUB_SERVER_URL`/
 `GITHUB_REPOSITORY` are the authority for the remote; the event's `clone_url` is only checked
@@ -163,9 +166,9 @@ against them, and a userinfo part, a query, a fragment, a foreign host or anothe
 refused. The token becomes a `http.<remote>.extraheader` scoped to exactly that server and
 repository, with redirects refused, so the header is never sent to another host; it is never a
 command-line argument, a remote URL or a plain environment value. The guard subprocess runs with
-the token and every inherited `GIT_CONFIG_*`/`GIT_TRACE*` variable removed, and a failure is
-reported as a fixed category — never raw Git stderr, a trace line or a stack that could carry a
-URL or the token.
+the token and every inherited `GIT_CONFIG_*`/`GIT_TRACE*` variable removed whatever its casing
+(Windows environment names are case-insensitive), and a failure is reported as a fixed category —
+never raw Git stderr, a trace line or a stack that could carry a URL or the token.
 
 What this guarantees, and only this: the guard binary, the enrollment and the parser are the
 trusted revision's, the pull request is read as data, and the credential is not sent anywhere but

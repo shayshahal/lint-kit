@@ -22,8 +22,9 @@
  * refused. The read-only token becomes a URL-scoped `http.<remote>.extraheader` (never a command
  * line, never a remote URL, never a plain environment value), redirects are refused so the header
  * cannot travel to another host, and the guard subprocess runs with the token and every inherited
- * `GIT_CONFIG_*`/`GIT_TRACE*` variable removed. Git's own stderr, traces and stacks are never
- * printed: a failure is reported as a fixed category.
+ * `GIT_CONFIG_*`/`GIT_TRACE*` variable removed whatever its casing (Windows environment names are
+ * case-insensitive). Git's own stderr, traces and stacks are never printed: a failure is reported
+ * as a fixed category.
  *
  * Inputs (all from the trusted workflow environment, never from the branch):
  *   GITHUB_EVENT_PATH    required; the runner's event payload JSON
@@ -167,17 +168,29 @@ function trustedRemote(serverUrl, repository) {
 /**
  * Drop every inherited variable that could reconfigure a child Git process or make it log a
  * credential: the token itself, `GIT_CONFIG_*`, the `GIT_TRACE*`/`GIT_CURL_VERBOSE` channels and
- * the askpass hooks. The runner's own values are never trusted to be absent.
+ * the askpass hooks. The classification is case-insensitive — Windows environment names are, and a
+ * lower- or mixed-case `git_config_count` or `github_token` must be dropped exactly like the
+ * uppercase spelling. Only the classification is folded: a legitimate variable keeps its own
+ * casing and value.
  */
 function scrubEnv(env) {
 	const clean = {};
 	for (const [key, value] of Object.entries(env)) {
-		if (key === 'GITHUB_TOKEN') continue;
-		if (key.startsWith('GIT_CONFIG') || key.startsWith('GIT_TRACE') || key.startsWith('GIT_CURL')) continue;
-		if (key === 'GIT_ASKPASS' || key === 'SSH_ASKPASS') continue;
+		const name = key.toUpperCase();
+		if (name === 'GITHUB_TOKEN') continue;
+		if (name.startsWith('GIT_CONFIG') || name.startsWith('GIT_TRACE') || name.startsWith('GIT_CURL')) continue;
+		if (name === 'GIT_ASKPASS' || name === 'SSH_ASKPASS') continue;
 		clean[key] = value;
 	}
 	return clean;
+}
+
+/** Remove every spelling of a variable from this process, since a Windows name is case-insensitive. */
+function forgetEnv(name) {
+	const upper = name.toUpperCase();
+	for (const key of Object.keys(process.env)) {
+		if (key.toUpperCase() === upper) delete process.env[key];
+	}
 }
 
 /**
@@ -266,7 +279,7 @@ export function main() {
 		if (baseRef !== baseBranch) throw new CiError('the pull request base is not TRUSTED_BASE_BRANCH');
 		const remote = resolveRemote(cloneUrl, trusted);
 		const env = gitEnv(remote, process.env.GITHUB_TOKEN);
-		delete process.env.GITHUB_TOKEN;
+		forgetEnv('GITHUB_TOKEN');
 		dataRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-guard-ci-'));
 		git(dataRepo, ['init', '-q'], env);
 		fetchCommit(dataRepo, remote, baseSha, env);

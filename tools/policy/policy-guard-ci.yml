@@ -15,7 +15,9 @@
 # cannot make this job read its code, policy or credential. The checkout is the base commit — the
 # trusted immutable revision — and the pull request is fetched by commit id as data by
 # `tools/policy/policy-guard-ci.mjs`; no PR file is checked out or executed. Permissions are
-# `contents: read` only, so a PR cannot obtain write or secret access through this job.
+# `contents: read`, which limits the job's `GITHUB_TOKEN` to reading repository contents; it does
+# not remove the Actions `secrets` context. The job passes only that read-only token and runs no
+# pull-request code, so a PR has no execution route in this job and cannot reach its secrets.
 name: policy-guard
 
 on:
