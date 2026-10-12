@@ -19,7 +19,9 @@ was edited, enrolled or measured, and no partner project is guessed to fill the 
 
 A fixture proves an installed command works in a shape `init` can produce. It is **not** adoption
 evidence, and no generated result here is a real-world false-positive rate: the counterexamples are
-synthetic shapes.
+synthetic shapes. Where a joint case needs a live quarantine waiver, the fixture hand-writes the
+enrollment into its own committed trusted base — a test construction, not a production approval and
+not an installer capability.
 
 ## What ships, and what it does not
 
@@ -52,59 +54,112 @@ push, unfiltered, so a deletion-only or docs-only push still runs them:
 | `gitleaks-check.mjs --mode branch` | pre-push (command) | exit 1 introduced finding, exit 2 could not run |
 | policy guard | pre-push (script) | exit 1 unapproved enrolled change, exit 2 could not run |
 
-Advisory output never gates: a policy advisory and a fallow `warn` rule are reported and the hook
-still passes, and no finding here is turned into a `--max-warnings 0` gate. A **mutable local
+Advisory output never gates: in the joint run the guard's non-enrolled-change advisory and a real
+`vitest/valid-expect` warning (`0 errors, 1 warning`) are reported while the hook still passes, and
+no finding here is turned into a `--max-warnings 0` gate. The three installed sets run no fallow
+checker, so no fallow `warn` rule is exercised by this hook. A **mutable local
 command or hook is feedback, not authorization**: required CI must run the frozen helper and policy
 from a trusted revision and block both `1` and `2`, and only the protected forge process approves a
 policy change.
 
 ## Joint installed-workflow matrix
 
-The joint test file this gate adds installs `--sets policy-guard,secret-scanning,vitest` into a
-generated consumer and runs the combined hooks and the copied commands. It is written to cover
-fresh, repeat and stale-code upgrade installation, a nested pnpm workspace and a spaced path; the
-focused, async and disabled-test ESLint findings through the real generated **pre-commit** hook; the
-guard, scanner and ledger findings through the combined **pre-push** hook; an all-green result on
-both hooks; secret attribution and redaction; the deletion-only and docs-only lifecycle; and a
-missing-evidence failure that cannot read as clean.
+The joint test file this gate adds — `test/agent-skills-first-release-integration.test.js` at
+`50fa52208affc411fa5b3b9c5cb9e314230252d1` (blob
+`788476af0473457fe6416e32b9a028a9279b5902`, sha256
+`a755b263b61055d70843d4c182c666ea1f9f5f5ac72a76453e15b304d549d917`) — installs
+`--sets policy-guard,secret-scanning,vitest` into a generated consumer and runs the combined hooks
+and the copied commands through their public entrypoints: the public `node bin/lint-kit.js` CLI,
+the copied tools, the pinned Gitleaks `8.30.1` and the real `lefthook` `2.2.1` binary (provisioned
+from the reference checkout's own `node_modules`, not a consumer dependency). It mocks no
+module and adds no test-only seam (there is no clock knob: the ledger lifecycle cases use explicit
+`2000`/`2099` dates). It covers fresh, repeat and true stale-code upgrade installation; a nested
+pnpm workspace member and a spaced path, each running the real hooks; the focused, async and
+disabled-test ESLint findings through the real generated **pre-commit** hook; the guard, scanner
+and ledger findings through the combined **pre-push** hook; an all-green result on both hooks;
+secret attribution and redaction; the deletion-only and docs-only lifecycle; a missing-evidence
+failure that cannot read as clean; and the pinned provider.
+
+The independent run was `node --test "test/*.test.js"` (with `pnpm typecheck`), the pinned Node
+`22.23.3` first on `PATH`. Each spawned fixture command gets a private `TEMP`/`TMP`/`TMPDIR`, and a
+case that runs the generated secret step puts the pinned Gitleaks directory on `PATH`; no module is
+linked into this checkout.
 
 The `vitest` ESLint rules are **pre-commit only**: a push never runs them, so a combined detection
 claim is never made from a push alone. The pre-commit ESLint step and the combined pre-push hook are
 exercised separately.
 
-Results are recorded with the change after independent review and the final CI run. Until then
-every case below is **pending and unmeasured**: no count, runtime or false-positive rate is claimed
-here.
+The cases below are recorded from a completed independent **Windows** run of that file; the slice's
+own Ubuntu/Windows CI run awaits its PR and is **not** claimed here. A case is recorded only from a
+completed run: an unfinished or skipped case stays unobserved.
 
-| Case field | Contract the case asserts | Status |
+| Case field | What the Windows run observed |
+| --- | --- |
+| Fixture shape | a root consumer; a nested pnpm workspace whose member (`apps/web`) runs the real public install and the root hooks; and a spaced-path consumer on which the real hooks run ESLint |
+| `init` argv | `node bin/lint-kit.js init --cwd <dir> --sets policy-guard,secret-scanning,vitest` (`--no-install` for the shape-only fixtures) |
+| Installed artifacts | all 14 copied files present; one `lint-kit.policy.json`; the pre-commit ESLint step, both pre-push scripts and the secret-scanning command; no ledger created |
+| Repeat / upgrade | a second run is byte-identical; stale copied tools are refreshed; consumer `.fallowrc.json`, manifest and `gitleaks.toml` are preserved |
+| Pre-commit detection | a staged `test.only`, an unawaited `expect(...).resolves` and an unconditional `skip` are blocked, naming `vitest/no-focused-tests`, `vitest/valid-expect` and `vitest/no-disabled-tests` |
+| Pre-push detection | the combined pre-push hook reports `introduced generic-api-key secret.ts:1` and `enrolled-weakened: health.maxCognitive raised from 25 to 40`, runs the ledger step, and names no `vitest/*` rule |
+| All green (both hooks) | the legitimate staged set passes the pre-commit ESLint step, and an all-legitimate push passes every combined step with only the guard's non-enrolled advisory |
+| Advisory never gates | that advisory and a real `vitest/valid-expect` warning (`0 errors, 1 warning`) are reported while the hook still passes |
+| Pre-commit counterexamples | awaited/returned assertions, a conditional `skipIf`, `test.todo` and a local binding produce no `vitest/*` error |
+| Pre-push counterexamples | a tightened `.fallowrc.json` (25 → 20) and a live trusted-base ledger entry stay green |
+| Attribution and redaction | introduced vs inherited are reported as `path:line` (with `commit` in history); the synthetic values are absent from the scanner's stdout and stderr, and the scanner removes its own report and scratch directory — the transient report JSON itself is neither read nor measured |
+| Lifecycle | docs-only and deletion-only pushes run the unfiltered pre-push scripts, with exact changed-path and clean-tree assertions; expired and malformed ledgers fail, an absent ledger is `0` |
+| No evidence | a missing parser, an explicitly missing scanner and an absent ledger each keep their own verdict in one combined hook, which is non-zero |
+| Versions | Node `22.23.3`, pnpm `11.3.0`, Git `2.54.0.windows.1`, ESLint `10.12.0` (the installed consumer; the reference checkout pins `10.11.0`), `@vitest/eslint-plugin` `1.6.27`, Vitest `4.1.11`, `jsonc-parser` `3.3.1`, lefthook `2.2.1`, Gitleaks `8.30.1`, Windows 11 `10.0.26300` |
+| Runtime cost | a warm local Windows run; per-case durations below |
+
+### Per-case runtime (Windows, warm)
+
+Runner `duration_ms` per case, range `0.001`–`16.927` s. The two large cases are dominated by the
+one-time real `init` (pnpm installing the owned peers into the fixture), so they measure setup plus
+hooks, not isolated check overhead. The case sum is **73.460 s**; the full
+`node --test "test/*.test.js"` wall clock is **77.171 s**, which also includes the other test files
+running in parallel.
+
+| # | Case | s |
 | --- | --- | --- |
-| Fixture shape | root, nested pnpm workspace, and a path with a space | pending |
-| `init` argv | `init --sets policy-guard,secret-scanning,vitest [--no-install]` | pending |
-| Installed artifacts | all copied files present; one `lint-kit.policy.json`; the four hook entries; no step dropped | pending |
-| Repeat / upgrade | second run byte-identical; stale tool copies refreshed; consumer `gitleaks.toml` and manifest preserved | pending |
-| Pre-commit detection | a staged change with `test.only`, an unawaited `expect(...).resolves` and an unconditional skip gets the owning `vitest/*` errors from the real `eslint {staged_files}` hook | pending |
-| Pre-push detection | the combined pre-push hook (policy-guard and quarantine scripts plus the secret-scanning command) reports the weakened enrollment and the introduced credential, and runs the ledger step | pending |
-| All green (both hooks) | a clean staged change passes the pre-commit ESLint step and an all-legitimate push passes the combined pre-push hook | pending |
-| Pre-commit counterexamples | awaited/returned assertions, `test.todo` and `skipIf` produce no `vitest/*` error on a staged test file | pending |
-| Pre-push counterexamples | a tightened `.fallowrc.json` and a live ledger entry stay green through the combined pre-push hook | pending |
-| Attribution and redaction | introduced vs inherited; the synthetic value absent from output and report | pending |
-| Lifecycle | the unfiltered pre-push scripts fire on a docs-only and a deletion-only push; expired ledger fails, absent ledger is clean | pending |
-| No evidence | a missing parser or scanner makes only its own step exit 2; the combined push is non-zero | pending |
-| Versions | Node, pnpm, Git, ESLint, `@vitest/eslint-plugin`, Vitest, Gitleaks, lefthook, OS | pending |
-| Runtime cost | measured wall-clock per case and total | pending |
-
-A case is recorded only from a completed run: an unfinished or skipped case stays pending.
+| 1 | fresh combined install | 0.232 |
+| 2 | repeat combined install | 0.533 |
+| 3 | true stale-code upgrade | 0.555 |
+| 4 | live trusted-base waiver through the installed ESLint and combined hooks | 16.927 |
+| 5 | installer never creates or broadens the ledger | 1.020 |
+| 6 | nested pnpm workspace install | 0.144 |
+| 7 | real workspace member provider and root hooks | 16.362 |
+| 8 | spaced-path install and copied commands | 2.135 |
+| 9 | all-green combined push with the advisory | 4.782 |
+| 10 | real Vitest warning in pre-commit | 2.388 |
+| 11 | pre-commit focused/async/disabled defects | 2.087 |
+| 12 | pre-push secret and weakened enrollment | 2.563 |
+| 13 | guard tamper (trusted-copy simulation) | 4.695 |
+| 14 | secrets: introduced/inherited/history/deleted | 5.976 |
+| 15 | artifact-cleanup predicate | 0.001 |
+| 16 | docs-only branch with a live ledger | 2.355 |
+| 17 | docs-only branch with an expired ledger | 2.372 |
+| 18 | deletion-only branch | 2.460 |
+| 19 | deletion-only branch with a malformed ledger | 2.412 |
+| 20 | missing parser, missing scanner and absent ledger | 1.655 |
+| 21 | missing Vitest provider | 0.455 |
+| 22 | pinned Gitleaks `8.30.1` | 1.354 |
 
 ## Evidence already observed
 
-- The final combined `main` (`9ea00c606483f140e1cf310515879b3302a0c946`) passed independent Node
-  tests, the TypeScript tools check and the reported Python suite, plus the Ubuntu and Windows CI
-  matrix.
-- The CI matrix used Node `22.23.3`; the local run used Node `22.23.3`, pnpm `11.3` and Git
-  `2.54.0.windows.1`, and the prerequisite CI observed Git `2.55.0` (`2.55.0.windows.5`).
-- The pinned Gitleaks `8.30.1` ran on Windows through the merged main's Node suite (628 tests) and
-  the Windows CI job, and the Ubuntu CI job executed the checksum-pinned Linux asset. Only the macOS
-  asset and its runtime stay unobserved here.
+- The corrected joint file (`50fa52208affc411fa5b3b9c5cb9e314230252d1`) passed an independent
+  Windows run at the coordinator: **650 tests, 650 pass, 0 fail, 0 skip, 0 todo** in 77.171 s wall
+  clock, with `pnpm typecheck` clean. The test worker reported the same 22-case file green and the
+  Python suite at **80 passed**; the Python run is not yet independently repeated. One earlier
+  worker full-suite run hung in the runner and was killed on its timeout; the cause was not
+  diagnosed, and the later runs (this independent suite included) completed green.
+- The prerequisite combined `main` (`9ea00c606483f140e1cf310515879b3302a0c946`) passed its earlier
+  independent Node suite, the TypeScript tools check and the Ubuntu and Windows CI matrix.
+- The joint run used Node `22.23.3`, pnpm `11.3.0` and Git `2.54.0.windows.1`; the prerequisite CI
+  observed Git `2.55.0` (`2.55.0.windows.5`). The installed consumer resolved ESLint `10.12.0`; the
+  reference checkout pins ESLint `10.11.0`, which is not the consumer's version.
+- The pinned Gitleaks `8.30.1` ran on Windows through the joint fixture, and the prerequisite
+  Ubuntu CI job executed the checksum-pinned Linux asset. Only the macOS asset and its runtime stay
+  unobserved here; this slice's own Ubuntu/Windows CI awaits its PR.
 - A read-only forge observation recorded `main` unprotected (`protected=false`), no effective branch
   rules (`[]`) and ADMIN viewer permission. Nothing was changed.
 
