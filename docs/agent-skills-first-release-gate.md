@@ -89,8 +89,8 @@ The `vitest` ESLint rules are **pre-commit only**: a push never runs them, so a 
 claim is never made from a push alone. The pre-commit ESLint step and the combined pre-push hook are
 exercised separately.
 
-The cases below are recorded from a completed independent **Windows** run of that file; the slice's
-own Ubuntu/Windows CI run awaits its PR and is **not** claimed here. A case is recorded only from a
+The cases below are recorded from a completed independent **Windows** run of that file. The slice's
+own Ubuntu/Windows PR CI has also passed, as recorded separately below. A case is recorded only from a
 completed run: an unfinished or skipped case stays unobserved.
 
 | Case field | What the Windows run observed |
@@ -144,6 +144,24 @@ running in parallel.
 | 21 | missing Vitest provider | 0.396 |
 | 22 | pinned Gitleaks `8.30.1` | 1.306 |
 
+## PR CI observed
+
+[PR #79 CI](https://github.com/shayshahal/lint-kit/actions/runs/38210292421) passed at head
+`a1372f3a2cb3624dfbe508e3c5256fb3411c94fb`, using the same joint-test blob recorded above.
+Both jobs ran all **22 joint cases** without a skip, the frozen install, TypeScript tools check,
+Python lint/format/tests and the checksum-pinned native Gitleaks helper. This is execution evidence,
+not a protected-workflow or adoption claim.
+
+| Runner (x64) | Node / pnpm / Git | Full Node suite | Python | Node runner time |
+| --- | --- | --- | --- | --- |
+| Ubuntu 24.04.5 | 22.23.3 / 11.3.0 / 2.55.0 | 649 pass, 0 fail, 1 explicit skip | 80 pass | 72.202 s |
+| Windows Server 2025 | 22.23.3 / 11.3.0 / 2.55.0.windows.5 | 650 pass, 0 fail, 0 skip | 80 pass | 217.136 s |
+
+The Ubuntu skip is the existing Windows 8.3 short-parent fixture: that filesystem has no distinct
+8.3 alias. The joint file has no platform/provider skip. These runner times include the full suite
+and fixture setup, not isolated checker overhead; the local warm table remains a separate measure.
+macOS, other architectures and other Node runtimes remain unobserved for this joint slice.
+
 ## Evidence already observed
 
 - The corrected joint file (`bf1d9892faa6739cff00464605c38509a9344a2a`) passed an independent
@@ -159,7 +177,7 @@ running in parallel.
   reference checkout pins ESLint `10.11.0`, which is not the consumer's version.
 - The pinned Gitleaks `8.30.1` ran on Windows through the joint fixture, and the prerequisite
   Ubuntu CI job executed the checksum-pinned Linux asset. macOS execution and unlisted
-  architecture/runtime combinations remain unobserved; this slice's own Ubuntu/Windows CI awaits its PR.
+  architecture/runtime combinations remain unobserved. This slice's own Ubuntu/Windows CI is recorded below.
 - A read-only forge observation recorded `main` unprotected (`protected=false`), no effective branch
   rules (`[]`) and ADMIN viewer permission. Nothing was changed.
 
