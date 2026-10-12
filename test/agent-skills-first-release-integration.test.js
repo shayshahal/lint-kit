@@ -104,7 +104,7 @@ const sha256 = (value) => createHash('sha256').update(value.replace(/\r\n/g, '\n
 /** Fail loudly when a spawned process did not finish, so an expected non-zero is never a timeout. */
 function finished(result, label) {
 	if (result.status === null)
-		throw new Error(`${label} did not finish within ${TOOL_TIMEOUT_MS}ms: ${result.error?.message ?? result.signal ?? 'unknown'}`);
+		throw new Error(`${label} did not finish: ${result.error?.message ?? result.signal ?? 'unknown'}`);
 	return result;
 }
 
@@ -177,7 +177,7 @@ function installJsoncParser(dir) {
 }
 
 function installLefthook(dir) {
-	execFileSync(LEFTHOOK, ['install'], { cwd: dir, stdio: 'ignore', shell: process.platform === 'win32' });
+	execFileSync(LEFTHOOK, ['install'], { cwd: dir, stdio: 'ignore', shell: process.platform === 'win32', timeout: TOOL_TIMEOUT_MS, env: withIsolation() });
 }
 
 function writeFile(dir, relative, content) {
@@ -200,8 +200,8 @@ const writeCredentialFile = (dir, name, value) => writeFile(dir, name, `const ap
 async function combinedClone(name, { install = false, files = {}, prepareBase } = {}) {
 	const origin = path.join(TMP, `${name}-origin.git`);
 	const work = path.join(TMP, `${name}-work`);
-	execFileSync('git', ['init', '--bare', '-q', origin]);
-	execFileSync('git', ['clone', '-q', origin, work]);
+	execFileSync('git', ['init', '--bare', '-q', origin], { timeout: TOOL_TIMEOUT_MS, env: withIsolation() });
+	execFileSync('git', ['clone', '-q', origin, work], { timeout: TOOL_TIMEOUT_MS, env: withIsolation() });
 	git(work, ['config', 'user.email', 'joint@lint-kit.test']);
 	git(work, ['config', 'user.name', 'lint-kit']);
 	for (const [relative, content] of Object.entries({ ...BASE_FILES, ...files })) writeFile(work, relative, content);
@@ -247,8 +247,8 @@ function trustedBaselineWaiver(dir) {
 async function workspaceConsumer(name) {
 	const origin = path.join(TMP, `${name}-origin.git`);
 	const work = path.join(TMP, `${name}-work`);
-	execFileSync('git', ['init', '--bare', '-q', origin]);
-	execFileSync('git', ['clone', '-q', origin, work]);
+	execFileSync('git', ['init', '--bare', '-q', origin], { timeout: TOOL_TIMEOUT_MS, env: withIsolation() });
+	execFileSync('git', ['clone', '-q', origin, work], { timeout: TOOL_TIMEOUT_MS, env: withIsolation() });
 	git(work, ['config', 'user.email', 'joint@lint-kit.test']);
 	git(work, ['config', 'user.name', 'lint-kit']);
 	writeFile(work, 'pnpm-workspace.yaml', "packages:\n  - 'apps/*'\n");
@@ -450,6 +450,12 @@ test('a live waiver hand-enrolled in the real trusted base excuses the branch ca
 	// The branch changed only the call; it did not touch the enrollment or the ledger it relies on.
 	assert.deepEqual(changedPaths(work), [WAIVED_FILE]);
 	assert.equal(statusPorcelain(work).includes('lint-kit.policy.json'), false);
+	// The same branch clears both hooks: a real push runs every pre-push step green.
+	const pushed = push(work, ['origin', 'waiver']);
+	assert.equal(pushed.code, 0, pushed.output);
+	assert.match(pushed.output, /policy-guard: no unapproved enrolled change/);
+	assert.match(pushed.output, /gitleaks-check: no findings/);
+	assert.match(pushed.output, /test-quarantine\.json: 1 valid entry\(s\)/);
 	resetMain(work);
 });
 
