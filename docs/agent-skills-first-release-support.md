@@ -312,7 +312,9 @@ These are **not** decided by #40 and block [#50](https://github.com/shayshahal/l
 
 Until those exist, a local hook is feedback only and must not be described as enforcement. The
 current bounded evidence and the go/no-go for each prerequisite are recorded in
-[agent-skills-first-release-gate.md](agent-skills-first-release-gate.md).
+[agent-skills-first-release-gate.md](agent-skills-first-release-gate.md); the joint installed-workflow
+run is now observed on **Windows** (with its Ubuntu/Windows CI still awaited), while every external
+prerequisite above stays NO-GO.
 
 ## 7. Verification performed for this freeze
 
@@ -334,5 +336,5 @@ Run in this worktree with the installed toolchain:
 
 This records the #40 freeze. The merged stacks' per-set suites and the joint installed-workflow run
 the release gate adds are recorded with their bounded results in
-[agent-skills-first-release-gate.md](agent-skills-first-release-gate.md); until that run is complete,
-its cases stay unmeasured.
+[agent-skills-first-release-gate.md](agent-skills-first-release-gate.md); that joint run is now
+observed on **Windows** (22 cases, Ubuntu/Windows CI awaited).
