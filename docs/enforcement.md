@@ -30,7 +30,8 @@ trusted tool and config, and block on both exit `1` and exit `2`. The history au
 history`) is remediation, not a gate, and is not wired to a hook.
 
 The policy guard is opt-in: `init --sets policy-guard` installs its pre-push script, which reports
-an unapproved change to an enrolled checker configuration. That local hook is feedback, not
+an unapproved change to an enrolled checker configuration. It is a script, not a file-filtered
+command, so a deletion-only or docs-only push still runs it. That local hook is feedback, not
 authorization. A required CI check runs the same command from a trusted ref and blocks exit `1`
 and `2`; writing the hook installs no required check and no forge protection, and this repository
 installs no CI protection. A manual template (`tools/policy/policy-guard-ci.yml`, copied but not
