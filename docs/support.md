@@ -24,21 +24,106 @@ ignore the config's whole directory. Those cases keep their deliberate omission.
 
 Root projects, pnpm / npm workspace members, and Python projects (`pyproject.toml` with a
 `[project]` table). A nested project's specifier is project-relative, and its ignore pattern is
-omitted when it cannot safely name the root's `tools/`. Folders starting with `.`, and
-`node_modules`, `dist` and `build`, are skipped.
+omitted when it cannot safely name the root's `tools/`. The `vitest` set resolves
+`@vitest/eslint-plugin` from the project's own config (`from: import.meta.url`), so a workspace
+member that holds the plugin in its own `node_modules` is checked even though the rule module is
+copied once to the root's `tools/`. Folders starting with `.`, and `node_modules`, `dist` and
+`build`, are skipped.
 
 ## Hooks
 
-Hook steps need a `lefthook.yml` or `lefthook.yaml`; without one, typecheck and structure are not
-installed and the run says so. pre-commit gets eslint, flake8 (FAP), the FastAPI dependency check
-and ruff; pre-push gets svelte-check / pyright, fallow (as a script, so a deletion-only push still
-runs it) and the Python structure check. A step that already runs the same tool for the project is
-left alone, and a repository that already runs `fallow audit` in a command keeps it and gets no
-script.
+Hook steps need a `lefthook.yml` or `lefthook.yaml`; without one, typecheck, structure, the secret
+scan and the policy guard get no step (and the vitest quarantine validator none either), and the run
+prints what to add. pre-commit gets eslint, flake8 (FAP), the FastAPI dependency check and ruff;
+pre-push gets svelte-check / pyright, fallow (as a script, so a
+deletion-only push still runs it), the Python structure check, and the policy guard (also as a
+script). When the `vitest` set is installed, the pre-push hook also gets a `test-quarantine.sh`
+script that validates every `test-quarantine.json` entry independently of the changed files, so a
+docs-only, deletion-only or no-test-selected push still checks the ledger. A step that already runs
+the same tool for the project is left alone, and a repository that already runs `fallow audit` in a
+command keeps it and gets no script. When the `vitest` set is
+installed, the eslint step also matches the project's `*.test.*` / `*.spec.*` files, wherever they
+are, so tests outside `src/` are checked; an upgrade that adds the set widens the step a previous
+run wrote. A repository whose own command runs ESLint keeps it, and the run names the pattern to
+add.
+
+## Policy guard (`policy-guard`)
+
+Opt-in. `init` copies `tools/policy/policy-guard.mjs`, the trusted-CI helper
+`tools/policy/policy-guard-ci.mjs` and the manual template `tools/policy/policy-guard-ci.yml` into
+`tools/policy/`, writes one `lint-kit.policy.json`, and wires one repository-root pre-push script.
+It writes no `.github/workflows/` file and activates no check; the template is copied by hand to
+`.github/workflows/` only after the maintainer enables the external protections.
+
+| Config shape | Handling |
+| --- | --- |
+| `.fallowrc.json`, `.fallowrc.jsonc` | The frozen `fallow-jsonc` adapter. The manifest enrolls only the identities the real JSONC provably has (`health.maxCognitive`, `health.maxCrap`, `rules`, `ignorePatterns`), each present and already the type its unit compares. The number, severity or ignore list itself stays in the checker's file; the enrollment declares a link, never a value. |
+| A Fallow config the adapter cannot read, or an unknown/executable Fallow shape (`fallow.toml`, `.fallow.toml`, `fallow.config.{js,mjs,cjs,ts}`) | Protected `opaque`; the file is never parsed or evaluated, and the run says so. |
+| `tools/policy/policy-guard.mjs` | `opaque`, so a silent edit to the guard itself is an enrolled change. |
+| `tools/python/structure_check.py`, when present | `opaque`. |
+| An existing `lint-kit.policy.json` | Left byte-for-byte. A repeat never rewrites or broadens it; a new enrollment is a reviewed policy change made by hand. |
+| A pre-push step that already runs the guard | A repository-root script whose step is exactly `{ runner: bash }` and whose body is the exact generated body, or a command that is exactly `{ run }` for the supported repository-root working-tree run with an approved (plain, non-`HEAD`) ref, is recognised and nothing is added. Any other shape that names the copied command is preserved with the supported step printed, never called equivalent. |
+| An orphan `.lefthook/pre-push/policy-guard.sh` with no configured step | Left byte-for-byte unless its body is the exact generated body, in which case the step is wired without rewriting it. A directory, symbolic link or unreadable file is never followed or overwritten. |
+| No `lefthook.yml` | No step is wired and no file or config is created; the complete manual action (the script body with an explicit base and trusted ref, and the yml) is printed. |
+| No root `package.json` | `jsonc-parser@3.3.1` is not installed; a manual action is printed and `init` creates no package. A different declared version is preserved as it is, with a manual message: the copied guard does not check the declared version and loads the parser only when a parsed enrollment needs it, so that version is untested here. |
+
+The script is not file-filtered, so a deletion-only push still runs it. It runs
+`--mode working-tree` with an explicit `--base` and `--trusted-ref`; a local run names the same ref
+for both, deliberately, and the guard never defaults the trusted snapshot to `HEAD`. An existing
+pre-push command runs either way only when it has no file filter: a command with a `glob` or
+`files` filter is skipped when the push leaves no matching file, so that shape is a manual action,
+not an equivalent. The parser resolves from the repository root, because the command lives at
+`tools/policy/`: a dependency in one workspace member does not resolve there. A missing base, a
+missing enrollment at the trusted ref, or a missing parser (needed to compare a parsed enrollment)
+exits `2`, never clean.
+
+Protected and deferred: the first release protects the copied guard as a whole, each readable
+Fallow JSONC source by its declared identities, and `tools/python/structure_check.py` whole.
+YAML/TOML checker adapters (Python thresholds in `pyproject.toml`, `.flake8`, ruff) are deferred;
+those files are not enrolled.
+
+Trusted CI: the shipped `tools/policy/policy-guard-ci.yml` template runs the guard from one
+supported protected base branch (`branches` and `TRUSTED_BASE_BRANCH` name the same branch; `main`
+in the shipped file) and reads the pull request only as Git data. A pull request against any other
+branch cannot make the job read that branch's code, policy or credential: the helper requires the
+event's action, base repository and base branch to be the trusted ones, and it binds the read-only
+token to `GITHUB_SERVER_URL`/`GITHUB_REPOSITORY` (a foreign host, userinfo, query, fragment or other
+repository is refused before a credential exists). It is a manual candidate: no workflow is written
+by `init`, and the template alone does not enforce anything. The maintained protection is external
+— that base branch protected and this exact workflow bound as a required check through a ruleset
+required-workflows entry or an equivalent trusted source; the job name alone is not a unique check
+identity. See `tools/policy/README.md`, "Trusted CI".
+
+## Secret scanning (`secret-scanning`)
+
+Never selected from a dependency — a `gitleaks` entry in a project changes nothing — so a
+repository asks for it with `--sets secret-scanning`, and a later run keeps it on. The set is
+repository-wide, not per project: it copies `tools/security/gitleaks-check.mjs`,
+`gitleaks-report.mjs` and `gitleaks-check.md` and writes the selected config, and needs no project
+dependency (the command uses Node built-ins only).
+
+| Config shape | Handling |
+| --- | --- |
+| `lefthook.yml` / `lefthook.yaml` | One repository-root pre-push command, `node tools/security/gitleaks-check.mjs --base <resolved>` (branch mode: the merge-base commit range plus the working tree). The base is the installer's usual one (`--base`, an existing step's base, lefthook's pre-push `files`, `origin/HEAD`, else `origin/main`), embedded only when it is a plain ref. It fails the push on an introduced finding and on any failure to run — a missing or wrong-version Gitleaks, an invalid config, a timeout — never a skipped success. The step carries no `root`, because the command refuses a source that is not the Git root. |
+| A pre-push step that already scans secrets (its own `gitleaks` command), or that names the copied command in a non-equivalent shape (`echo gitleaks-check`, `... \|\| true`, a `root`/`glob`/`skip`, `--mode history`) | Left exactly as found; the run prints a manual action with the repository-root command to add instead. |
+| A resolved base that is not a plain ref (for example a `root`/shell-fragment base read from an existing step) | The generated shell command would have to embed it, so nothing is wired; the run prints the step to add by hand. |
+| No lefthook config | Nothing is wired; the run prints the pre-push step to add. |
+| `tools/security/gitleaks.toml` already present | Left byte-for-byte. Reviewed exceptions live there; a re-run copies the command, report reader and docs again but never rewrites or broadens this config. |
+| A root `package.json` | Gains the separate remediation script `secret-scanning:history` (`node tools/security/gitleaks-check.mjs --mode history`). |
+
+The scanner is **not installed**: the command uses `gitleaks` on `PATH` or `--gitleaks <path>`,
+refuses any version but 8.30.1, and never downloads. Exact provisioning steps, with the recorded
+SHA-256 per platform, are in the copied `tools/security/gitleaks-check.md`. A platform with no
+recorded asset, or a repository whose policy needs different exceptions, is a manual action, not
+a silent substitution. Offline, an already-provisioned binary is passed with `--gitleaks`; with
+none, the command exits 2 and the push is blocked. The initial/history audit is separate from the
+push and is remediation, not a branch gate. Writing the hook does not install a required check or
+change any forge protection: the local hook is feedback only, and CI must run the command from a
+trusted revision with a trusted tool and config.
 
 ## Baseline selection
 
-The branch a structure step compares against, in order:
+The branch a structure or policy-guard step compares against, in order:
 
 1. `--base <branch>` (a bare name means `origin/<branch>`);
 2. the `--base` an existing structure step already names — a command's `run` or the fallow
@@ -51,7 +136,9 @@ The branch a structure step compares against, in order:
 
 A fresh install copies `tools/`, writes or patches the configs and adds the dev dependencies. An
 upgrade refreshes the copies, repairs a registered plugin that lacks the vendored ignore pattern,
-and leaves user configs and steps as they are. A repeat run changes nothing.
+rewrites a `vitest` config written before the plugin anchor (`from: import.meta.url`) was added,
+widens an ESLint step it wrote for a newly added `vitest` set, and leaves user configs and steps
+as they are. A repeat run changes nothing.
 
 ## Unsupported shapes
 

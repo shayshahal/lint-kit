@@ -6,8 +6,9 @@ nothing** and **FastAPI**, the type checkers, and pre-push checks that a branch 
 structure no worse than its base. Each message says what to write instead.
 
 `init` copies the rules into the repository's `tools/` folder and writes the tools' own config.
-Nothing it leaves behind is named after it, and nothing depends on this repository afterwards:
-the repository owns the copies, and only whoever runs `init` needs access here.
+Almost nothing it leaves behind is named after it — the exception is the opt-in
+`lint-kit.policy.json` the `policy-guard` set writes — and nothing depends on this repository
+afterwards: the repository owns the copies, and only whoever runs `init` needs access here.
 
 | Set | Tool | What it checks |
 | --- | --- | --- |
@@ -16,10 +17,13 @@ the repository owns the copies, and only whoever runs `init` needs access here.
 | `tailwind-patterns` | ESLint | `h-screen` / `vh`, `transition-all`, `dark:` overrides outside `ui/`, `bg-white` with dark mode, dialogs without a title, the `@lucide/svelte` barrel |
 | `error-handling` | ESLint | catch blocks (and promise `.catch()`) that drop the error, only log it, return a fixed default, or turn it into a string |
 | `prose` | ESLint | inflated vocabulary in comments, and `//` comments above an export or a member that should be JSDoc (opt-in) |
+| `vitest` | ESLint | `test.only` / `it.only` / `describe.only` left in the project's tests, which silently skip everything else, async assertions that are not awaited or returned, and unconditional skips (`test.skip`, `x*`, `pending()`) unless a live `test-quarantine.json` entry excuses the exact call (opt-in) |
 | `slop-patterns` | oxlint | a named function whose whole body forwards its arguments to another function, and two assertions in a row that discard a type |
 | `fastapi` | flake8 | FAP001–017: blocking calls reached from `async def`, Pydantic v1 config, `...` defaults, `Annotated` dependencies, router-level guards, bare status codes… |
 | `typecheck` | svelte-check, pyright | the type checkers, as lefthook pre-push steps: `svelte-check --tsgo` (TypeScript 7's Go compiler) for Svelte projects, `pyright` for Python ones |
 | `structure` | fallow, `structure_check.py` | lefthook pre-push steps that fail when a branch adds complexity, duplication, an import cycle or dead code its base did not have, and never on what was already there ([docs](docs/structure.md)) |
+| `secret-scanning` | Gitleaks | a pre-push branch scan for credentials the branch introduced, with the pinned Gitleaks 8.30.1 (opt-in; you provision the pinned binary) |
+| `policy-guard` | policy-guard | an opt-in pre-push guard that reports an unapproved change to enrolled checker configuration; the local hook is feedback, not CI authorization |
 
 Each ESLint rule links to its section in the `.md` copied beside it in `tools/eslint/` (editors
 show the link with the message); the FAP rules are listed in `tools/python/fastapi_rules.py`'s
@@ -72,9 +76,10 @@ project's folder (`eslint-admin`, `svelte-check-shop`).
   root's `tools/` anyway. Without a config, the project gets a `.oxlintrc.json`. There is no
   lefthook step either: a repository that runs oxlint already has one.
 - **lefthook**: when the repository has a `lefthook.yml`, pre-commit steps run ESLint on staged
-  `src/` files, flake8 (FAP) on the app package, `check-deps` when `pyproject.toml` changes, and
-  `ruff check`. The ESLint and ruff steps are skipped when a step already runs that tool for the
-  project. Globs follow `glob_matcher`: under `doublestar` they are `dir/**/*.py`.
+  `src/` files — and, when the `vitest` set is installed, on the `*.test.*` / `*.spec.*` files
+  anywhere in the project — flake8 (FAP) on the app package, `check-deps` when `pyproject.toml`
+  changes, and `ruff check`. The ESLint and ruff steps are skipped when a step already runs that
+  tool for the project. Globs follow `glob_matcher`: under `doublestar` they are `dir/**/*.py`.
 - **typecheck**: pre-push steps, since a type checker needs the whole project, not the staged
   files: `svelte-kit sync && svelte-check --tsgo` for each Svelte project, `uv run pyright` for
   each Python one. `--tsgo` needs TypeScript 7 next to the 6 svelte-check loads Svelte with, so
@@ -105,14 +110,15 @@ The supported config shapes and the fallback for anything else are in
 to add, never reported as wired.
 
 Options: `--sets svelte-skills,fastapi` and `--yes` skip the questions, `--no-install` writes
-files only, `--base <branch>` names the branch structure compares with, `--cwd <dir>` runs it on
-another repository.
+files only, `--base <branch>` names the branch structure, secret-scanning and the policy guard
+compare with, `--cwd <dir>` runs it on another repository.
 
 ## ESLint sets
 
-All five expect the Svelte and TypeScript parsers to be set up (eslint-plugin-svelte's
-recommended config, `@typescript-eslint/parser`), and default to `src/**` with tests, specs and
-stories left out. The options, in `eslint.rules.js`:
+All six expect the Svelte and TypeScript parsers to be set up (eslint-plugin-svelte's
+recommended config, `@typescript-eslint/parser`). The five application sets default to `src/**`
+with tests, specs and stories left out; `vitest` is the opposite — it checks the tests themselves,
+`*.test.*` and `*.spec.*` inside or outside `src/`. The options, in `eslint.rules.js`:
 
 ```js
 import svelteSkills from './tools/eslint/svelte-skills.mjs';
@@ -120,6 +126,7 @@ import untranslatedText from './tools/eslint/untranslated-text.mjs';
 import tailwindPatterns, { classRule } from './tools/eslint/tailwind-patterns.mjs';
 import errorHandling from './tools/eslint/error-handling.mjs';
 import prose from './tools/eslint/prose.mjs';
+import vitest from './tools/eslint/vitest.mjs';
 
 export default [
 	...svelteSkills.config({ ignores: ['src/legacy/**'] }),
@@ -140,18 +147,46 @@ export default [
 	}),
 	...errorHandling.config(),
 	...prose.config({ inspection: 'branch' }), // opt-in: ask for it with --sets prose
+	...vitest.config({ inspection: 'branch', from: import.meta.url }), // opt-in: ask for it with --sets vitest
 ];
 ```
 
 `svelteSkills.config()` also turns on three eslint-plugin-svelte rules: `valid-compile` with
 warnings, `require-each-key` and `prefer-style-directive`. The plugins are exported too
 (`svelteSkills.plugin`, `untranslatedText.plugin`, `tailwindPatterns.plugin`,
-`errorHandling.plugin`) for wiring rules one by one.
+`errorHandling.plugin`, `vitest.plugin`) for wiring rules one by one.
 
-`prose` is the one ESLint set `init` never picks from a project's dependencies: ask for it with
-`--sets prose`, and it stays on a re-run. `no-jargon` reports 7 findings over the same 791-file
-monorepo (6 of them in generated SDK files) and `prefer-jsdoc` 203, every one autofixed. Both
-rules and the words they know are in [tools/eslint/prose.md](tools/eslint/prose.md).
+`prose` and `vitest` are the two ESLint sets `init` never picks from a project's dependencies:
+ask for prose with `--sets prose`, vitest with `--sets vitest`, and each stays on a re-run.
+`no-jargon` reports 7 findings over the same 791-file monorepo (6 of them in generated SDK files)
+and `prefer-jsdoc` 203, every one autofixed. Both rules and the words they know are in
+[tools/eslint/prose.md](tools/eslint/prose.md).
+
+`vitest` needs a project that depends on Vitest. It checks `*.test.*` and `*.spec.*` files
+anywhere in the project, inside or outside `src/`, for a focused test, for assertions the runner
+does not wait for, and for unconditional skips. A focused test (`test.only()` / `it.only()` /
+`describe.only()`) makes the runner skip every other test in the file, and a promise chain that is
+never returned or awaited runs its expectation after the test has finished — the assertion can
+escape the test's tracking even though the process may still fail from a late rejection. A disabled
+test (`test.skip` / `it.skip` / `describe.skip`, the Jest-only `x*` names and `pending()`) is the
+same kind of silent hole; it is blocking unless a live entry in the repository-root
+`test-quarantine.json` addresses that exact call. The checks are `@vitest/eslint-plugin`'s
+`vitest/no-focused-tests`, `vitest/valid-expect`, `vitest/valid-expect-in-promise` and
+`vitest/no-disabled-tests`, at error; a locally bound `test`, a `fit`/`fdescribe` Jest name, a
+`test.only` imported from another library, or a shadowed `expect` passes, and `test.todo`,
+`test.fails` and `skipIf`/`runIf` stay valid. The async rules are syntactic, so an assertion behind
+a project helper is not resolved. `init` adds `@vitest/eslint-plugin@1.6.27`, routes the test files
+to the pre-commit ESLint step, and wires a separate pre-push `check-quarantine-ledger.mjs` script
+that validates every `test-quarantine.json` entry even when a push changes no test file; a
+repository that already runs its own ESLint command keeps it and the run says what to add.
+`init` neither creates nor enrolls `test-quarantine.json`: the ledger is the repository's, and
+enrolling it `opaque` in `lint-kit.policy.json` is a reviewed trusted-ref change made by hand
+([tools/eslint/vitest.md](tools/eslint/vitest.md)). Only
+Vitest is supported. The set resolves the plugin from the config's own
+folder (`from: import.meta.url`), so a pnpm workspace member whose `node_modules` holds the plugin
+works even though `tools/eslint/` is copied once at the repository root. An
+`@vitest/eslint-plugin` the project already has is left alone: a version other than the verified
+1.6.27 is untested, and the run does not claim otherwise.
 
 `eslint --fix` rewrites what has one right answer: `class:` directives into the class attribute,
 `{@const}` into `$derived`, `throw error()` into `error()`, `$derived(() => …)` into
@@ -251,6 +286,88 @@ that tree.
 
 The set lands at `warn`. Rules are checked with `node --test test/slop-patterns.test.js`.
 
+## secret-scanning
+
+A pre-push branch scan for credentials the branch introduced, using the pinned **Gitleaks 8.30.1**
+scanner. No dependency selects it: ask for it with `--sets secret-scanning`, and it stays on a
+re-run. The set is repository-wide — it needs no project dependency, because the command uses Node
+built-ins only. It copies `tools/security/gitleaks-check.mjs`, its `gitleaks-report.mjs` reader and
+`gitleaks-check.md`, writes the selected `gitleaks.toml`, and adds one repository-root lefthook step:
+
+```yaml
+pre-push:
+  commands:
+    secret-scanning:
+      run: node tools/security/gitleaks-check.mjs --base origin/main
+```
+
+The base is chosen the way the structure steps choose theirs: `--base`, the base an existing
+structure step names, the `origin/<branch>...HEAD` lefthook's pre-push `files` diffs against,
+`origin/HEAD`, else `origin/main`.
+
+The command answers three questions separately — what this branch introduced, what it inherited,
+and whether the check could run at all. It exits `0` clean, `1` on an introduced finding, and `2`
+when it could not run (a missing or wrong-version binary, an invalid config, a timeout, a source
+`.gitleaksignore`). A push that reaches it fails on `1` **and** `2`; a skip is never reported as
+success. `init` does **not** install the scanner: put Gitleaks 8.30.1 on `PATH`, or pass
+`--gitleaks <path>`. The official release assets, their recorded SHA-256, and the offline and
+unsupported-platform behaviour are in `tools/security/gitleaks-check.md`. Do not substitute a
+package from a registry.
+
+The initial/history audit is a separate remediation workflow, never a push step:
+
+```sh
+node tools/security/gitleaks-check.mjs --mode history   # or: npm run secret-scanning:history
+```
+
+It scans every ref and the working tree and reports every finding, including a credential a later
+commit deleted. `init` adds the `secret-scanning:history` script when a root `package.json` exists;
+otherwise run the command directly. A re-run never duplicates the step, and never rewrites or
+broadens `tools/security/gitleaks.toml`: reviewed exceptions live there, so an edited config is
+left byte-for-byte.
+
+A pre-push step counts as already wired only when it is exactly this repository-root command with
+an optional plain `--base` ref. A step that merely mentions `gitleaks-check` — `echo
+gitleaks-check`, `... || true`, a subfolder `root:`, a file `glob:`, `skip:`, or `--mode history` —
+is left untouched and reported as a manual action, never as wired. A base that is not a plain ref
+is not embedded in the generated shell command; `init` prints the step to add by hand instead.
+
+**CI.** The local hook is feedback only. A required check needs CI to run the command from a
+**trusted revision**, with the tool and config in trusted paths, before the untrusted checkout
+executes. Start with a source checkout containing full history (`fetch-depth: 0` in
+`actions/checkout`), so a branch and an advanced main still have a discoverable merge-base.
+This Linux x64 sample is a snippet to adapt, not a protected workflow `init` installs:
+
+```yaml
+- name: Provision the pinned Gitleaks and the trusted command in temp paths
+  run: |
+    set -euo pipefail
+    rm -rf /tmp/trusted && mkdir -p /tmp/trusted
+    curl -fsSLo /tmp/gitleaks.tar.gz \
+      https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+    echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum -c -
+    tar -xzf /tmp/gitleaks.tar.gz -C /tmp
+    git fetch origin main
+    git rev-parse FETCH_HEAD > /tmp/trusted-rev
+    trusted="$(cat /tmp/trusted-rev)"
+    for f in gitleaks-check.mjs gitleaks-report.mjs gitleaks.toml; do
+      git show "${trusted}:tools/security/${f}" > "/tmp/trusted/${f}"
+    done
+- name: Scan the change with the trusted command and config
+  run: |
+    set -euo pipefail
+    node /tmp/trusted/gitleaks-check.mjs --source "$PWD" --gitleaks /tmp/gitleaks \
+      --config /tmp/trusted/gitleaks.toml --base "$(cat /tmp/trusted-rev)"
+```
+
+The revision is pinned once (`/tmp/trusted-rev`) and the temp directory is emptied first, so a
+stale or half-written trusted config is never scanned. `set -euo pipefail` fails the step on a
+download, checksum, `git show` or extraction error. Run the trusted copy, not the branch's, so a
+pull request cannot edit the command or add an allowlist. Block the job on both exit `1` and exit
+`2`. Writing the hook does **not** create a required check or any branch protection: those are
+external forge settings set by the repository's administrator, and this install makes no claim
+that they exist.
+
 ## fastapi
 
 ```toml
@@ -278,6 +395,76 @@ FAP001 follows calls through your own sync helpers across modules, so it indexes
 once per run. Common libraries (bcrypt, boto3, pandas, openpyxl, reportlab, requests, Pillow,
 sync redis / pymongo…) come classified; `python tools/python/fastapi_rules.py check-deps` fails
 while a `[project.dependencies]` entry is classified nowhere, so adding a library means deciding.
+
+## policy-guard
+
+`init --sets policy-guard` installs the opt-in policy guard: a copied command that reports a change
+to an enrolled checker configuration. No dependency selects it — ask for it by name, and it stays
+on a re-run. It copies `tools/policy/policy-guard.mjs`, the trusted-CI helper
+`tools/policy/policy-guard-ci.mjs` and the manual template `tools/policy/policy-guard-ci.yml` into
+the repository, writes one `lint-kit.policy.json`, and wires one repository-root pre-push script.
+It writes no workflow and activates no check.
+
+```json
+{
+	"version": 1,
+	"enrollments": [
+		{ "id": "tools/policy/policy-guard.mjs", "source": "tools/policy/policy-guard.mjs", "format": "opaque" },
+		{
+			"id": ".fallowrc.json",
+			"source": ".fallowrc.json",
+			"format": "jsonc",
+			"adapter": "fallow-jsonc",
+			"identities": [
+				{ "id": "health.maxCognitive", "unit": "score", "direction": "max" },
+				{ "id": "health.maxCrap", "unit": "score", "direction": "max" },
+				{ "id": "rules", "unit": "severity-map", "direction": "min" },
+				{ "id": "ignorePatterns", "unit": "glob-list", "direction": "subset" }
+			]
+		}
+	]
+}
+```
+
+The manifest links to the checker's own file; it stores no threshold, severity or ignore list. An
+enrollment's `id` is its source path, so two configs a slug would fold together (`apps/a-b` and
+`apps/a_b`) stay distinct. A fresh install enrolls only what it can verify: the copied guard
+`opaque`, each real `.fallowrc.json` with only the identities it provably has, and
+`tools/python/structure_check.py` `opaque` when present. A Fallow shape with no adapter is
+protected `opaque` without evaluation; a config that is not a regular UTF-8 file is left unchanged
+and enrolled nowhere, or protected `opaque` when it is only its bytes that are not UTF-8. A repeat
+never rewrites or broadens an existing manifest.
+
+The generated script runs `node tools/policy/policy-guard.mjs --base <resolved> --target HEAD
+--trusted-ref <resolved> --policy lint-kit.policy.json --mode working-tree`. It is a script, not a
+file-filtered command, so a deletion-only push still runs it. An existing command is recognised
+only when it has no file filter (a command with a `glob` or `files` filter is skipped when a push
+leaves no matching file, so that shape is a manual action); the step must be exactly
+`{ runner: bash }` with the exact generated body, and an orphan file of that name is left
+byte-for-byte unless it is that exact body. working-tree mode judges partial staging by the
+working tree, not the index. The trusted ref is explicit and never defaulted to `HEAD`; a fresh
+enrollment must be reviewed and landed at that ref before the local guard can run, and until then
+it exits `2`, not clean.
+
+The `jsonc` adapter needs `jsonc-parser` `3.3.1` resolvable from the repository root, where the
+copied command lives: a dependency in one workspace member does not resolve there. `init` adds
+`jsonc-parser@3.3.1` to a root `package.json`; a repository without one or `--no-install` is a
+manual action. A different declared version is preserved as it is: the copied guard does not check
+the declared version and loads the parser only when a parsed enrollment needs it, so that version
+is untested here. A missing parser (needed to compare a parsed enrollment) exits `2`.
+
+The local hook is **feedback, not authorization**. Required CI runs the same command from a
+trusted ref and blocks exit `1` and `2`. `init` also copies a manual template
+(`tools/policy/policy-guard-ci.yml`) that runs the guard from one supported protected base branch
+(the template's `branches` filter and `TRUSTED_BASE_BRANCH` name the same branch) and reads the
+pull request only as Git data; the helper refuses a foreign event base and binds its read-only
+token to `GITHUB_SERVER_URL`/`GITHUB_REPOSITORY`, so no credential is sent to another host or
+repository. The template is not activated and installs no check: the enforced check depends on
+external protections (that base branch protected, and this exact workflow bound as a required
+check through a ruleset required-workflows entry or an equivalent trusted source). Writing the hook
+installs no required check or branch protection, and a job name alone is not a unique check
+identity. See [docs/support.md](docs/support.md) and
+[tools/policy/README.md](tools/policy/README.md).
 
 ## Develop
 

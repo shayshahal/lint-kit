@@ -3,9 +3,10 @@
 Tracking issue: [#39](https://github.com/shayshahal/lint-kit/issues/39). Based on the approved
 [revised proposal](agent-skills-lint-rule-proposals.md), not the full candidate inventory.
 
-**Status:** issues created; no implementation PRs started. There are 23 scoped work issues
-plus the tracking issue. Phase 0 and the first-release stacks are the initial commitment;
-the 12 later issues are gated pilots, not promises to implement every candidate.
+**Status:** foundation [PR #63](https://github.com/shayshahal/lint-kit/pull/63) is open;
+first-release implementation is in progress, with PRs remaining unmerged. There are 23 scoped
+work issues plus the tracking issue. Phase 0 and the first-release stacks are the initial
+commitment; the 12 later issues are gated pilots, not promises to implement every candidate.
 
 ## Stack rules
 

@@ -5,7 +5,7 @@
  * tools' own config.
  *
  *   npx github:shayshahal/lint-kit init [--sets svelte-skills,untranslated-text,tailwind-patterns,
- *                                        error-handling,prose,fastapi,typecheck,structure]
+ *                                        error-handling,prose,vitest,fastapi,typecheck,structure]
  *                                        [--yes] [--no-install] [--base <branch>] [--cwd <dir>]
  *
  * Projects: in a monorepo, the members of the JS workspace (pnpm-workspace.yaml, or "workspaces"
@@ -26,6 +26,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -40,12 +41,21 @@ export const SETS = {
 	'tailwind-patterns': { kind: 'eslint', about: 'Tailwind / shadcn class conventions (vh, transition-all, dark:, dialog titles)' },
 	'error-handling': { kind: 'eslint', about: 'catch blocks that drop, only log, or stringify the error' },
 	prose: { kind: 'eslint', about: 'inflated vocabulary in comments, and // comments that should be JSDoc (ask for it)' },
+	vitest: { kind: 'eslint', about: 'focused tests and unawaited async assertions in the project tests (Vitest, ask for it)' },
 	'slop-patterns': { kind: 'oxlint', about: 'a function that only forwards its arguments, and assertions that discard a type (oxlint)' },
 	fastapi: { kind: 'python', about: 'FastAPI rules ruff lacks, as a flake8 plugin (FAP001-017)' },
 	typecheck: { kind: 'typecheck', about: 'svelte-check --tsgo and pyright before each push (lefthook)' },
 	structure: {
 		kind: 'structure',
 		about: 'fail a push that adds complexity, duplication or dead code the base did not have (lefthook)',
+	},
+	'secret-scanning': {
+		kind: 'security',
+		about: 'a pre-push branch scan with the pinned Gitleaks 8.30.1 (opt-in; the binary is not installed)',
+	},
+	'policy-guard': {
+		kind: 'policy',
+		about: 'a pre-push guard that reports an unapproved change to enrolled checker configuration (opt-in; feedback, not authorization)',
 	},
 };
 /** The JS project dependency each ESLint set is for. */
@@ -57,13 +67,35 @@ const ESLINT_FOR = {
 	// Fits any project with an ESLint config: prose rules read comments, not code. Never selected
 	// on its own — `OPT_IN` keeps a set of opinions out of a default install.
 	prose: () => true,
+	// Runner-specific: the rule reads Vitest's API, so it belongs in a project that runs Vitest.
+	// Like prose it is never selected on its own, even in a project that depends on Vitest.
+	vitest: (deps) => 'vitest' in deps,
 };
 /**
  * Sets a dependency never selects: they are a taste, so a repository asks for them by name and
  * keeps them on a re-run. `detect` only offers one that is already installed.
  */
-const OPT_IN = new Set(['prose']);
+const OPT_IN = new Set(['prose', 'vitest', 'secret-scanning', 'policy-guard']);
 const ESLINT_PEERS = ['eslint', 'eslint-plugin-svelte', 'svelte-eslint-parser', '@typescript-eslint/parser'];
+/**
+ * A set's copied module can import a package the shared parser setup does not: the vitest set
+ * loads `@vitest/eslint-plugin`, which the consumer then owns. Pinned to the version the support
+ * matrix froze ([#40](docs/agent-skills-first-release-support.md)); a project that already has
+ * the package keeps its own version, and `writeEslint` says so when that version is another one.
+ */
+const VITEST_PLUGIN_PIN = '1.6.27';
+const ESLINT_PEERS_FOR = { vitest: [`@vitest/eslint-plugin@${VITEST_PLUGIN_PIN}`] };
+
+/** The repository-root quarantine ledger and the non-file-filtered pre-push step that validates it. */
+const QUARANTINE_LEDGER = 'test-quarantine.json';
+const QUARANTINE_HOOK = 'pre-push';
+const QUARANTINE_SCRIPT = 'test-quarantine.sh';
+const QUARANTINE_COMMAND = 'tools/eslint/check-quarantine-ledger.mjs';
+
+/** Every devDependency the chosen ESLint sets need, without duplicates. */
+export function eslintPeers(sets) {
+	return [...new Set([...ESLINT_PEERS, ...sets.flatMap((s) => ESLINT_PEERS_FOR[s] ?? [])])];
+}
 /** The JS project dependency each oxlint set is for. */
 const OXLINT_FOR = {
 	'slop-patterns': (deps) => 'oxlint' in deps,
@@ -97,6 +129,16 @@ function writeHookScript(repo, hook, name, body) {
 	const file = path.join(repo, '.lefthook', hook, name);
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	write(file, body);
+}
+/** Whether anything occupies `target`, including a dangling symlink `existsSync` reports as free. */
+function pathPresent(target) {
+	try {
+		fs.lstatSync(target);
+		return true;
+	} catch (error) {
+		if (error?.code === 'ENOENT') return false;
+		return true; // an unreadable path is not ours to claim
+	}
 }
 const say = (msg) => console.log(msg);
 const posix = (p) => p.replace(/\\/g, '/');
@@ -222,6 +264,11 @@ function installed(repo, projects) {
 		fastapi: projects.py.some((p) => FASTAPI_TABLE.test(p.text)),
 		typecheck: /svelte-check --tsgo|uv run pyright/.test(hooks),
 		structure: /structure_check\.py --base|fallow audit --base/.test(`${hooks}\n${hookScriptText(repo)}`),
+		secretScanning: fs.existsSync(path.join(repo, 'tools', 'security', 'gitleaks-check.mjs')) || /gitleaks-check/.test(hooks),
+		policyGuard:
+			fs.existsSync(path.join(repo, 'tools', 'policy', 'policy-guard.mjs')) ||
+			fs.existsSync(path.join(repo, POLICY_MANIFEST)) ||
+			/policy-guard\.mjs/.test(`${hooks}\n${hookScriptText(repo)}`),
 	};
 }
 
@@ -245,6 +292,12 @@ function detect(repo, projects) {
 		fastapi: had.fastapi || fastapi,
 		typecheck: had.typecheck || (hooks && (anyDep('svelte') || fastapi)),
 		structure: had.structure || (hooks && (anyDep('svelte') || anyDep('typescript') || fastapi)),
+		// No dependency selects secret scanning: a repository asks for it by name, and a re-run
+		// keeps it on. A `gitleaks` in the project's dependencies is not evidence of the pinned tool.
+		'secret-scanning': had.secretScanning,
+		// No dependency selects the policy guard: a repository asks for it by name, and a re-run
+		// keeps it on. `jsonc-parser` in a project is not evidence of an enrollment.
+		'policy-guard': had.policyGuard,
 	};
 }
 
@@ -344,6 +397,7 @@ const ESLINT_NAMES = {
 	'tailwind-patterns': 'tailwindPatterns',
 	'error-handling': 'errorHandling',
 	prose: 'prose',
+	vitest: 'vitest',
 };
 /**
  * What init writes for every ESLint set: a rule reports only the lines the branch added since the
@@ -372,6 +426,12 @@ ${INSPECTION}
 	}),`,
 	prose: () => `	...prose.config({
 ${INSPECTION}
+	}),`,
+	vitest: () => `	...vitest.config({
+${INSPECTION}
+		// The project's own config: the maintained plugin resolves from here, not from the shared
+		// tools/eslint/ copy, which is what lets an isolated pnpm workspace member find it.
+		from: import.meta.url,
 	}),`,
 };
 
@@ -451,7 +511,12 @@ function eslintSetsFor(project, sets) {
 function writeEslint(repo, project, wanted, args) {
 	const own = path.join(project.dir, ESLINT_RULES);
 	const previous = read(own);
-	if (args.install) addJs(project, ESLINT_PEERS);
+	// The set is verified against the frozen pin. A version the project already has is left alone,
+	// so name it rather than let the run imply the installed one was tested (#47).
+	const have = project.deps['@vitest/eslint-plugin'];
+	if (wanted.includes('vitest') && have && have !== VITEST_PLUGIN_PIN)
+		say(`→ ${where(project)}: @vitest/eslint-plugin@${have} is left as it is; the vitest set is verified against ${VITEST_PLUGIN_PIN}, so check this version by hand.`);
+	if (args.install) addJs(project, eslintPeers(wanted));
 	const next = rulesConfig(wanted, rel(project.dir, path.join(repo, 'tools', 'eslint')).replace(/^(?!\.)/, './'));
 	if (previous !== null && previous !== next) {
 		write(`${own}.bak`, previous);
@@ -847,6 +912,20 @@ const lefthookRoot = (r) => (r ? `${posix(r).replace(/\/?$/, '/')}` : '');
 const everywhere = (doc, dir, pattern) =>
 	doc.get('glob_matcher') === 'doublestar' ? `${dir}**/${pattern}` : `${dir}${pattern}`;
 
+/** The test files the vitest set checks: `*.test.*` / `*.spec.*` under the project at any depth. */
+const testPattern = (doc, dir) => everywhere(doc, dir, '*.{test,spec}.*');
+
+/**
+ * The globs the ESLint pre-commit step matches. Application code under src/ is what every set
+ * lints; vitest's rule lives on test files, which sit outside src/ as often as inside it, so a
+ * project that wires it routes those patterns to the same step. One pattern stays a string, as
+ * before; two become the array lefthook ORs.
+ */
+const eslintGlob = (doc, dir, withTests) => {
+	const app = everywhere(doc, `${dir}src/`, '*.{js,ts,svelte}');
+	return withTests ? [app, testPattern(doc, dir)] : app;
+};
+
 /**
  * Add a step to `hook` unless one of that name is there (a re-run keeps the user's edits), or a
  * step already runs the same tool for this project (`runs`): one whose root is the project's, or
@@ -862,6 +941,25 @@ function addStep(doc, hook, name, value, runs, only) {
 	const commands = doc.getIn([hook, 'commands']);
 	if (commands.flow && !commands.items.length) commands.flow = false;
 	doc.setIn([hook, 'commands', name], doc.createNode(value));
+}
+
+/**
+ * Add a newly wired vitest set's test patterns to the ESLint step an earlier install wrote. Only
+ * a step whose `run` is exactly what init writes is touched, so a repository's own ESLint command
+ * keeps its policy; then the caller reports the manual step instead. Returns whether the named
+ * step is in the wanted shape.
+ */
+function widenEslintStep(doc, name, glob, run) {
+	const step = doc.getIn(['pre-commit', 'commands', name]);
+	if (!step) return false;
+	const plain = step.toJSON();
+	if (plain?.run !== run) return false;
+	const wanted = Array.isArray(glob) ? glob : [glob];
+	const existing = Array.isArray(plain.glob) ? plain.glob : plain.glob === undefined ? [] : [plain.glob];
+	if (wanted.every((p) => existing.includes(p))) return true;
+	const added = wanted.filter((p) => !existing.includes(p));
+	doc.setIn(['pre-commit', 'commands', name, 'glob'], doc.createNode([...existing, ...added]));
+	return true;
 }
 
 /** Add a lefthook script unless its file is already there, or a command already runs the tool.
@@ -1064,7 +1162,7 @@ export function findBase(args, lefthookText, repo) {
 		const options = { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] };
 		return execFileSync('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], options).trim();
 	} catch {
-		say('→ no origin/HEAD, so structure compares with origin/main; pass --base <branch> if branches merge elsewhere');
+		say('→ no origin/HEAD, so the branch checks compare with origin/main; pass --base <branch> if branches merge elsewhere');
 		return 'origin/main';
 	}
 }
@@ -1180,6 +1278,504 @@ function writeStructure(repo, projects, doc, base, args) {
 	return [...roots.map((p) => `fallow (${where(p)})`), ...projects.py.map((py) => `structure_check.py (${where(py)})`)];
 }
 
+// ── quarantine ledger ───────────────────────────────────────────────────────────
+
+/** The script body that validates every ledger entry before a push, whichever files it changes. */
+const quarantineScriptBody = () => `#!/usr/bin/env bash\nset -e\nnode ${QUARANTINE_COMMAND}\n`;
+
+/**
+ * Wire the repository-wide ledger validator as a pre-push script. A lefthook `commands` step is
+ * filtered only when it carries a glob/files filter: a real fixture showed an unfiltered
+ * `{ run }` command still executes on a deletion-only push, while a filtered one does not. A
+ * `scripts` entry is always unfiltered, so it runs whatever the push changed. It is added only
+ * when the name is free and no command already runs the validator, and a path that is already
+ * present — including a dangling symlink `existsSync` would miss — is never overwritten or claimed
+ * (writing through the link could land outside the repository). Returns how it was handled.
+ */
+function wireQuarantineScript(repo, doc) {
+	if (doc.hasIn([QUARANTINE_HOOK, 'scripts', QUARANTINE_SCRIPT])) return 'kept';
+	const commands = doc.getIn([QUARANTINE_HOOK, 'commands'])?.toJSON() ?? {};
+	if (Object.values(commands).some((step) => /check-quarantine-ledger\.mjs/.test(step?.run ?? ''))) return 'kept';
+	if (pathPresent(path.join(repo, '.lefthook', QUARANTINE_HOOK, QUARANTINE_SCRIPT))) return 'kept';
+	if (!doc.hasIn([QUARANTINE_HOOK, 'scripts'])) doc.setIn([QUARANTINE_HOOK, 'scripts'], doc.createNode({}));
+	const scripts = doc.getIn([QUARANTINE_HOOK, 'scripts']);
+	if (scripts.flow && !scripts.items.length) scripts.flow = false;
+	doc.setIn([QUARANTINE_HOOK, 'scripts', QUARANTINE_SCRIPT], doc.createNode({ runner: 'bash' }));
+	writeHookScript(repo, QUARANTINE_HOOK, QUARANTINE_SCRIPT, quarantineScriptBody());
+	return 'added';
+}
+
+/**
+ * The manual enrollment and hook guidance one vitest install prints. Enrollment of the ledger and
+ * of the copied checker files is a reviewed trusted-ref change, never this installer's: it prints
+ * the exact snippet and leaves `lint-kit.policy.json` byte-for-byte.
+ */
+function sayQuarantineGuidance(status) {
+	say(`→ ${QUARANTINE_LEDGER}: not enrolled by this installer. Land this enrollment in lint-kit.policy.json through the trusted-ref review (a local run is feedback, not approval):`);
+	say(`    { "id": "test-quarantine", "source": "${QUARANTINE_LEDGER}", "format": "opaque" }`);
+	say('→ enroll tools/eslint/vitest.mjs and tools/eslint/quarantine-ledger.mjs opaque too, so a branch cannot edit the matcher or the clock in the same change');
+	if (status === 'added')
+		say(`✔ lefthook.yml: ${QUARANTINE_SCRIPT} before each push validates every ${QUARANTINE_LEDGER} entry, whichever files the push changed`);
+	else if (status === 'kept')
+		say(`→ lefthook.yml: a pre-push step for ${QUARANTINE_LEDGER} is left as it is; make sure it runs node ${QUARANTINE_COMMAND}`);
+	else {
+		say(`→ no lefthook.yml: run this before each push so every ${QUARANTINE_LEDGER} entry is validated even when no test changes:`);
+		say(`    node ${QUARANTINE_COMMAND}`);
+		say(`    # or as .lefthook/pre-push/${QUARANTINE_SCRIPT}:\n    ${quarantineScriptBody().trim().replace(/\n/g, '\n    ')}`);
+	}
+}
+
+// ── secret scanning ────────────────────────────────────────────────────────────
+
+/** The copied command; it must run at the repository root, so the step carries no `root`. */
+const SECRET_SCANNER = 'node tools/security/gitleaks-check.mjs';
+const SECRET_STEP = 'secret-scanning';
+const SECRET_HISTORY_SCRIPT = 'secret-scanning:history';
+/** The copies that are tool code. `gitleaks.toml` is handled apart: it is the consumer's policy. */
+const SECRET_TOOLS = ['security/gitleaks-check.mjs', 'security/gitleaks-report.mjs', 'security/gitleaks-check.md'];
+
+/** The branch scan run: the copied command with the resolved base when it is a plain ref. `null`
+ *  means the base cannot be embedded in a shell command, so the caller prints a manual action. */
+const SHELL_SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+function secretScannerRun(base) {
+	if (base === undefined) return SECRET_SCANNER;
+	return SHELL_SAFE_REF.test(base) ? `${SECRET_SCANNER} --base ${base}` : null;
+}
+
+/**
+ * The exact pre-push run this installer writes and recognises: the copied command at the
+ * repository root, with only an optional plain `--base` ref. `echo gitleaks-check`, a compound
+ * `... || true`, a history-mode run or any extra flag is not proven equivalent.
+ */
+const SECRET_RUN = /^node tools\/security\/gitleaks-check\.mjs(?: --base [A-Za-z0-9][A-Za-z0-9._/-]*)?$/;
+
+/** A pre-push step this installer can vouch for: exactly our run, and nothing that moves it to a
+ *  subfolder, filters its files or skips it. */
+const isSecretRunStep = (step) =>
+	Object.keys(step ?? {}).length === 1 && typeof step.run === 'string' && SECRET_RUN.test(step.run);
+
+/**
+ * Copy the selected config only when it is absent. Unlike the tool copies, `gitleaks.toml` holds
+ * the reviewed exceptions, which are the consumer's: a re-run or an upgrade must not overwrite an
+ * edited one, and must never add an allowlist entry.
+ */
+function writeGitleaksConfig(repo) {
+	const target = path.join(repo, 'tools', 'security', 'gitleaks.toml');
+	if (fs.existsSync(target)) {
+		say('→ tools/security/gitleaks.toml already exists; init left it as it is (reviewed exceptions live there)');
+		return;
+	}
+	fs.mkdirSync(path.dirname(target), { recursive: true });
+	fs.copyFileSync(path.join(SELF, 'tools', 'security', 'gitleaks.toml'), target);
+	say('✔ tools/security/gitleaks.toml (new: the pinned default rules and the one documented dummy)');
+}
+
+/**
+ * The one repository-root pre-push step. It is a command, not a script: branch mode covers the
+ * merge-base..HEAD commits and the working tree, and a push that reaches it fails on an introduced
+ * finding or on any inability to run. An existing step is never rewritten; only one this installer
+ * can vouch for counts as wired, and anything else is a manual action.
+ */
+function addSecretScanning(doc, base) {
+	const entries = Object.entries(doc.getIn(['pre-push', 'commands'])?.toJSON() ?? {});
+	const wired = entries.find(([, step]) => isSecretRunStep(step));
+	if (wired) {
+		say(`✔ lefthook.yml: pre-push "${wired[0]}" already runs the copied command at the repository root; nothing added`);
+		return;
+	}
+	// A step that names this command in any other shape, or that already scans secrets its own way,
+	// is left untouched: the installer will not claim it is equivalent, and will not put a second
+	// scan beside it.
+	const noisy = entries.find(
+		([name, step]) =>
+			name === SECRET_STEP || /\bgitleaks-check\b/.test(step?.run ?? '') || /\b(gitleaks|secret[-_ ]?scan)/i.test(step?.run ?? ''),
+	);
+	if (noisy) {
+		say(
+			`→ lefthook.yml: pre-push "${noisy[0]}" mentions secret scanning but is not the repository-root fail-closed run; init left it unchanged. To add the copied command, use:\n` +
+				`    pre-push:\n      commands:\n        ${SECRET_STEP}:\n          run: ${SECRET_SCANNER} --base <ref>`,
+		);
+		return;
+	}
+	const run = secretScannerRun(base);
+	if (run === null) {
+		// The resolved base is not a plain ref (it may come from a branch's own lefthook step), so
+		// embedding it in a shell command would risk expansion; print a manual action, not the value.
+		say(
+			'→ lefthook.yml: the resolved base is not a plain ref, so init did not write a shell command that embeds it. Add the pre-push step by hand with your reviewed base:\n' +
+				`    pre-push:\n      commands:\n        ${SECRET_STEP}:\n          run: ${SECRET_SCANNER} --base <ref>`,
+		);
+		return;
+	}
+	addStep(doc, 'pre-push', SECRET_STEP, { run }, /\bgitleaks-check\b/, true);
+	say('✔ lefthook.yml: pre-push secret-scanning (branch scan with the pinned Gitleaks; a finding or a missing tool fails the push)');
+}
+
+/** The initial/history audit is a separate remediation command, exposed where a root package.json is. */
+function writeSecretHistory(repo) {
+	const pkg = path.join(repo, 'package.json');
+	if (!fs.existsSync(pkg)) return;
+	const before = read(pkg);
+	if (JSON.parse(before).scripts?.[SECRET_HISTORY_SCRIPT]) return;
+	write(pkg, withScript(before, SECRET_HISTORY_SCRIPT, `${SECRET_SCANNER} --mode history`));
+	say(`✔ package.json script ${SECRET_HISTORY_SCRIPT}: the initial Gitleaks history audit, run by hand`);
+}
+
+// ── policy guard ──────────────────────────────────────────────────────────────────
+
+/** The copied command. It must run at the repository root, where the Git tree and policy are. */
+const POLICY_COMMAND = 'node tools/policy/policy-guard.mjs';
+/** The one enrollment manifest the set writes. The guard self-protects it, so it is not enrolled. */
+const POLICY_MANIFEST = 'lint-kit.policy.json';
+/** The pre-push script name. A script is not file-filtered, so a deletion-only push still runs it. */
+const POLICY_SCRIPT = 'policy-guard.sh';
+/** The copies that are tool code, refreshed on upgrade; README.md is the command's own doc. */
+const POLICY_TOOLS = ['policy/policy-guard.mjs', 'policy/policy-guard-ci.mjs', 'policy/policy-guard-ci.yml', 'policy/README.md'];
+/** A branch ref is only embedded in the generated script when it is a plain ref. */
+const POLICY_SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+/**
+ * A ref is only accepted as an approved policy ref when it is a plain ref and is not `HEAD`: the
+ * branch's own HEAD is not a reviewed trusted snapshot, so an existing step that names it is not
+ * the supported step, and generation never embeds it.
+ */
+const isApprovedPolicyRef = (ref) => typeof ref === 'string' && ref !== 'HEAD' && POLICY_SAFE_REF.test(ref);
+
+/**
+ * The identities the frozen `fallow-jsonc` adapter knows, with the only unit and direction real
+ * Fallow configuration gives each. This mirrors `FALLOW_IDENTITIES` in
+ * `tools/policy/policy-guard.mjs`: the enrollment declares the identity's link (name, unit,
+ * direction), never a value, and the guard reads the number, severity or ignore list from the
+ * checker's own configuration. The installer declares only an identity it can verify is present
+ * and already the type its unit compares.
+ */
+const FALLOW_ENROLLMENT_IDENTITIES = [
+	{ id: 'health.maxCognitive', unit: 'score', direction: 'max' },
+	{ id: 'health.maxCrap', unit: 'score', direction: 'max' },
+	{ id: 'rules', unit: 'severity-map', direction: 'min' },
+	{ id: 'ignorePatterns', unit: 'glob-list', direction: 'subset' },
+];
+/** Fallow's severity order. Mirrors the adapter so an enrolled `rules` map is provably comparable. */
+const FALLOW_SEVERITY = ['off', 'warn', 'error'];
+/** Fallow configuration files the frozen adapter can read as JSONC, and the ones it cannot. */
+const FALLOW_JSONC_SOURCES = ['.fallowrc.json', '.fallowrc.jsonc'];
+const FALLOW_OPAQUE_SOURCES = [
+	'fallow.toml',
+	'.fallow.toml',
+	'fallow.config.js',
+	'fallow.config.mjs',
+	'fallow.config.cjs',
+	'fallow.config.ts',
+];
+/** A copied checker the first release protects whole, without parsing or evaluating it. */
+const POLICY_OPAQUE_SOURCES = ['tools/python/structure_check.py'];
+
+const isRecord = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** jsonc-parser 3.3.1, the reader the enrollment format is frozen to. */
+let jsoncParser;
+function loadJsoncParser() {
+	if (jsoncParser === undefined) {
+		try {
+			jsoncParser = createRequire(import.meta.url)('jsonc-parser');
+		} catch (error) {
+			throw new Error(`lint-kit cannot load jsonc-parser 3.3.1 to read a fallow config: ${error.message}`);
+		}
+	}
+	return jsoncParser;
+}
+
+/**
+ * The identities a real Fallow JSONC config provably has: each is present and already the type
+ * its unit compares, so the guard can read it at both snapshots. Null when the text is not JSONC,
+ * so the caller protects the file opaque instead of enrolling an identity it cannot read. A
+ * malformed document is reported by `parseTree`, not thrown, so anything thrown here is a real
+ * install error (a missing parser, a programming error) and must not be relabelled "unsupported".
+ */
+function presentFallowIdentities(text) {
+	const jsonc = loadJsoncParser();
+	const errors = [];
+	const tree = jsonc.parseTree(text, errors);
+	if (tree === undefined || errors.length > 0) return null;
+	const valueAt = (segments) => {
+		const node = jsonc.findNodeAtLocation(tree, segments);
+		return node === undefined ? undefined : jsonc.getNodeValue(node);
+	};
+	const present = [];
+	for (const identity of FALLOW_ENROLLMENT_IDENTITIES) {
+		const value = valueAt(identity.id.split('.'));
+		if (identity.unit === 'score' && typeof value === 'number' && Number.isFinite(value)) present.push(identity);
+		else if (identity.unit === 'severity-map' && isRecord(value) && Object.values(value).every((s) => FALLOW_SEVERITY.includes(s))) present.push(identity);
+		else if (identity.unit === 'glob-list' && Array.isArray(value) && value.every((p) => typeof p === 'string')) present.push(identity);
+	}
+	return present;
+}
+
+/**
+ * A guard-specific read of one enrollment candidate, at the boundary that decides what to enroll.
+ * A symbolic link is never followed and a non-regular file is never read, so no read leaves the
+ * repository through a linked path; the bytes are decoded as strict UTF-8 exactly as the copied
+ * guard decodes a parsed enrollment, so a malformed byte sequence is never reported as a readable
+ * JSONC identity. `null` means absent. `kind:'text'` is the only kind the JSONC adapter reads
+ * from; a missing parser or a programming error still throws.
+ */
+function policyCandidate(file) {
+	let stats;
+	try {
+		stats = fs.lstatSync(file);
+	} catch {
+		return null;
+	}
+	if (stats.isSymbolicLink() || !stats.isFile()) return { kind: 'not-file' };
+	let bytes;
+	try {
+		bytes = fs.readFileSync(file);
+	} catch {
+		return { kind: 'unreadable' };
+	}
+	try {
+		return { kind: 'text', text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) };
+	} catch {
+		return { kind: 'invalid-utf8' };
+	}
+}
+
+/** Whether `file` is a regular file (a symbolic link is not), for an opaque enrollment. */
+function isRegularPolicyFile(file) {
+	try {
+		return fs.lstatSync(file).isFile();
+	} catch {
+		return false;
+	}
+}
+
+/** The repository-relative, forward-slash source path a guard enrollment names. */
+const policySource = (repo, file) => posix(path.relative(repo, file));
+
+/** The folders a fallow config can sit in: the repository root and each JS project. */
+function fallowConfigDirs(repo, projects) {
+	return [...new Set([repo, ...projects.js.map((p) => p.dir)])];
+}
+
+/**
+ * The fresh manifest's enrollments. The copied guard is opaque, so a silent edit to the guard
+ * itself is an enrolled change. Each real Fallow JSONC config enrolls only the identities it
+ * provably has; a Fallow config the adapter cannot read, or an unknown/executable Fallow shape,
+ * is protected opaque without evaluation. Any copied checker source the release protects whole
+ * is opaque. No threshold, severity or ignore list is copied here.
+ */
+function buildPolicyEnrollments(repo, projects) {
+	const enrollments = [{ id: 'tools/policy/policy-guard.mjs', source: 'tools/policy/policy-guard.mjs', format: 'opaque' }];
+	const seen = new Set(['tools/policy/policy-guard.mjs']);
+	const add = (source, enrollment) => {
+		if (seen.has(source)) return;
+		seen.add(source);
+		// The source path is the id, so two configs that a slug would fold together stay distinct.
+		enrollments.push({ id: source, source, ...enrollment });
+	};
+	for (const dir of fallowConfigDirs(repo, projects)) {
+		for (const name of FALLOW_JSONC_SOURCES) {
+			const file = path.join(dir, name);
+			const candidate = policyCandidate(file);
+			if (candidate === null) continue;
+			const source = policySource(repo, file);
+			if (candidate.kind === 'text') {
+				const identities = presentFallowIdentities(candidate.text);
+				if (identities && identities.length > 0) {
+					add(source, { format: 'jsonc', adapter: 'fallow-jsonc', identities });
+				} else {
+					add(source, { format: 'opaque' });
+					say(`→ ${source}: protected opaque; the fallow-jsonc adapter found no readable enrolled identity (enroll it by hand after review)`);
+				}
+			} else if (candidate.kind === 'invalid-utf8') {
+				add(source, { format: 'opaque' });
+				say(`→ ${source}: protected opaque; it is not valid UTF-8, so the fallow-jsonc adapter does not read it (enroll it by hand after review)`);
+			} else {
+				say(`→ ${source}: not a regular, readable file; init left it unchanged and enrolled nothing (enroll it by hand after review)`);
+			}
+		}
+		for (const name of FALLOW_OPAQUE_SOURCES) {
+			const file = path.join(dir, name);
+			if (!fs.existsSync(file)) continue;
+			const source = policySource(repo, file);
+			if (!isRegularPolicyFile(file)) {
+				say(`→ ${source}: not a regular file; init left it unchanged and enrolled nothing (enroll it by hand after review)`);
+				continue;
+			}
+			add(source, { format: 'opaque' });
+			say(`→ ${source}: protected opaque; this Fallow shape has no parsed adapter in the first release (no evaluation, enroll it by hand after review)`);
+		}
+	}
+	for (const source of POLICY_OPAQUE_SOURCES) {
+		if (fs.existsSync(path.join(repo, source))) add(source, { format: 'opaque' });
+	}
+	return enrollments;
+}
+
+/**
+ * The copied command resolves `jsonc-parser` from the repository root: it lives at `tools/policy/`
+ * and Node walks up to the root `node_modules`. A dependency in one workspace member does not
+ * resolve there. With a root `package.json`, provision the frozen 3.3.1 at that root; a different
+ * declared version, a repository without a root package, or `--no-install` is a manual action.
+ */
+function provisionPolicyParser(repo, projects, args) {
+	const root = projects.js.find((p) => p.rel === '');
+	if (!root) {
+		say(
+			`→ ${POLICY_COMMAND} needs jsonc-parser 3.3.1 resolvable from tools/policy/. This repository has no root package.json, so init added none: add one, or make jsonc-parser 3.3.1 available there by hand.`,
+		);
+		return;
+	}
+	const declared = root.deps['jsonc-parser'];
+	if (declared === undefined) {
+		if (args.install) {
+			addJs(root, ['jsonc-parser@3.3.1']);
+			say('✔ package.json: jsonc-parser 3.3.1 at the repository root, where the copied guard resolves it');
+		} else {
+			const command = root.pm === 'npm' ? 'npm install --save-dev' : `${root.pm} add -D`;
+			say(`→ ${POLICY_COMMAND} needs jsonc-parser 3.3.1 at the repository root; --no-install was given, so add it by hand: ${command} jsonc-parser@3.3.1`);
+		}
+		return;
+	}
+	if (declared !== '3.3.1') {
+		say(
+			`→ package.json declares jsonc-parser@${declared}, not the 3.3.1 the copied guard is frozen to; init left it exactly as it is. The copied guard does not check the declared version and loads the parser only when a parsed enrollment needs it, so whether this version works here is preserved and untested: review it and pin jsonc-parser@3.3.1 by hand.`,
+		);
+		return;
+	}
+	say('✔ package.json: jsonc-parser 3.3.1 is already declared at the repository root');
+}
+
+/** Write the enrollment manifest only when absent: a repeat never broadens or rewrites it. */
+function writePolicyGuard(repo, projects, args) {
+	const manifestFile = path.join(repo, POLICY_MANIFEST);
+	if (fs.existsSync(manifestFile)) {
+		say(`→ ${POLICY_MANIFEST} already exists; init left it byte-for-byte (an enrollment edit is a reviewed policy change)`);
+	} else {
+		const enrollments = buildPolicyEnrollments(repo, projects);
+		write(manifestFile, `${JSON.stringify({ version: 1, enrollments }, null, '\t')}\n`);
+		say(`✔ ${POLICY_MANIFEST} (new: enrolls ${enrollments.length} checker source(s); a repeat never broadens it)`);
+	}
+	provisionPolicyParser(repo, projects, args);
+}
+
+/** The canonical run the release supports: repository root, explicit base and trusted-ref, working tree. */
+const POLICY_CANONICAL_RUN = /^node tools\/policy\/policy-guard\.mjs --base (\S+) --target HEAD --trusted-ref \1 --policy lint-kit\.policy\.json --mode working-tree$/;
+
+/**
+ * A step is the canonical run only when it is exactly `{ run }`, the run matches the supported
+ * contract, and the ref it names is an approved plain, non-HEAD ref. A wrong runner, an extra key
+ * or a ref the policy does not approve is not guessed equivalent.
+ */
+function isCanonicalPolicyStep(step) {
+	if (!isRecord(step)) return false;
+	const keys = Object.keys(step);
+	if (keys.length !== 1 || keys[0] !== 'run') return false;
+	if (typeof step.run !== 'string') return false;
+	const match = POLICY_CANONICAL_RUN.exec(step.run);
+	return match !== null && isApprovedPolicyRef(match[1]);
+}
+
+/** The supported lefthook script step: exactly `{ runner: 'bash' }`; any other key is not guessed. */
+function isCanonicalPolicyScriptStep(step) {
+	if (!isRecord(step)) return false;
+	const keys = Object.keys(step);
+	return keys.length === 1 && keys[0] === 'runner' && step.runner === 'bash';
+}
+
+/** The generated script body: base and trusted-ref are explicit, and the mode reads the working tree. */
+const policyScriptBody = (base) =>
+	`#!/usr/bin/env bash\nset -e\n${POLICY_COMMAND} --base ${base} --target HEAD --trusted-ref ${base} --policy ${POLICY_MANIFEST} --mode working-tree\n`;
+
+/** The generated body's canonical shape: the same ref is named for `--base` and `--trusted-ref`. */
+const POLICY_CANONICAL_BODY =
+	/^#!\/usr\/bin\/env bash\nset -e\nnode tools\/policy\/policy-guard\.mjs --base (\S+) --target HEAD --trusted-ref \1 --policy lint-kit\.policy\.json --mode working-tree\n$/;
+
+/**
+ * The state of `.lefthook/pre-push/<name>`: `missing`, `canonical` (the exact supported body),
+ * `other`, or `not-ours` (a symbolic link, a directory or an unreadable file, never followed).
+ */
+function policyScriptBodyState(repo, name) {
+	const candidate = policyCandidate(path.join(repo, '.lefthook', 'pre-push', name));
+	if (candidate === null) return 'missing';
+	if (candidate.kind !== 'text') return 'not-ours';
+	const match = POLICY_CANONICAL_BODY.exec(candidate.text.replaceAll('\r\n', '\n'));
+	return match !== null && isApprovedPolicyRef(match[1]) ? 'canonical' : 'other';
+}
+
+/**
+ * The complete manual action for a repository the installer cannot wire: the exact script body
+ * and the lefthook.yml entry. A base that is not an approved plain ref is printed as the literal
+ * `<base-ref>` placeholder, so nothing unsafe is ever interpolated into a runnable line.
+ */
+function manualPolicyStep(base) {
+	const ref = isApprovedPolicyRef(base) ? base : '<base-ref>';
+	const body = policyScriptBody(ref).trimEnd().replaceAll('\n', '\n    ');
+	return (
+		`create .lefthook/pre-push/${POLICY_SCRIPT} with:\n` +
+		`    ${body}\n` +
+		`and in lefthook.yml:\n` +
+		`    pre-push:\n` +
+		`      scripts:\n` +
+		`        ${POLICY_SCRIPT}:\n` +
+		`          runner: bash`
+	);
+}
+
+/**
+ * Wire one repository-root pre-push script. The set installs a script, not a file-filtered
+ * command, so a deletion-only push still runs it; an existing command that already runs the guard
+ * with no filter is left as it is (it runs either way), while a filtered or otherwise different
+ * step is preserved and reported as a manual action. A supported step is exactly
+ * `{ runner: 'bash' }` with the exact generated body; anything else, including an orphan
+ * consumer file of the same name, is never overwritten.
+ */
+function writePolicyGuardStep(repo, doc, base) {
+	const script = `pre-push script "${POLICY_SCRIPT}"`;
+	const bodyState = policyScriptBodyState(repo, POLICY_SCRIPT);
+	const scripts = doc.getIn(['pre-push', 'scripts'])?.toJSON() ?? {};
+	if (POLICY_SCRIPT in scripts) {
+		if (isCanonicalPolicyScriptStep(scripts[POLICY_SCRIPT]) && bodyState === 'canonical') {
+			say(`✔ lefthook.yml: ${script} already runs the copied guard; nothing added`);
+		} else {
+			say(`→ lefthook.yml: ${script} exists but is not the supported working-tree run; init left it unchanged. The supported step is:\n` + manualPolicyStep(base));
+		}
+		return;
+	}
+	const commands = Object.entries(doc.getIn(['pre-push', 'commands'])?.toJSON() ?? {});
+	const canonical = commands.find(([, step]) => isCanonicalPolicyStep(step));
+	if (canonical) {
+		say(`✔ lefthook.yml: pre-push "${canonical[0]}" already runs the copied guard at the repository root; nothing added`);
+		return;
+	}
+	if (bodyState === 'canonical') {
+		addScript(doc, 'pre-push', POLICY_SCRIPT, { runner: 'bash' }, null);
+		say(`✔ lefthook.yml: ${script} wired to the existing canonical script (its body is left byte-for-byte)`);
+		return;
+	}
+	if (bodyState !== 'missing') {
+		say(
+			`→ lefthook.yml: .lefthook/pre-push/${POLICY_SCRIPT} already exists but is not the supported working-tree run; init left it unchanged and added no step (migrate it by hand)`,
+		);
+		return;
+	}
+	const named =
+		commands.some(([, step]) => /policy-guard\.mjs/.test(step?.run ?? '')) || /policy-guard\.mjs/.test(hookScriptText(repo));
+	if (named) {
+		say(
+			`→ lefthook.yml: a pre-push step names the copied guard but is not the repository-root working-tree run; init left it unchanged. To run the supported step instead,\n` +
+				manualPolicyStep(base),
+		);
+		return;
+	}
+	if (!isApprovedPolicyRef(base)) {
+		say(`→ lefthook.yml: the resolved base is not a plain ref, or it is HEAD, so no ${script} was written; add the working-tree step by hand with a base you trust:\n` + manualPolicyStep(base));
+		return;
+	}
+	addScript(doc, 'pre-push', POLICY_SCRIPT, { runner: 'bash' }, null);
+	writeHookScript(repo, 'pre-push', POLICY_SCRIPT, policyScriptBody(base));
+	say('✔ lefthook.yml: pre-push policy-guard (a script, so a deletion-only push still runs it; feedback, not authorization)');
+}
+
 // ── main ────────────────────────────────────────────────────────────────────────
 
 export async function main(argv = process.argv.slice(2)) {
@@ -1202,39 +1798,93 @@ export async function main(argv = process.argv.slice(2)) {
 		.map((p) => ({ p, wanted: eslintSetsFor(p, sets) }))
 		.filter(({ wanted }) => wanted.length);
 	const eslintSets = Object.keys(ESLINT_FOR).filter((s) => linted.some(({ wanted }) => wanted.includes(s)));
+	// A runner-specific set no project can run is never claimed as wired: eslint.rules.js only gains
+	// what a project fits, so a run that leaves vitest out everywhere must say so instead of "done".
+	if (sets.includes('vitest') && !eslintSets.includes('vitest'))
+		say('→ vitest was asked for but no project took it: an ESLint project (a Svelte dependency or an ESLint config) that depends on vitest is needed. Add vitest, or wire the set by hand.');
 	const oxlinted = oxlintProjects(projects)
 		.map((p) => ({ p, wanted: oxlintSetsFor(p, sets) }))
 		.filter(({ wanted }) => wanted.length);
 	const oxlintSets = Object.keys(OXLINT_FOR).filter((s) => oxlinted.some(({ wanted }) => wanted.includes(s)));
 	const fastapi = sets.includes('fastapi') ? projects.py.filter(isFastapi) : [];
 	const structure = sets.includes('structure');
+	const secrets = sets.includes('secret-scanning');
+	const policy = sets.includes('policy-guard');
 	copyTools(repo, [
 		...(eslintSets.length ? ['eslint/inspection.mjs'] : []),
+		...(eslintSets.includes('vitest') ? ['eslint/quarantine-ledger.mjs', 'eslint/check-quarantine-ledger.mjs'] : []),
 		...eslintSets.flatMap((s) => [`eslint/${s}.mjs`, `eslint/${s}.md`]),
 		...oxlintSets.map((s) => `oxlint/${s}`),
 		...(fastapi.length ? ['python/fastapi_rules.py'] : []),
 		...(structure && projects.py.length ? ['python/structure_check.py'] : []),
+		...(secrets ? SECRET_TOOLS : []),
+		...(policy ? POLICY_TOOLS : []),
 	]);
+	if (secrets) writeGitleaksConfig(repo);
 
 	for (const { p, wanted } of linted) writeEslint(repo, p, wanted, args);
 	for (const { p, wanted } of oxlinted) writeOxlint(repo, p, wanted);
 	const wired = fastapi.map((py) => writeFastapi(repo, py, args));
+	let quarantineStatus = 'not-selected';
 	const hooked = editLefthook(repo, (doc) => {
 		const eslintNames = stepNames('eslint', linted.map(({ p }) => p));
-		for (const { p } of linted) {
+		for (const { p, wanted } of linted) {
 			const dir = lefthookRoot(p.rel);
-			const step = { glob: everywhere(doc, `${dir}src/`, '*.{js,ts,svelte}'), ...(dir ? { root: dir } : {}), run: `${p.exec} eslint {staged_files}` };
-			addStep(doc, 'pre-commit', eslintNames.get(p), step, /\beslint\b/, linted.length === 1);
+			const name = eslintNames.get(p);
+			const run = `${p.exec} eslint {staged_files}`;
+			const glob = eslintGlob(doc, dir, wanted.includes('vitest'));
+			addStep(doc, 'pre-commit', name, { glob, ...(dir ? { root: dir } : {}), run }, /\beslint\b/, linted.length === 1);
+			// An earlier install's step keeps its name and its glob; widen it so the set's test files are
+			// checked too. When the step is not ours to touch (a repository's own ESLint command), say the
+			// manual step rather than leave the tests outside src/ out of the hook.
+			if (wanted.includes('vitest') && !widenEslintStep(doc, name, glob, run))
+				say(`→ ${where(p)}: the step that runs ESLint for this project was left alone; add ${testPattern(doc, dir)} to it so the vitest tests outside src/ are checked.`);
 		}
 		stepsFastapi(doc, wired);
 		if (sets.includes('typecheck')) say(`✔ lefthook.yml: typecheck before each push in ${writeTypecheck(projects, doc, args).join(', ') || 'no project'}`);
-		if (structure) {
-			const base = findBase(args, doc.toString(AS_WRITTEN), repo);
-			say(`✔ lefthook.yml: ${writeStructure(repo, projects, doc, base, args).join(', ') || 'nothing'} before each push, against ${base}`);
-		}
+		// One base for every branch-comparison step, resolved by the installer's convention
+		// (--base, an existing step, lefthook's pre-push files, origin/HEAD, else origin/main)
+		// rather than a branch ref the scanner would guess on its own, or defaulting the guard to
+		// HEAD. The policy guard names it explicitly for both --base and --trusted-ref; the guard
+		// itself never defaults the trusted snapshot.
+		const base = structure || secrets || policy ? findBase(args, doc.toString(AS_WRITTEN), repo) : undefined;
+		if (structure) say(`✔ lefthook.yml: ${writeStructure(repo, projects, doc, base, args).join(', ') || 'nothing'} before each push, against ${base}`);
+		if (eslintSets.includes('vitest')) quarantineStatus = wireQuarantineScript(repo, doc);
+		if (secrets) addSecretScanning(doc, base);
+		if (policy) writePolicyGuardStep(repo, doc, base);
 	});
+	// After the lefthook edit: the structure set may have just written the .fallowrc.json the
+	// manifest enrolls, so the manifest is built from what is now on disk.
+	if (policy) writePolicyGuard(repo, projects, args);
 	if (!hooked && (sets.includes('typecheck') || structure))
 		say('→ typecheck and structure run as lefthook pre-push steps, and this repository has no lefthook.yml');
+	if (eslintSets.includes('vitest')) sayQuarantineGuidance(hooked ? quarantineStatus : 'no-lefthook');
+	if (!hooked && secrets) {
+		// No lefthook to read a base from, but an explicit --base still has to reach the printed step.
+		const run = secretScannerRun(args.base ? findBase(args, '', repo) : undefined);
+		say(
+			'→ secret-scanning: this repository has no lefthook.yml, so no pre-push step was added. Add:\n' +
+				`    pre-push:\n      commands:\n        ${SECRET_STEP}:\n          run: ${run ?? `${SECRET_SCANNER} --base <ref>`}` +
+				(run === null ? '  (the requested base is not a plain ref; put your reviewed ref here)' : ''),
+		);
+	}
+	if (secrets) {
+		writeSecretHistory(repo);
+		say(`→ secret-scanning: ${SECRET_SCANNER} needs the pinned Gitleaks 8.30.1 on PATH, or --gitleaks <path>; provisioning steps are in tools/security/gitleaks-check.md`);
+		say(`→ secret-scanning: the initial/history audit is separate: ${SECRET_SCANNER} --mode history`);
+	}
+	if (!hooked && policy) {
+		const base = findBase(args, '', repo);
+		say(
+			'→ policy-guard: this repository has no lefthook.yml, so no pre-push script was added. To wire the same guard by hand:\n' +
+				manualPolicyStep(base),
+		);
+	}
+	if (policy) {
+		say(`→ policy-guard: local output is feedback, not authorization; required CI must run ${POLICY_MANIFEST} from a trusted ref and block exit 1 and 2 (the shipped template is manual and not activated)`);
+		say(`→ policy-guard: the enrollment must be reviewed and landed at the trusted ref before the local guard can run; until then it exits 2, not clean`);
+		say('→ policy-guard: tools/policy/policy-guard-ci.yml is a manual template; it is not activated and no workflow is written. Copy it to .github/workflows/ only after enabling the external protections in tools/policy/README.md, Trusted CI.');
+	}
 	say('done');
 	return 0;
 }
