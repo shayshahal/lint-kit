@@ -1,401 +1,388 @@
-# Rules from `addyosmani/agent-skills` that lint-kit can adopt
+# Proposal: reliable enforcement from agent-skills
 
-Every rule below is **mechanically enforceable** and fits a mechanism `lint-kit` already has, so
-adopting one means adding a rule module, a fixture and a test — not inventing a new tool. Each row
-links to the exact line of the source it comes from.
+**Status: proposed, not implemented.** This replaces the earlier “255 adoptable now” proposal.
+The goal is fewer trustworthy checks and a small number of useful new mechanisms, not a lint
+rule for every sentence of guidance.
 
-- **Source:** [`addyosmani/agent-skills`](https://github.com/addyosmani/agent-skills) at commit
-  [`1401c8b8030e023baeebb31781a6653fe8e93026`](https://github.com/addyosmani/agent-skills/tree/1401c8b8030e023baeebb31781a6653fe8e93026)
-- **255 rules**, ordered by implementation effort within each surface (`S` → `M` → `L`)
-- Each link is a permalink to the pinned commit, so it will not drift.
+## Basis and decisions
 
-The fuller catalog — every candidate, including the 140 that need a surface lint-kit does not have
-(markdown, agent transcripts) and the 61 that can only ever be advisory — is in
-[`agent-skills-rule-candidates.md`](agent-skills-rule-candidates.md).
+- Source: [`addyosmani/agent-skills`](https://github.com/addyosmani/agent-skills/tree/1401c8b8030e023baeebb31781a6653fe8e93026)
+  at commit `1401c8b8030e023baeebb31781a6653fe8e93026`.
+- Research: [candidate index](agent-skills-rule-candidates.md) and
+  [area details](agent-skills-rule-candidates/). They retain the original quotes, detection
+  sketches and examples; their classifications and effort estimates are not acceptance decisions.
+- Current capabilities: [enforcement policy](enforcement.md), [structure checks](structure.md),
+  [installation support](support.md) and [README](../README.md).
+- Review corrections: audit the actual installed configuration, distinguish syntax from semantic
+  evidence, consolidate duplicates, and move runtime/harness/forge requirements off the lint surface.
 
-## Adoptable now
+This document is the implementation shortlist. Candidates not explicitly selected below remain
+research or guidance, not an implicit backlog. It does not claim an exhaustive new classification
+of every catalog entry. New recommendations beyond the earlier proposal are marked **Added**.
 
-### oxlint plugin `slop-patterns` — 70 rules
+### Recommended scope
 
-`tools/oxlint/slop-patterns/rules/<name>.ts` + a fixture directory + a node test. Advisory (`warn`) by default, like the two rules already there.
+| Decision | Work |
+| --- | --- |
+| Build first | A policy-regression guard, maintained security-scanner integrations, and a small testing set |
+| Add after a pilot | Narrow security lint checks and structural skill/document validation |
+| Keep opt-in and later | Logging conventions, design tokens, browser verification, contract compatibility and performance budgets |
+| Reuse instead of rebuild | Installed Svelte/compiler checks, existing error/structure/type checks, established test plugins and Ruff |
+| Do not build | Call-count architecture rules, aesthetic policing, test-quality ratios, or agent-transcript enforcement |
 
-| rule | what it enforces | source | effort |
+All new sets and integrations are initially opt-in. Existing installation defaults and enforcement
+behavior stay unchanged. Adoption into a default requires a separate decision based on measured signal.
+
+## 1. Acceptance policy
+
+A recognizable pattern is not necessarily the violation described by the source. For example,
+“query inside a loop” is detectable; “avoidable N+1 query” requires additional evidence.
+
+| Disposition | Requirement | Behavior |
+| --- | --- | --- |
+| Blocking | Evidence establishes a narrow violation of an explicit, applicable policy | Fails on a new violation, or requires genuine approval for a policy change |
+| Advisory | Evidence establishes a useful suspicious shape, but legitimate uses remain | Reports the shape and its limits; never fails an installed hook |
+| Runtime verification | A configured test or measurement supplies the evidence | Gates only the behavior/routes/artifacts actually exercised |
+| Review-only / external | Requires product knowledge, human judgment, forge state or agent execution control | No repository lint verdict |
+
+The engine does not choose severity. An advisory ESLint rule must be installed at `warn`, not
+`error`, and must not be turned into a gate through `--max-warnings 0`.
+
+For every selected check:
+
+1. Probe the real installed configuration for overlap before implementing.
+2. Prefer a maintained upstream check. Write custom rules only for a demonstrated gap.
+3. State supported syntax, framework/library versions, file scope and known blind spots.
+4. Include failing fixtures and legitimate counterexamples, not just one happy path.
+5. Attribute findings to what the branch introduced, using the tool's appropriate comparison.
+   Global runtime measurements need their own declared budget/baseline, not added-line filtering.
+6. Make diagnostics describe what was detected, why it matters and what to do instead.
+7. Separate violations from inability to check. A required check that cannot run must not pass.
+8. Preserve the installer model: copied tools/configuration, no runtime dependency on lint-kit,
+   repeatable installation, and honest manual instructions for unsupported configuration shapes.
+
+Do not introduce a general rule engine, a universal checker configuration, or a custom taint engine.
+Each new mechanism should hide its own analysis behind one small command interface.
+
+## 2. Existing mechanisms: reuse and targeted additions
+
+### 2.1 Testing set — first release
+
+Create a separate optional testing set, not more rules in `slop-patterns`. Current application
+ESLint sets and slop rules exclude tests; the new set must explicitly include the project's test
+paths, including tests outside `src/`, and wire those paths into any installed hook.
+
+Start with one supported runner and its maintained plugin. Expand only with tested adapters.
+Use type-aware linting where promise behavior needs types; the current parser setup alone does
+not provide that capability. Do not install multiple engines diagnosing the same shape.
+
+| Check / family | Exact scope | Severity | Origin |
 | --- | --- | --- | --- |
-| `always-await-async-tests` | No async error handling \| Swallowed errors, false passes \| Always `await` async tests | [testing-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/testing-patterns.md#L235) | S |
-| `boolean-fields-use-is-has-can-prefix` | \| Boolean fields \| is/has/can prefix \| `isComplete`, `hasAttachments` \| | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L153) | S |
-| `cors-declares-methods-and-headers` | origin: ['https://yourdomain.com', 'https://app.yourdomain.com'], | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L124) | S |
-| `cors-no-wildcard-with-credentials` | CORS restricted to an explicit origin list from configuration. Never `*` with credentials. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L97) | S |
-| `health-check-endpoint-exists` | Health check endpoint exists and responds | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/shipping-and-launch/SKILL.md#L67) | S |
-| `https-for-external-communication` | **Use HTTPS** for all external communication | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L49) | S |
-| `idempotency-key-not-derived-from-an-attempt` | crypto.randomUUID()                    // ✗ new key per attempt — every retry is a new charge | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L163) | S |
-| `jwt-validation-checks-signature-expiry-and-issuer` | JWT tokens validated (signature, expiration, issuer) | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L52) | S |
-| `latency-is-a-histogram-not-an-average` | Track averages never, percentiles always: an average hides the 1% of users having a terrible time. Use histograms and read p50/… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/observability-and-instrumentation/SKILL.md#L132) | S |
-| `no-auth-tokens-in-client-storage` | **Never store sessions in client-accessible storage** (localStorage for auth tokens) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L72) | S |
-| `no-dead-code-left-behind-by-a-refactor` | No dead code was left behind (unused imports, unreachable branches) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L330) | S |
-| `no-eval-on-untrusted-input` | LLM/model output passed into a query, the DOM, a shell, or `eval` | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L195) | S |
-| `no-manual-array-building` | // SIMPLIFY: Manual array building | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L213) | S |
-| `no-redundant-boolean-return` | // SIMPLIFY: Redundant boolean return | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L224) | S |
-| `no-select-star-and-list-queries-paginate` | List endpoints paginated (never `SELECT * FROM table`) | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L92) | S |
-| `no-skipped-or-disabled-tests` | Skipping tests to make the suite pass | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L384) | S |
-| `password-hashing-cost-floor` | Hash passwords with bcrypt (≥12 rounds), scrypt, or argon2. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L89) | S |
-| `query-params-and-response-fields-are-camel-case` | \| Query params \| camelCase \| `?sortBy=createdAt&pageSize=20` \| | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L151) | S |
-| `simplify-ignore-annotations-on-dedicated-lines` | **Single-line blocks hide the entire line.** If `simplify-ignore-start` and `simplify-ignore-end` appear on the same line as ot… | [SIMPLIFY-IGNORE.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/hooks/SIMPLIFY-IGNORE.md#L83) | S |
-| `simplify-ignore-block-must-carry-a-reason` | reason=$(printf '%s' \"$line\" \| sed -n 's/.*simplify-ignore-start:[[:space:]]*//p' | [simplify-ignore.sh](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/hooks/simplify-ignore.sh#L87) | S |
-| `simplify-ignore-block-requires-a-reason (restated)` | /* simplify-ignore-start */           // basic — hides the block | [SIMPLIFY-IGNORE.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/hooks/SIMPLIFY-IGNORE.md#L64) | S |
-| `status-codes-grouped-by-class-in-labels` | Status codes grouped by class (`5xx`, not `503`) | [observability-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/observability-checklist.md#L43) | S |
-| `assertions-are-specific` | Overly broad assertions \| Doesn't catch regressions \| Be specific | [testing-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/testing-patterns.md#L234) | M |
-| `cache-declares-staleness-and-invalidation` | Choose one invalidation strategy (TTL, event or tag based, versioned keys) and state the acceptable staleness window explicitly. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/SKILL.md#L131) | M |
-| `cache-eviction-and-ceiling-are-set` | Eviction policy and memory ceiling set (an unbounded cache is a memory leak) | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L181) | M |
-| `cache-invalidation-strategy-is-singular` | **Choose one invalidation strategy, not three:** | [optimization-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/references/optimization-patterns.md#L240) | M |
-| `correlation-id-on-every-log-line` | **Correlation IDs are mandatory.** Generate (or accept) a request ID at the system boundary and attach it to every log line, sp… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/observability-and-instrumentation/SKILL.md#L79) | M |
-| `enum-values-are-upper-snake` | \| Enum values \| UPPER_SNAKE \| `\"IN_PROGRESS\"`, `\"COMPLETED\"` \| | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L154) | M |
-| `feature-flag-has-owner-and-expiry` | Every feature flag has an owner and an expiration date | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/shipping-and-launch/SKILL.md#L105) | M |
-| `idempotency-key-claimed-atomically` | // ✗ TOCTOU: two concurrent retries both read \"not seen\", both charge | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L176) | M |
-| `idempotency-key-payload-guard` | if (existing.requestHash !== hash(req.body)) { | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L198) | M |
-| `list-endpoint-pagination` | **Unbounded data fetching.** Every list endpoint paginates with a limit and a stable order. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/SKILL.md#L128) | M |
-| `magic-bytes-verification-for-uploads` | // Don't trust the file extension — check magic bytes if critical | [hardening-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/references/hardening-patterns.md#L200) | M |
-| `metric-labels-are-bounded` | **Cardinality is the failure mode.** Every unique label combination is a separate time series. Labels must come from small, fix… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/observability-and-instrumentation/SKILL.md#L125) | M |
-| `mock-only-at-boundaries` | Mock these:                    Don't mock these: | [testing-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/testing-patterns.md#L117) | M |
-| `negative-results-cached-with-a-shorter-ttl` | Store an explicit \"not found\" sentinel with a **shorter** TTL than positive entries | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L150) | M |
-| `no-content-flashes-more-than-three-times-per-second` | No content that flashes more than 3 times per second | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L38) | M |
-| `no-focus-outline-removal-and-no-positive-tabindex` | Removing focus outlines \| Users can't see where they are \| Style outlines, don't remove them | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L158) | M |
-| `no-hardcoded-outbound-endpoints-from-fetched-docs` | never hardcode outbound endpoints (telemetry, analytics, similar) from fetched examples into generated code without surfacing t… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/source-driven-development/SKILL.md#L114) | M |
-| `no-n-plus-one-query` | **N+1 queries.** One query per row is the most common backend bottleneck. Fetch the relation in the same query (join/include) i… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/SKILL.md#L127) | M |
-| `no-nested-feature-flags` | Don't nest feature flags (creates exponential combinations) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/shipping-and-launch/SKILL.md#L107) | M |
-| `no-one-time-utility-file` | Creating new utility files for one-time operations | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/incremental-implementation/SKILL.md#L234) | M |
-| `no-raw-html-with-untrusted-data` | **Never use `eval()` or `innerHTML`** with user-provided data | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L71) | M |
-| `no-shared-mutable-state-between-tests` | Shared mutable state \| Tests pollute each other \| Setup/teardown per test | [testing-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/testing-patterns.md#L230) | M |
-| `no-skipping-a-failing-test` | Skipping a failing test to work on new features | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/debugging-and-error-recovery/SKILL.md#L283) | M |
-| `no-snapshot-abuse` | Snapshot abuse \| Large snapshots nobody reviews, break on any change \| Use snapshots sparingly and review every change | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L308) | M |
-| `no-snapshot-everything` | Snapshot everything \| No one reviews snapshot diffs \| Assert specific values | [testing-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/testing-patterns.md#L229) | M |
-| `no-sql-string-concatenation` | **Parameterize all database queries** — never concatenate user input into SQL | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L47) | M |
-| `no-verbose-conditional-assignment` | // SIMPLIFY: Verbose conditional assignment | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L202) | M |
-| `nothing-cached-whose-staleness-is-a-correctness-bug` | **Do not cache:** anything whose staleness is a correctness bug (balances, permissions, inventory at checkout), or per-user dat… | [optimization-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/references/optimization-patterns.md#L250) | M |
-| `one-connection-pool-per-process` | One pool per process, not per request or per module | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L114) | M |
-| `otel-initialized-before-other-imports` | OpenTelemetry (or equivalent) initialized at service startup, before other imports | [observability-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/observability-checklist.md#L48) | M |
-| `password-reset-token-ttl-and-single-use` | Password reset tokens: time-limited (≤1 hour), single-use | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L42) | M |
-| `public-api-has-parameter-and-return-documentation` | API functions have parameter and return type documentation | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/documentation-and-adrs/SKILL.md#L285) | M |
-| `rate-limit-auth-endpoints` | Limit the API generally and auth endpoints strictly (about 10 attempts per 15 minutes). Once more than one process serves traff… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L123) | M |
-| `rest-paths-use-plural-nouns-with-no-verbs` | \| REST endpoints \| Plural nouns, no verbs \| `GET /api/tasks`, `POST /api/tasks` \| | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L148) | M |
-| `safe-defaults-are-opt-in` | New code should default to safe, conservative behavior: | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/incremental-implementation/SKILL.md#L164) | M |
-| `session-cookie-flags` | Session cookies are `httpOnly`, `secure`, and `sameSite: 'lax'` or `'strict'` (the CSRF defense; `'none'` sends the cookie on c… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L90) | M |
-| `single-error-response-shape` | interface APIError { | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L68) | M |
-| `status-codes-follow-the-stated-mapping` | // 400 → Client sent invalid data | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L77) | M |
-| `timing-safe-comparison-for-secrets` | grep the staged diff before committing | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L129) | M |
-| `trace-context-propagated-in-w3c-format` | Trace context propagated on every outbound call (W3C `traceparent`/`tracestate`) and extracted from every inbound request | [observability-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/observability-checklist.md#L50) | M |
-| `unbounded-fetch-is-the-named-bad-form` | const allTasks = await db.tasks.findMany(); | [optimization-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/references/optimization-patterns.md#L26) | M |
-| `upload-allowlist-and-size-cap` | Uploads: allowlist MIME types, cap size, verify content (magic bytes) when it matters. The extension proves nothing. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L105) | M |
-| `urls-validated-before-redirect` | URLs validated before redirect (prevent open redirect) | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L64) | M |
-| `use-button-for-actions-and-a-for-navigation` | <!-- NEVER use div/span as buttons --> | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L66) | M |
-| `validation-uses-allowlists-and-constrains-length-and-range` | Validation uses allowlists (not denylists) | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L57) | M |
-| `no-abstraction-before-the-third-use` | Building abstractions before the third use case demands it | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/incremental-implementation/SKILL.md#L232) | L |
-| `ssrf-allowlist-on-user-supplied-urls` | Any URL the user influences — webhooks, import-from-URL, image proxies, link previews — can be aimed at internal services. Allo… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L111) | L |
-| `strip-sensitive-fields-before-response` | Strip sensitive fields (`passwordHash`, reset tokens) before any response. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L98) | L |
+| **Added: no focused tests** | Known runner APIs such as `.only`, `fit` and `fdescribe`; unrelated methods with the same names pass | Blocking | Review addition: complements [skip candidates](agent-skills-rule-candidates/04-test-quality-and-specs.md#no-skipped-or-disabled-tests) |
+| Await or return asynchronous assertions | Supported async assertion APIs must be awaited or returned from the test; do not require `await` when returning is correct | Blocking where the upstream rule establishes promise handling | [Async test guidance](agent-skills-rule-candidates/05-testing-references-and-spec-driven.md) |
+| Undocumented unconditional skips | Known unconditional skip APIs without a scoped quarantine; conditional platform skips, expected-failure tests and TODO cases are not all the same violation | Blocking only under the selected runner policy | [Skip candidates](agent-skills-rule-candidates/04-test-quality-and-specs.md#no-skipped-or-disabled-tests) |
+| Snapshot-size signal | Newly added or enlarged snapshot artifacts above a project-selected size budget; report size, not “test quality” | Advisory; later, not required for the first release | [Snapshot candidates](agent-skills-rule-candidates/04-test-quality-and-specs.md#no-snapshot-abuse) |
 
-### the ESLint sets in `tools/eslint/` — 25 rules
+A quarantine needs a reason, owner and expiry under a declared project policy. A linked issue
+alone is not proof of approval. Existing quarantines need an explicit enrollment policy; do not
+silently convert them all into new failures.
 
-A rule module in the set, an `## <rule-name>` section in the colocated `.md` (enforced by `test/docs.test.js`), and a `RuleTester` case. Installed at `error`, narrowed to branch-added lines.
+**Acceptance:** real-runner fixtures cover aliased imports, awaited and returned assertions,
+conditional skips, quarantines, shadowed identifiers and test directories outside `src/`.
+Installed hook tests prove test files are actually checked.
 
-| rule | what it enforces | source | effort |
+### 2.2 Narrow security lint — after scanner integration
+
+Keep these in a separate optional security set, or use an equivalent maintained Semgrep rule.
+Support declared library interfaces; matching a function named `verify`, `logger` or `sanitize`
+is not enough. Unresolved dynamic configuration is not proof that the application is insecure.
+
+| Family | Selected detector | Limits / severity | Origin |
 | --- | --- | --- | --- |
-| `animations-use-compositor-friendly-properties` | Animations use `transform` and `opacity` (GPU-accelerated) | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L81) | S |
-| `autocomplete-attributes-on-known-fields` | Known fields use autocomplete (for example `type=\"email\" autocomplete=\"email\"`) | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L46) | S |
-| `component-line-ceiling` | Components with more than 200 lines (split them) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L322) | S |
-| `img-has-alt-text` | All images have `alt` text (or `alt=\"\"` for decorative images) | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L25) | S |
-| `no-string-interpolated-log-lines` | Log events, not prose. Every log line is a JSON object with a stable event name and machine-readable fields | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/observability-and-instrumentation/SKILL.md#L54) | S |
-| `table-headers-use-th-with-scope` | Tables have `<th>` headers with scope | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L31) | S |
-| `avoid-the-ai-aesthetic-defaults` | Purple/indigo everything | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L135) | M |
-| `color-tokens-not-raw-hex` | Use semantic color tokens: `text-primary`, `bg-surface`, `border-default` — not raw hex values | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L172) | M |
-| `dialog-manages-focus` | // Move focus when content changes … useEffect(() => { if (isOpen) closeRef.current?.focus(); }, [isOpen]); // Trap focus insid… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L214) | M |
-| `empty-error-and-loading-states-are-handled` | Missing error states, loading states, or empty states | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L324) | M |
-| `error-response-exposes-no-internals` | res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Something went wrong' } }); … // NEVER in production: res.sta… | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L206) | M |
-| `font-display-and-preload-for-lcp-fonts` | LCP-critical fonts preloaded: `<link rel=\"preload\" as=\"font\" type=\"font/woff2\" crossorigin>` | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L64) | M |
-| `form-error-messages-are-associated-with-their-field` | Error messages specific and associated with the field | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L43) | M |
-| `form-input-has-an-associated-label` | All form inputs have associated labels (`<label>` or `aria-label`) | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L26) | M |
-| `generic-error-bodies` | **Never expose stack traces** or internal error details to users | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L73) | M |
-| `icon-only-controls-have-an-accessible-name` | Icon-only buttons have `aria-label` | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L28) | M |
-| `images-declare-dimensions-and-priority` | Every image declares `width` and `height` (CLS). The LCP image gets `fetchpriority=\"high\"`, modern formats (AVIF, WebP) throu… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/SKILL.md#L135) | M |
-| `images-have-modern-formats-and-responsive-sizes` | Images use modern formats (WebP, AVIF) | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L34) | M |
-| `lcp-image-is-prioritised-and-not-lazy` | Hero/LCP images use `fetchpriority=\"high\"` and no lazy loading | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L38) | M |
-| `loading-uses-skeletons-with-aria-busy` | // Skeleton loading (not spinners for content) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L272) | M |
-| `no-inline-styles-or-arbitrary-values` | Inline styles or arbitrary pixel values | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L323) | M |
-| `no-unstructured-console-log` | \"console.log is fine for now\" \| Unstructured output can't be filtered, correlated, or alerted on. The structured logger cost… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/observability-and-instrumentation/SKILL.md#L205) | M |
-| `optimistic-update-rolls-back-on-error` | // Optimistic updates for perceived speed | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L283) | M |
-| `touch-target-minimum-size` | Touch targets ≥ 44x44px on mobile | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L52) | M |
-| `one-h1-and-no-skipped-heading-levels` | Page has one `<h1>` and headings don't skip levels | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L29) | L |
+| Insecure CORS configuration | Explicit wildcard origin plus credentials on a supported CORS interface | Blocking configuration contradiction; not proof of end-to-end CORS safety | [CORS guidance](agent-skills-rule-candidates/02-security.md#cors-no-wildcard-with-credentials) |
+| Insecure JWT options | Explicitly disabled signature/expiry verification or disallowed algorithms on supported verification interfaces | Blocking explicit bypass; do not claim that an issuer check somewhere nearby establishes correct validation | [JWT checklist](agent-skills-rule-candidates/06-accessibility-and-security-checklists.md) |
+| Session-cookie options | Explicit unsafe settings in a declared production session-cookie interface | Blocking against project policy; `sameSite: 'none'` can be valid with Secure and an appropriate CSRF defense | [Session cookies](agent-skills-rule-candidates/02-security.md#session-cookie-flags) |
+| Response leakage | Direct stack/internal-error payloads through supported response interfaces | Start advisory; promote only shapes with unambiguous internal data and a measured pilot. Do not ban every `err.message` | [Error response guidance](agent-skills-rule-candidates/06-accessibility-and-security-checklists.md) |
+| Missing cache capacity | A supported cache constructor explicitly configured without the capacity controls required by that library/project | Advisory first; TTL is not necessarily a memory bound | [Cache guidance](agent-skills-rule-candidates/07-performance-and-observability-checklists.md) |
 
-### the flake8 plugin `tools/python/fastapi_rules.py` — 2 rules
+Do not ship a fixed password-hashing cost across algorithms, hardware and applications. Use a
+project-selected password policy with library-specific checks if a concrete project needs it.
 
-A new `FAP0NN` code, its message, and a case in `python/tests/test_rules.py`.
+### 2.3 Optional conventions — later
 
-| rule | what it enforces | source | effort |
+| Family | Scope | Behavior | Origin |
 | --- | --- | --- | --- |
-| `no-loop-built-dict-comprehension` | # SIMPLIFY: Verbose dictionary building | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L241) | S |
-| `python-guard-clauses-over-nesting` | # SIMPLIFY: Nested conditionals with early return | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L249) | M |
+| Structured logging | One declared logger interface in application code; allow its supported message-plus-fields form | Blocking only as an explicit project convention. Exclude CLIs/tool scripts where prose output is intentional | [Logging guidance](agent-skills-rule-candidates/03-performance-and-observability.md) |
+| Sensitive-data sinks | Consolidate logs, debug output, span attributes and other telemetry into one analysis family, with separate sink adapters | Name-based matching is advisory. Prefer maintained dataflow checks; even those do not prove complete PII protection | [Security](agent-skills-rule-candidates/02-security.md) and [observability](agent-skills-rule-candidates/03-performance-and-observability.md) |
+| Design tokens | Declared token system and application paths | Opt-in convention; allow token definitions, third-party/generated code and legitimate dynamic values | [UI guidance](agent-skills-rule-candidates/15-frontend-ui-and-increments.md) |
+| Test duplication exemptions | Relax production duplication policy for repetitive test setup/assertions | Configuration change, not a new rule; do not exempt production code merely because a test imports it | [DAMP over DRY](agent-skills-rule-candidates/04-test-quality-and-specs.md#damp-over-dry-in-tests) |
 
-### `tools/python/structure_check.py` and jscpd — 6 rules
+### 2.4 Do not duplicate installed checks
 
-A measure in the merge-base comparison, reported only for what the branch added.
+The review probed `svelteSkills.config()` through the repository's actual parser setup. Its
+[`svelte/valid-compile` configuration](../tools/eslint/svelte-skills.mjs) includes compiler warnings
+and already rejects the tested shapes for missing image alt text, unnamed icon-only buttons,
+inaccessible non-interactive click handlers and positive `tabindex`.
 
-| rule | what it enforces | source | effort |
+Do not implement duplicate Svelte rules for those shapes. This is not a claim that every
+accessibility requirement is covered. An unlabeled input probe passed; evaluate an existing
+Svelte input-label rule before writing one, and use rendered-page verification for composed UI.
+
+Likewise:
+
+- Empty catches and swallowed errors belong to the existing error-handling family.
+- New dead code, duplication, complexity and import cycles belong to the existing structure checks.
+- Import/type correctness should first use the existing type checker and upstream tooling.
+- Generic Python simplifications should use suitable Ruff rules, not FastAPI `FAP` codes.
+- Numeric file/component length remains a review signal, not an instruction to split a module.
+
+Overlap tests must exercise the installed configuration, not a candidate's detector in isolation.
+
+## 3. New mechanism: policy-regression guard
+
+**Priority: first.** This is the largest new capability justified by the corpus.
+It protects the verification policy from being weakened to make a change pass.
+
+Sources: [constraint/floor candidates](agent-skills-rule-candidates/13-constraints-floor-guard-context.md)
+and [governance candidates](agent-skills-rule-candidates/01-governance-and-validators.md#constraints-guard-weakened-bar).
+Despite claims in the catalog, lint-kit does not currently ship a constraints guard.
+
+### Scope and findings
+
+Use parsed, supported configuration adapters. Start with the threshold configurations lint-kit
+already writes and explicit changes to protected checker files. Do not try to semantically
+interpret arbitrary JavaScript configuration or every CI shell command in the first release.
+
+| Change | Disposition |
+| --- | --- |
+| Minimum coverage/mutation score lowered | Requires policy-change approval |
+| Maximum complexity/bundle size/latency raised | Requires policy-change approval |
+| **Added: rule downgraded from `error` to `warn`/`off`** | Requires policy-change approval |
+| **Added: ignores/exclusions widened, check removed, or new fail-open setting** | Requires approval for supported shapes; unknown changes to protected configuration require review, not a fabricated semantic verdict |
+| Checker implementation, guard configuration or baseline modified | Requires policy-change approval |
+| Suppression or unconditional skip added | Report with the owning lint/test check; require a scoped exception under enrolled policy, without duplicate diagnostics |
+| Exception added, extended or broadened | Requires policy-change approval, even when structurally valid |
+| Test deleted or assertions removed | Advisory review evidence. Account for renames/moves; cannot establish weaker behavioral coverage |
+| Stub or empty catch added | Delegate to existing/narrow lint checks. Abstract methods and test fixtures are legitimate counterexamples |
+
+**Added: each numerical constraint has an explicit direction, unit and checker identity.**
+
+| Constraint | Direction | Weaker | Stronger |
 | --- | --- | --- | --- |
-| `damp-over-dry-in-tests` | Duplication in tests is acceptable when it makes each test independently understandable. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L232) | S |
-| `no-speculative-abstraction` | \"This abstraction might be useful later\" \| Don't preserve speculative abstractions. If it's not used now, it's complexity wi… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L305) | S |
-| `file-size-boundary-with-decomposition` | **Watch file size, not just diff size.** A small diff can still push a file past a healthy boundary — around 1000 *total* lines… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L113) | M |
-| `no-duplicated-content-between-skills` | Don't duplicate content between skills — reference and link instead. | [skill-anatomy.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/docs/skill-anatomy.md#L189) | M |
-| `no-reimplementing-an-existing-utility` | Agent re-implements utilities that already exist in the codebase | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/context-engineering/SKILL.md#L339) | M |
-| `never-mix-formatting-with-behavior` | Never mix formatting changes with behavior changes | [copilot-setup.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/docs/copilot-setup.md#L76) | L |
+| Coverage | Minimum, percent | `80 → 70` | `80 → 90` |
+| Complexity | Maximum, score | `10 → 20` | `10 → 8` |
+| Bundle size | Maximum, gzip bytes | `200000 → 300000` | `200000 → 150000` |
 
-### the pre-push and pre-commit scripts `init` writes — 152 rules
+Do not infer direction from “raised/lowered” or compare arbitrary numeric Markdown cells.
+Protect the actual checker configuration. If a project also has `CONSTRAINTS.md`, validate its
+links to the authoritative configuration rather than create a second editable authority.
+Changes to units, checker identity or measurement method are policy changes, not comparable values.
+Tightening is silent; recognized loosening is explicit.
 
-A lefthook script body under `.lefthook/<hook>/`, comparing the branch with its merge-base the way `structure_check.py` does.
+### Trust and execution contract
 
-| rule | what it enforces | source | effort |
-| --- | --- | --- | --- |
-| `autonomous-build-requires-a-clean-baseline` | Run `git status --porcelain`. If there are uncommitted changes outside the expected planning artifacts (`SPEC.md`, `docs/SPEC.m… | [build.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/.claude/commands/build.md#L32) | S |
-| `autonomous-build-requires-a-spec-at-a-known-path` | Look only for a spec at a known path: `SPEC.md` at the repo root, `docs/SPEC.md`, or a file under `spec/`. A README or arbitrar… | [build.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/.claude/commands/build.md#L31) | S |
-| `bfcache-is-not-blocked` | No `unload` event handlers and no `Cache-Control: no-store` on HTML responses — preserves back/forward cache (bfcache) eligibility | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L85) | S |
-| `branch-is-short-lived` | Keep branches short-lived (merge within 1-3 days) — long-lived branches are hidden costs | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L134) | S |
-| `branch-name-follows-the-prefix-convention` | feature/<short-description>   → feature/task-creation | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L141) | S |
-| `cache-entries-require-a-validator` | Entries without an `ETag` or `Last-Modified` header are never cached — without a validator, the hook cannot verify freshness la… | [SDD-CACHE.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/hooks/SDD-CACHE.md#L71) | S |
-| `change-size-thresholds` | ~100 lines changed   → Good. Reviewable in one sitting. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L108) | S |
-| `change-summary-is-provided` | CHANGES MADE: | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L196) | S |
-| `ci-runs-on-every-pr-and-main-push` | Pipeline runs on every PR and push to main | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L385) | S |
-| `commit-subject-is-imperative-and-standalone` | **First line:** Short, imperative, standalone. \"Delete the FizzBuzz RPC\" not \"Deleting the FizzBuzz RPC.\" Must be informati… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L134) | S |
-| `commit-subject-uses-a-conventional-type-prefix` | - `feat` — New feature | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L89) | S |
-| `dashboards-have-a-sane-default-range` | Default time range is sensible (1h–6h, not 30d) | [observability-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/observability-checklist.md#L71) | S |
-| `dependency-updates-are-automated` | version: 2 | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L289) | S |
-| `destructive-schema-step-ships-alone` | \"I'll add the column and drop the old one in the same migration\" \| That couples a safe add to a destructive drop. Drops get… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/deprecation-and-migration/SKILL.md#L215) | S |
-| `env-file-conventions` | .env.example       → Committed (template for developers) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L274) | S |
-| `eval-negative-trigger-declares-owner` | Declare that skill in `owner` where you can: the runner then asserts the owner **outranks** this skill, turning the negative in… | [README.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/evals/README.md#L91) | S |
-| `eval-rank1-floor-must-not-be-lowered` | Raise the floor as routing improves; never lower it to make a regression pass. | [README.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/evals/README.md#L101) | S |
-| `external-spec-system-is-not-duplicated` | If the project already uses OpenSpec or another specification system, keep that system's artifact format and storage convention… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/spec-driven-development/SKILL.md#L150) | S |
-| `floor-guard-exit-codes-are-0-1-2` | **Exit codes:** `0` clean, `1` at least one floor violation (block the change), `2` the guard could not run (no merge base, not… | [floor-guard.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/references/floor-guard.md#L11) | S |
-| `floor-guard-honours-a-constraintsignore-file` | **A `.constraintsignore`** (one glob per line) lets you exempt a path the guard would otherwise flag; check each added line's f… | [floor-guard.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/references/floor-guard.md#L181) | S |
-| `floor-guard-never-prints-the-matched-secret` | **Reports the rule and the location, never the matched secret value.** Redaction is not optional (Step 4). | [floor-guard.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/references/floor-guard.md#L12) | S |
-| `floor-guard-only-reports-moves-that-lower-the-bar` | **Tightening is silent, loosening is loud:** only surfaces moves that lower the bar. | [floor-guard.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/references/floor-guard.md#L13) | S |
-| `floor-guard-reads-the-merge-base-diff-including-untracked` | **Input:** the diff between the merge base and the working tree (added *and* removed lines, plus untracked files). A guard that… | [floor-guard.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/references/floor-guard.md#L9) | S |
-| `floor-no-new-suppression-comments` | No new suppression comments: `@ts-ignore`, `eslint-disable`, `# noqa`, `# type: ignore` | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/SKILL.md#L104) | S |
-| `floor-no-unimplemented-stubs` | No unimplemented stubs: `throw new Error(\"Not implemented\")`, empty `catch {}` | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/SKILL.md#L105) | S |
-| `floor-not-weakened-to-make-a-change-pass` | This file does not get weakened to make a change pass | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/SKILL.md#L108) | S |
-| `frozen-install-command-per-manager` | \| npm (`package-lock.json` or `npm-shrinkwrap.json`) \| `npm ci` \| `npm audit` \| | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L151) | S |
-| `gitignore-covers-standard-exclusions` | **Have a `.gitignore`** that covers: `node_modules/`, `dist/`, `.env`, `.env.local`, `*.pem` | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L248) | S |
-| `html-lang-and-descriptive-title` | Language declared (`<html lang=\"en\">`) | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L49) | S |
-| `lockfile-is-never-rewritten-by-ci` | Exactly one authoritative lockfile per project/workspace root is committed and CI never rewrites it | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L185) | S |
-| `log-output-is-spot-checked-for-structured-fields` | Actual log output spot-checked: structured fields, not `[object Object]` | [observability-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/observability-checklist.md#L34) | S |
-| `no-build-artifacts-or-env-files-committed` | Committing `node_modules/`, `.env`, or build artifacts | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L333) | S |
-| `no-competing-lockfiles` | Corroborate `packageManager` (when present), the lockfile, and CI; stop on disagreement or competing lockfiles. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L135) | S |
-| `no-console-log-debugging-in-production` | No `console.log` debugging statements in production code | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/shipping-and-launch/SKILL.md#L29) | S |
-| `no-forced-dependency-remediation` | Never apply forced remediation (`npm audit fix --force` or equivalent) automatically, since forced fixes may cross declared dep… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L137) | S |
-| `no-gate-is-disabled-or-skipped` | **No gate can be skipped.** If lint fails, fix lint — don't disable the rule. If a test fails, fix the code — don't skip the test. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L54) | S |
-| `no-references-to-a-removed-system-remain` | No references to the deprecated system remain in the codebase | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/deprecation-and-migration/SKILL.md#L239) | S |
-| `no-render-blocking-javascript-or-css` | No blocking JavaScript in `<head>` (use `defer` or `async`) | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L44) | S |
-| `no-secrets-in-ci-config` | Secrets stored in code or CI config files (not secrets manager) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L377) | S |
-| `no-vague-commit-subject` | Commit messages like \"fix\", \"update\", \"misc\" | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L330) | S |
-| `one-dependency-per-change` | **One dependency per change.** Upgrade and merge them individually (or in small related groups). When a bulk bump breaks the bu… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L297) | S |
-| `registry-signatures-verified` | Registry signatures/provenance are verified where the manager supports it | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L188) | S |
-| `review-response-within-one-business-day` | **Respond within one business day** — this is the maximum, not the target | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L255) | S |
-| `rule-of-500-on-a-refactor` | **The Rule of 500:** If a refactoring would touch more than 500 lines, invest in automation (codemods, sed scripts, AST transfo… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L171) | S |
-| `run-tests-before-commits` | Always: Run tests before commits, validate user input | [copilot-setup.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/docs/copilot-setup.md#L79) | S |
-| `session-start-hook-envelope` | Every output path must emit the standard SessionStart envelope `{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\",… | [session-start.sh](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/hooks/session-start.sh#L10) | S |
-| `spec-is-committed-and-saved-in-the-repo` | **Commit the spec** — The spec belongs in version control alongside the code. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/spec-driven-development/SKILL.md#L222) | S |
-| `spec-is-referenced-from-the-pr` | **Reference the spec in PRs** — Link back to the spec section that each PR implements. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/spec-driven-development/SKILL.md#L223) | S |
-| `accessibility-audit-runs-in-ci` | npx axe-core          # Programmatic accessibility testing | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L127) | M |
-| `accessibility-tree-and-focus-order-checked` | 1. Read the accessibility tree | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/browser-testing-with-devtools/SKILL.md#L263) | M |
-| `alert-has-threshold-duration-runbook-and-two-severities` | **It must be actionable.** | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/observability-and-instrumentation/SKILL.md#L167) | M |
-| `all-eight-quality-gates-present` | │   LINT CHECK     │  eslint, prettier | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L33) | M |
-| `ask-first-database-schema-and-dependencies` | Ask first: Database schema changes, new dependencies | [copilot-setup.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/docs/copilot-setup.md#L80) | M |
-| `bug-fix-has-a-reproduction-test` | When a bug is reported, **do not start by trying to fix it.** Start by writing a test that reproduces it. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L98) | M |
-| `bundle-size-budget-enforced-in-ci` | JavaScript bundle: < 200KB gzipped (initial load) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/SKILL.md#L194) | M |
-| `changelog-entry-written-in-the-same-change` | Write the entry in the same change that makes the change, while the impact is fresh — not reconstructed from commit archaeology… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L311) | M |
-| `ci-failures-block-merge` | **Required reviews:** At least 1 approval before merge | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L304) | M |
-| `ci-has-no-production-secrets` | CI should never have production secrets. Use separate secrets for CI testing. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L281) | M |
-| `clean-console-standard-is-a-gate` | A production-quality page should have **zero** console errors and warnings. If the console isn't clean, fix the warnings before… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/browser-testing-with-devtools/SKILL.md#L258) | M |
-| `component-files-are-colocated` | Colocate everything related to a component: | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L24) | M |
-| `console-clean-standard` | \| **Console** \| Always \| Zero errors and warnings in production-quality code \| | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L330) | M |
-| `constraint-defaults-and-thresholds` | \| Constraint \| Default \| Why this number \| … \| Coverage of changed lines \| ≥ 80% \| … \| Mutation score (if used) \| ≥ 60… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/SKILL.md#L238) | M |
-| `constraints-guard-weakened-bar` | `/constraints guard` — inspect the diff for a weakened bar: lowered thresholds, skipped or deleted tests, new suppression comme… | [constraints.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/.claude/commands/constraints.md#L31) | M |
-| `constraints-trial-run-clean-on-the-current-branch` | The floor is enforced and passes on the current codebase without changes | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/SKILL.md#L295) | M |
-| `core-web-vitals-thresholds` | \| LCP (Largest Contentful Paint) \| ≤ 2.5s \| ≤ 4.0s \| > 4.0s \| | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L19) | M |
-| `dead-code-identified-before-deletion` | **Ask before deleting:** \"Should I remove these now-unused elements: [list]?\" | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L239) | M |
-| `default-to-the-isolated-browser-profile` | **Default to the dedicated profile** (no connect flags) or `--isolated`. Testing localhost almost never needs your real sessions. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/browser-testing-with-devtools/SKILL.md#L67) | M |
-| `dependency-scripts-blocked-by-default` | Block dependency scripts before first execution. Bootstrap with scripts disabled or a documented fail-closed policy, inspect th… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L136) | M |
-| `dependency-versions-in-docs-match-the-manifest` | Read the project's dependency file to identify exact versions | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/source-driven-development/SKILL.md#L40) | M |
-| `deploy-env-vars-declared` | Environment variables set in production | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/shipping-and-launch/SKILL.md#L62) | M |
-| `end-to-end-verification-commands-are-run` | # Run the specific test | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/debugging-and-error-recovery/SKILL.md#L159) | M |
-| `env-example-and-gitignore-for-secrets` | Secrets come from the environment. `.env.example` is committed with placeholders; real `.env*` files and key material are gitig… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L129) | M |
-| `every-pr-passes-lint-typecheck-tests-build` | Every PR must pass: lint, type check, tests, build | [copilot-setup.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/docs/copilot-setup.md#L70) | M |
-| `floor-guard-detects-the-five-step-6-moves` | **Detects the five Step 6 moves:** a weakened threshold in `CONSTRAINTS.md`, a test made easier (`.skip`, a deleted test file,… | [floor-guard.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/references/floor-guard.md#L10) | M |
-| `floor-no-skipped-or-deleted-tests-without-a-reason` | No skipped or deleted tests without a reason in the commit message | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/SKILL.md#L106) | M |
-| `fonts-are-limited-and-woff2` | Limited to 2–3 font families, 2–3 weights each (every additional weight is another request) | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L61) | M |
-| `human-review-before-merge` | The human has reviewed and approved before merge or deploy | [definition-of-done.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/definition-of-done.md#L51) | M |
-| `idempotency-key-retention-outlives-the-retry-path` | **Set retention from the longest retry chain**, not from disk cost. Keys must outlive every path that can re-deliver the same i… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L215) | M |
-| `imports-resolve-to-real-modules` | Agent invents APIs or imports that don't exist | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/context-engineering/SKILL.md#L338) | M |
-| `increment-checklist-commands-are-run` | - [ ] The change does one thing and does it completely | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/incremental-implementation/SKILL.md#L203) | M |
-| `instrumentation-added-for-a-bug-is-removed` | Add logging only when it helps. Remove it when done. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/debugging-and-error-recovery/SKILL.md#L245) | M |
-| `lockfile-is-never-hand-edited` | **Keep the lockfile honest.** Commit it, review its diff, and never hand-edit it. The lockfile is the thing that actually pins… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L300) | M |
-| `migration-has-a-tested-down-path` | \"We'll write the rollback if we need it\" \| A migration with no down path is a deploy you can't reverse. Write and run the `d… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/deprecation-and-migration/SKILL.md#L216) | M |
-| `migrations-have-a-rollback` | Database migrations should have corresponding rollback migrations | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/incremental-implementation/SKILL.md#L180) | M |
-| `never-overwrite-an-incomplete-plan` | If tasks/plan.md or tasks/todo.md already exists with unchecked tasks for different work, stop and ask before writing — never s… | [plan.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/.claude/commands/plan.md#L18) | M |
-| `never-remove-a-failing-test` | Never: Commit secrets, remove failing tests, skip verification | [copilot-setup.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/docs/copilot-setup.md#L81) | M |
-| `no-agent-proposed-threshold-relaxation` | The agent proposed relaxing a threshold instead of fixing the code | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/SKILL.md#L286) | M |
-| `no-batched-simplifications-in-one-commit` | Batching many simplifications into one large, hard-to-review commit | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L316) | M |
-| `no-commented-out-code` | // const oldImplementation = () => { ... }  ← Delete it, git has history | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/documentation-and-adrs/SKILL.md#L134) | M |
-| `no-css-in-js-runtime-cost-in-production` | No CSS-in-JS runtime cost in production (use extraction) | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L58) | M |
-| `no-dead-code-debug-output-or-commented-blocks` | No dead code, debug output, or commented-out blocks left behind | [definition-of-done.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/definition-of-done.md#L31) | M |
-| `no-delete-and-replace-in-one-commit` | Avoid deleting something in one commit and replacing it in the same commit — separate them | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/incremental-implementation/SKILL.md#L181) | M |
-| `no-error-handling-removed-by-a-simplification` | Removing error handling because \"it makes the code cleaner\" | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L314) | M |
-| `no-force-push-to-a-shared-branch` | Force-pushing to shared branches | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L335) | M |
-| `no-new-features-on-a-deprecated-system` | New features added to a deprecated system (invest in the replacement instead) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/deprecation-and-migration/SKILL.md#L224) | M |
-| `no-repeated-test-run-without-a-change` | After a clean test run, repeating the same command adds nothing unless the code has changed since. Run again after subsequent e… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L373) | M |
-| `no-secrets-in-code-or-version-control` | No secrets in code or version control | [copilot-setup.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/docs/copilot-setup.md#L71) | M |
-| `no-secrets-in-source-or-history` | **Never commit secrets** to version control (API keys, passwords, tokens) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L67) | M |
-| `no-squash-everything-later` | \"I'll squash it all later\" \| Squashing destroys the development narrative. Prefer clean incremental commits from the start. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L319) | M |
-| `no-stale-todo-comments` | // TODO: add error handling  ← Just add it | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/documentation-and-adrs/SKILL.md#L131) | M |
-| `no-todo-comments-at-launch` | No TODO comments that should be resolved before launch | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/shipping-and-launch/SKILL.md#L28) | M |
-| `no-unrelated-changes-while-debugging` | Multiple unrelated changes made while debugging (contaminating the fix) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/debugging-and-error-recovery/SKILL.md#L288) | M |
-| `noticed-but-not-touching-is-recorded` | If you notice something worth improving outside your task scope, note it — don't fix it: | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/incremental-implementation/SKILL.md#L126) | M |
-| `path-filters-skip-irrelevant-jobs` | Use path filters to skip unrelated jobs (e.g., skip e2e for docs-only PRs) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L320) | M |
-| `perf-win-must-not-weaken-tests` | An \"optimization\" that wins by dropping work the product needed (skipping a validation, caching something that must be fresh,… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/SKILL.md#L160) | M |
-| `performance-claims-are-backed-by-a-trace` | 1. BASELINE | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/browser-testing-with-devtools/SKILL.md#L167) | M |
-| `pii-encrypted-at-rest-and-backups-encrypted` | PII encrypted at rest (if required by regulation) | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L138) | M |
-| `pipeline-under-ten-minutes` | When the pipeline exceeds 10 minutes, apply these strategies in order of impact: | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L311) | M |
-| `plan-does-not-overwrite-an-incomplete-plan` | **Never overwrite an incomplete plan.** Before writing `tasks/plan.md` or `tasks/todo.md`, check whether they already exist and… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/planning-and-task-breakdown/SKILL.md#L150) | M |
-| `pre-commit-hygiene-is-automated` | Automate this with git hooks: | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L232) | M |
-| `query-plan-captured-before-and-after` | `EXPLAIN ANALYZE` captured **before** the fix, not just after — it is the baseline | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L97) | M |
-| `queue-depth-and-processing-duration-tracked` | Queue depth and processing duration tracked for every worker/queue | [observability-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/observability-checklist.md#L44) | M |
-| `ratchet-compares-against-the-recorded-value` | The alternative asks for no decision: record where you are, then refuse to get worse. Put it in the \"Measured, not yet enforce… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/SKILL.md#L230) | M |
-| `regression-test-fails-without-the-fix` | This test will prevent the same bug from recurring. It should fail without the fix and pass with it. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/debugging-and-error-recovery/SKILL.md#L152) | M |
-| `release-is-tagged-and-version-derives-from-the-tag` | A release is an immutable point in history, not a moving branch. Tag it so it can always be reproduced | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L288) | M |
-| `removal-only-after-zero-active-usage` | Verify zero active usage (metrics, logs, dependency analysis) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/deprecation-and-migration/SKILL.md#L113) | M |
-| `responsive-breakpoints-are-tested` | Test at these breakpoints: 320px, 768px, 1024px, 1440px. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L267) | M |
-| `rollback-mechanism-exists` | Every deployment should be reversible | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L249) | M |
-| `rollback-path-for-risky-changes` | Rollback path exists for anything risky (see `shipping-and-launch`) | [definition-of-done.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/definition-of-done.md#L50) | M |
-| `rollback-plan-present-and-complete` | Every deployment needs a rollback plan before it happens | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/shipping-and-launch/SKILL.md#L253) | M |
-| `runbook-exists-for-every-alert` | Rule 2 above requires every alert to link to a runbook. … Store in `docs/runbooks/` named after the alert. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/observability-and-instrumentation/SKILL.md#L174) | M |
-| `screenshot-comparison-for-visual-changes` | 1. Take a \"before\" screenshot | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/browser-testing-with-devtools/SKILL.md#L223) | M |
-| `security-headers-are-the-stated-set` | Content-Security-Policy: default-src 'self'; script-src 'self' | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L110) | M |
-| `security-headers-on-every-response` | **Set security headers** (CSP, HSTS, X-Frame-Options, X-Content-Type-Options) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L51) | M |
-| `severity-labels-on-every-review-comment` | \| *(no prefix)* \| Required change \| Must address before merge \| | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L185) | M |
-| `ship-fanout-skip-predicate` | **Skip the fan-out only if all of the following are true:** the change touches 2 files or fewer, the diff is under 50 lines, an… | [ship.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/.claude/commands/ship.md#L72) | M |
-| `simplification-must-not-modify-tests` | Simplification that requires modifying tests to pass (you likely changed behavior) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L311) | M |
-| `slow-checks-are-not-in-the-edit-loop` | \"This will slow the agent down\" \| Only if you put slow checks in the fast loop. That's a placement error, not an argument ag… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/constraint-driven-development/SKILL.md#L271) | M |
-| `task-list-target-is-not-duplicated` | Writing `tasks/todo.md` when the project has designated an external tracker (or scattering tasks across both) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/planning-and-task-breakdown/SKILL.md#L235) | M |
-| `test-file-location-follows-convention` | **Existing conventions** — where tests live, how files are named, what patterns neighboring tests follow | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L31) | M |
-| `test-pyramid-ratio` | E2E Tests (~5%) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L150) | M |
-| `test-sizes-respect-the-resource-model` | \| **Small** \| Single process, no I/O, no network, no database \| Milliseconds \| Pure function tests, data transforms \| | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L169) | M |
-| `tests-pass-on-first-run-is-a-signal` | Tests that pass on the first run (they may not be testing what you think) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L379) | M |
-| `text-and-component-contrast-ratios` | Text contrast ≥ 4.5:1 (normal text) or ≥ 3:1 (large text, 18px+) | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L34) | M |
-| `third-party-scripts-are-async-or-facaded` | Third-party scripts loaded with `async` | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L53) | M |
-| `unused-and-duplicate-indexes-are-dropped` | Unused and duplicate indexes dropped (they cost writes and buy nothing) | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L111) | M |
-| `use-the-repositorys-own-test-command` | Run the repository's focused-test command during the loop and its full-suite command before completion. Never assume a default… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L34) | M |
-| `verification-story-is-documented` | - What tests were run? | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L200) | M |
-| `wcag-contrast-threshold` | Color contrast meets WCAG 2.1 AA (4.5:1 for text) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/shipping-and-launch/SKILL.md#L55) | M |
-| `both-feature-flag-states-tested` | Test both flag states (on and off) in CI | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/shipping-and-launch/SKILL.md#L108) | L |
-| `composite-index-column-order` | Composite index column order is equality first, then range/sort | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L104) | L |
-| `error-budget-gate` | Budget remaining > 20%  →  Ship normally; monitor closely | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/shipping-and-launch/SKILL.md#L243) | L |
-| `every-commit-leaves-the-tree-green` | After each increment, the project must build and existing tests must pass. Don't leave the codebase in a broken state between s… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/incremental-implementation/SKILL.md#L145) | L |
-| `expression-index-for-function-queries` | Expression index used where the query applies a function (`lower(email)`) | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L108) | L |
-| `install-script-policy-matches-the-pinned-manager-version` | \| Manager version \| Native policy \| | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L169) | L |
-| `no-deleting-code-or-comments-the-task-did-not-touch` | Remove comments you don't understand | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/using-agent-skills/SKILL.md#L102) | L |
-| `no-unscoped-refactor-in-a-feature-commit` | \"I'll refactor while adding this feature\" \| Separate refactoring from feature work. Mixed changes are harder to review, reve… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L307) | L |
-| `public-interface-changes-are-additive-and-optional` | priority?: 'low' \| 'medium' \| 'high';  // Added later, optional | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L134) | L |
-| `refactoring-and-feature-are-separate-changes` | **Separate refactoring from feature work.** A change that refactors existing code and adds new behavior is two changes — submit… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L128) | L |
-| `schema-changes-expand-then-contract` | \"Just rename the column, it's one line\" \| During the rollout, old and new code run together — one will query a column that n… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/deprecation-and-migration/SKILL.md#L214) | L |
-| `semver-bump-matches-the-change` | MAJOR  breaking change — consumers must change their code to upgrade | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L279) | L |
-| `zombie-code-gets-an-owner-or-removal` | No commits in 6+ months but active consumers exist | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/deprecation-and-migration/SKILL.md#L196) | L |
+- Local pre-push use is feedback, not authorization. It must run for deletion-only changes too.
+- Required CI runs the guard from a trusted revision against an explicitly resolved target/base,
+  with trusted baseline policy. The branch under review cannot choose a friendlier base, replace
+  the executing guard, or grant its own exemptions.
+- The source-change diff uses the merge-base convention; the trusted policy baseline is selected
+  by CI. Do not conflate the two or trust `HEAD` policy merely because it is committed.
+- Approvals come from protected forge controls or a separately reviewed policy change, not from
+  commit-message text or a self-authored `APPROVED-BY:` field. CI wiring and permissions must be
+  protected as well; a copied hook alone cannot enforce this trust model.
+- An ignore file is optional, not automatically created. Adding `**` or any broader exemption is
+  itself guarded. If approval integration is absent, local use reports changes and required CI
+  blocks enrolled policy changes until a maintainer resolves them through the protected process.
+- Initial support: clean CI checkout and pre-push working-tree comparison, including untracked
+  files within scope. No pre-commit mode until index-based analysis is implemented and tested;
+  partially staged files must not be assessed as though the working tree were the staged content.
+- Exit `0`: no unapproved blocking findings. Exit `1`: policy violations/unapproved changes.
+  Exit `2`: check could not run. Required CI blocks on both `1` and `2`; advisory evidence may
+  accompany `0`. Missing base, malformed supported configuration or tool failure is not “clean.”
 
-## Advisory only
+### Acceptance tests
 
-These can be adopted, but as a report or a `warn` — the decision needs a judgement a rule can
-approximate but not make, so they should never fail a build.
+Cover both threshold directions, unchanged/tightened policy, removed keys/checks, severity
+changes, enlarged ignores, malicious exemption additions, changed checker code, deletion-only
+branches, renamed tests, moved assertions, legitimate type-test `@ts-expect-error`, missing bases,
+untracked files and unsupported configuration changes. A CI integration test must show that
+changing the branch's copy of the guard cannot bypass the trusted check.
 
-### oxlint plugin `slop-patterns` — 21 rules
+## 4. New mechanism: maintained security-scanner integration
 
-`tools/oxlint/slop-patterns/rules/<name>.ts` + a fixture directory + a node test. Advisory (`warn`) by default, like the two rules already there.
+**Priority: first, alongside the guard.** The new work is installation, invocation, baseline
+handling and failure semantics—not inventing scanner algorithms.
 
-| rule | what it enforces | source | effort |
-| --- | --- | --- | --- |
-| `no-blanket-react-memo` | `React.memo` and `useMemo` everywhere (overusing is as bad as underusing) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/SKILL.md#L245) | M |
-| `one-assertion-per-concept` | ### One Assertion Per Concept | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L266) | M |
-| `query-by-role-not-test-id` | // Find elements by accessible role/label (not test IDs) | [testing-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/testing-patterns.md#L135) | M |
-| `test-name-follows-the-unit-behavior-condition-pattern` | // Pattern: [unit] [expected behavior] [condition] | [testing-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/testing-patterns.md#L36) | M |
-| `cache-key-covers-every-input` | Every input that changes the response belongs in the key (tenant, locale, permissions, feature flags): a key that omits the vie… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/SKILL.md#L131) | L |
-| `cache-layer-chosen-deliberately` | \| In-process (`Map`, LRU) \| One instance \| Small, hot, per-instance staleness is acceptable \| Each instance drifts independ… | [optimization-patterns.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/references/optimization-patterns.md#L209) | L |
-| `comments-explain-why-not-what` | // Increment counter by 1 | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/documentation-and-adrs/SKILL.md#L110) | L |
-| `destructive-path-guard` | Before the call, require all three: the resolved target (symlinks resolved) sits under an **allowlisted root**; it is at least… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L117) | L |
-| `entry-point-field-when-several-writers` | **When several entry points write to one log, name the entry point.** A correlation ID identifies a run; it does not say which… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/observability-and-instrumentation/SKILL.md#L91) | L |
-| `external-calls-logged-with-metadata-only` | External service calls logged with metadata only: endpoint, status, latency, attempt count, sanitized identifiers | [observability-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/observability-checklist.md#L33) | L |
-| `gotchas-are-documented-inline` | IMPORTANT: This function must be called before the first render. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/documentation-and-adrs/SKILL.md#L141) | L |
-| `llm-output-is-untrusted-input` | **Model output is untrusted input** (LLM05). Never into `eval`, SQL, a shell, `innerHTML`, or a file path; parse defensively, v… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L158) | L |
-| `long-lists-are-virtualized` | Long lists use virtualization (e.g., `react-window`) | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L82) | L |
-| `no-deprecated-apis-from-training-data` | Using deprecated APIs because they appear in training data | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/source-driven-development/SKILL.md#L198) | L |
-| `no-interaction-based-tests` | Assert on the *outcome* of an operation, not on which methods were called internally. Tests that verify method call sequences b… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L192) | L |
-| `no-mocking-everything` | **Use mocks only when:** the real implementation is too slow, non-deterministic, or has side effects you can't control (externa… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/test-driven-development/SKILL.md#L246) | L |
-| `no-secrets-or-pii-in-llm-context` | **Keep secrets, other tenants' data, and the full system prompt out of the context window** (LLM02, LLM07) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L160) | L |
-| `otel-context-propagated-across-async-boundaries` | Propagate context across every async boundary — HTTP headers, queue message metadata — or the trace dies at the gap. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/observability-and-instrumentation/SKILL.md#L150) | L |
-| `presumptive-blockers-are-surfaced` | **Presumptive blockers:** surface and propose the simpler design for each of these; escalate to Required only when the change a… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L398) | L |
-| `third-party-responses-are-validated-before-use` | External service response parsing (third-party data -- **always treat as untrusted**) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L115) | L |
-| `validation-only-at-boundaries` | API route handlers (user input) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/api-and-interface-design/SKILL.md#L113) | L |
+Sources: [security guidance](agent-skills-rule-candidates/02-security.md),
+[security checklist](agent-skills-rule-candidates/06-accessibility-and-security-checklists.md) and
+[constraint tools](agent-skills-rule-candidates/13-constraints-floor-guard-context.md#every-constraint-number-has-a-command).
 
-### the ESLint sets in `tools/eslint/` — 15 rules
+| Integration | Selected scope | Enforcement |
+| --- | --- | --- |
+| Gitleaks | Newly introduced secrets in source, CI files and commits; initial/history scan separately | Block new findings; redact values in all output/artifacts |
+| Semgrep | A pinned, curated rule set for applicable languages/frameworks; injection/unsafe sinks where supported | Pilot advisory, then promote individual high-signal rules. No claim of complete vulnerability detection |
+| Ecosystem audit or OSV Scanner | Supported manifests/lockfiles and configured vulnerability policy | Opt-in CI gate for new findings at project-selected severity; scanner/network failure is distinct from no findings |
 
-A rule module in the set, an `## <rule-name>` section in the colocated `.md` (enforced by `test/docs.test.js`), and a `RuleTester` case. Installed at `error`, narrowed to branch-added lines.
+Tests and fixtures are included in secret scanning. Documented dummy values may have narrow
+allowlists; test paths are not a blanket exemption. An inherited secret is an incident/remediation
+finding, not harmless debt; the initial audit must surface it even when it is outside a branch gate.
 
-| rule | what it enforces | source | effort |
-| --- | --- | --- | --- |
-| `no-secrets-or-pii-as-span-attributes` | No secrets or PII as span attributes | [observability-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/observability-checklist.md#L53) | M |
-| `no-secrets-or-pii-in-logs` | **Never log secrets, tokens, passwords, or full PII.** This is a hard rule from the `security-and-hardening` skill — telemetry… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/observability-and-instrumentation/SKILL.md#L106) | M |
-| `no-sensitive-data-in-debug-logging` | It contains sensitive data (always remove these) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/debugging-and-error-recovery/SKILL.md#L255) | M |
-| `no-sensitive-data-in-logs` | **Never log sensitive data** (passwords, tokens, full credit card numbers) | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L68) | M |
-| `no-verbose-conditional-rendering` | // SIMPLIFY: Verbose conditional rendering | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L276) | M |
-| `pii-out-of-telemetry` | Keep PII out of telemetry (the `observability-and-instrumentation` skill makes the same point from the ops side). | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L147) | M |
-| `authorization-checked-per-request` | Check **authorization** on every request, not just authentication: the authenticated user must own, or be permitted on, the spe… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L83) | L |
-| `color-is-not-the-only-signal` | Color is not the only way to convey information | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L36) | L |
-| `composition-over-configuration` | **Prefer composition over configuration:** | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L38) | L |
-| `data-fetching-separated-from-presentation` | **Separate data fetching from presentation:** | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/frontend-ui-engineering/SKILL.md#L77) | L |
-| `dynamic-content-uses-a-live-region` | Dynamic content changes announced (`aria-live` regions) | [accessibility-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/accessibility-checklist.md#L30) | L |
-| `prop-drilling-is-flagged-not-refactored` | // SIMPLIFY: Prop drilling through intermediate components | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-simplification/SKILL.md#L292) | L |
-| `security-events-are-logged-without-secrets` | \| 9 \| Logging Failures \| Log security events, don't log secrets \| | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L230) | L |
-| `validate-input-at-boundary` | Validate at the boundary with a schema: allowlisted shape, lengths, enums, formats. Reject with 422 and structured details; dow… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L104) | L |
-| `validate-user-input` | Always: Run tests before commits, validate user input | [copilot-setup.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/docs/copilot-setup.md#L79) | L |
+**Added: fail-closed scanner execution.** Missing executable, invalid configuration, unsupported
+required input, timeout and malformed output must be reported as check failures. Do not use
+`|| true` or silently omit an opted-in required scanner. Keep command syntax/version compatibility
+in integration tests rather than copying example commands as if they were stable interfaces.
 
-### `tools/python/structure_check.py` and jscpd — 1 rules
+Do not automatically run forced dependency remediation or disable install scripts universally.
+Those are manager/version-specific project policies, with legitimate build-script requirements.
+Frozen installs and lockfile consistency can use the package manager's own verification commands.
+A lockfile-only diff does not prove hand editing.
 
-A measure in the merge-base comparison, reported only for what the branch added.
+**Acceptance:** new/known findings, redaction, fixture credentials, missing tools, failures,
+malformed reports and repeat installation. Produce manual wiring for unsupported environments;
+never report that required CI protection was installed when only a local hook was written.
 
-| rule | what it enforces | source | effort |
-| --- | --- | --- | --- |
-| `simplicity-check-before-finishing` | Can this be done in fewer lines? | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/using-agent-skills/SKILL.md#L91) | L |
+## 5. New mechanism: structural skill/document validation
 
-### the pre-push and pre-commit scripts `init` writes — 24 rules
+**Priority: pilot after the first release.** A deterministic new document surface is worthwhile;
+a prose-quality judge is not.
 
-A lefthook script body under `.lefthook/<hook>/`, comparing the branch with its merge-base the way `structure_check.py` does.
+Source: [upstream validators and governance](agent-skills-rule-candidates/01-governance-and-validators.md),
+particularly the already implemented `scripts/lib/skill-lint.js` checks. “Already implemented
+upstream” means useful precedent, not “already installed by lint-kit.” Preserve license/attribution
+when adapting code and port relevant upstream fixtures.
 
-| rule | what it enforces | source | effort |
-| --- | --- | --- | --- |
-| `adr-exists-for-significant-decisions` | Choosing a framework, library, or major dependency | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/documentation-and-adrs/SKILL.md#L29) | M |
-| `backfills-are-throttled` | A migration merged with no tested down path, or a backfill that locks the table | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/deprecation-and-migration/SKILL.md#L229) | M |
-| `browser-verification-is-evidenced` | Shipping UI changes without viewing them in a browser | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/browser-testing-with-devtools/SKILL.md#L293) | M |
-| `change-description-explains-why` | **Body:** What is changing and why. Include context, decisions, and reasoning not visible in the code itself. Link to bug numbe… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L136) | M |
-| `commit-body-explains-why` | <optional body explaining why, not what> | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L85) | M |
-| `commit-does-one-logical-thing` | Each commit does one logical thing | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/git-workflow-and-versioning/SKILL.md#L50) | M |
-| `connection-pool-sized-not-raised` | One pool per process, sized so `instances × max` stays under the database's connection ceiling. Bigger is not faster; it reloca… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/SKILL.md#L130) | M |
-| `dependency-upgrade-reviews-the-changelog` | **Read the changelog, not just the version number.** Semver is a promise the maintainer may not have kept — a \"patch\" can car… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/code-review-and-quality/SKILL.md#L296) | M |
-| `flaky-tests-are-fixed-not-rerun` | \"The test is flaky, just re-run\" \| Flaky tests mask real bugs and waste everyone's time. Fix the flakiness. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/ci-cd-and-automation/SKILL.md#L366) | M |
-| `index-change-justified-by-a-plan` | \"Add an index\" is the guess; `EXPLAIN ANALYZE` is the measurement. … Re-run the plan afterwards; an index that did not change… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/SKILL.md#L129) | M |
-| `one-commit-per-task-in-autonomous-build` | Stage only the files that task touched plus its task-status update — never `git add -A` blindly — and make one commit per task… | [build.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/.claude/commands/build.md#L35) | M |
-| `rules-files-are-current-and-accurate` | **CLAUDE.md | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/documentation-and-adrs/SKILL.md#L254) | M |
-| `runtime-verified-not-just-compiled` | Code runs and behaves as intended, verified at runtime, not just compiled or typechecked | [definition-of-done.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/definition-of-done.md#L23) | M |
-| `alerts-are-symptom-based` | Alert on **symptoms users feel**, not on causes | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/observability-and-instrumentation/SKILL.md#L154) | L |
-| `api-keys-and-tool-permissions-are-scoped` | API keys scoped to minimum necessary permissions | [security-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/security-checklist.md#L51) | L |
-| `changes-scoped-to-the-task` | Changes are scoped to the task; no unrelated refactors snuck in | [definition-of-done.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/definition-of-done.md#L32) | L |
-| `fix-addresses-the-root-cause-not-the-symptom` | Symptom fix (bad): | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/debugging-and-error-recovery/SKILL.md#L128) | L |
-| `incomplete-features-ship-behind-a-flag` | If a feature isn't ready for users but you need to merge increments: | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/incremental-implementation/SKILL.md#L149) | L |
-| `long-tasks-are-broken-up` | Long tasks (> 50ms) broken up to keep the main thread available — main lever for INP | [performance-checklist.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/references/performance-checklist.md#L48) | L |
-| `no-features-outside-the-spec` | Add features not in the spec because they \"seem useful\" | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/using-agent-skills/SKILL.md#L106) | L |
-| `no-scope-expansion-mid-increment` | \"Let me just quickly add this too\" scope expansion | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/incremental-implementation/SKILL.md#L228) | L |
-| `optimization-must-be-attributable` | **Change one thing at a time.** Three optimizations landed together produce one number, and you cannot attribute it. | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/performance-optimization/SKILL.md#L145) | L |
-| `personal-data-retention-and-deletion-path` | **Set retention up front, then actually delete.** Every personal-data store needs a TTL and a working deletion path, including… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/security-and-hardening/SKILL.md#L148) | L |
-| `spec-updated-when-scope-or-decisions-change` | **Update when decisions change** — If you discover the data model needs to change, update the spec first, then implement. **Upd… | [SKILL.md](https://github.com/addyosmani/agent-skills/blob/1401c8b8030e023baeebb31781a6653fe8e93026/skills/spec-driven-development/SKILL.md#L220) | L |
+### First pilot
 
+1. Parse YAML/TOML with real parsers for one explicitly selected skill/host format.
+2. Validate required identity fields, field types, naming rules and host/version-specific supported
+   keys. Do not impose agent-skills' prose templates on all skill repositories.
+3. Resolve literal local reference targets within the declared roots. Distinguish authored links,
+   code examples, templates and intentionally generated future artifacts.
+4. Where artifact locations are declared, compare producer/consumer references with that project
+   declaration. Do not mandate `SPEC.md` or `tasks/todo.md` for projects using another system.
+5. **Added: validate scoped exceptions** for required fields, expiry and scope. Supply the clock
+   explicitly in tests; expired enrolled exceptions fail. Maximum lifetime is project-selected.
+
+Dangling task dependency IDs and cycles are a later extension only for a declared structured
+artifact schema. Do not infer dependencies or contradictory requirements from arbitrary prose.
+
+Each adapter specifies its input format/version and reference-resolution semantics. Incompatible
+or unknown host formats are reported as unsupported, not silently validated against another host.
+
+**Acceptance:** valid/invalid frontmatter, supported vendor metadata, identity mismatch, real and
+template links, generated targets, deleted reference targets and exception expiry. Deletion of a
+referenced file must be caught even when the referring Markdown file itself was not edited.
+Structural validity makes no claim about instruction safety, spec completeness or task quality.
+
+## 6. Later opt-in integrations, not more AST rules
+
+| Mechanism | Candidates to consolidate | Actual evidence and limits |
+| --- | --- | --- |
+| Browser verification | Accessibility audit, clean console, focus order, responsive checks, screenshot comparisons | Reuse a project's browser runner with Axe, console/uncaught-error collection and explicit keyboard/focus assertions. Configure routes, states, viewports and scoped expected warnings. Axe does not prove focus behavior or complete accessibility |
+| Public-contract compatibility | Additive interfaces, breaking-change detection, semver signals | Compare declared OpenAPI/schema/export surfaces against a trusted base using existing compatibility tools. Private changes do not imply a public break; format comparison is not behavioral compatibility |
+| Performance budgets | Bundle size, Web Vitals, traces, image/font priority | Measure built artifacts and declared pages with existing tools. Record units, environment and budget. Separate lab results from field percentiles; do not use universal source numbers as project budgets |
+| **Added: regression-test verification** | Reproduction test, RED evidence, test fails without fix | Optional focused experiment: run a specified new test against the old implementation and the fix, or use mutation testing. Report setup/tool failures separately; unrelated failure on the base is not reproduction evidence |
+
+Introduce these only with an adopting project and a real fixture. Reuse its test/build commands;
+never invent a command from the presence of a manifest. Do not install heavyweight browser,
+database or performance dependencies into every repository.
+
+## 7. Valuable requirements outside generic lint-kit enforcement
+
+These remain important, but the earlier detection sketches did not supply adequate evidence.
+
+| Requirement | Where it belongs |
+| --- | --- |
+| Health endpoint responds; deployed environment is complete | Application/deployment smoke tests |
+| Authorization on every request and tenant/object access | Application policy plus positive/negative integration tests |
+| Atomic idempotency claims, payload guards and key retention | Database constraints, concurrency tests and retry-chain design |
+| SSRF protection, safe redirects and upload validation | Maintained dataflow checks for known defects plus application/runtime tests; named nearby validation calls are not proof |
+| Security headers on responses | Runtime HTTP assertions for declared routes/deployment configuration |
+| Migration rollback, safe expand/contract and backfill throttling | Project-specific database/deployment verification; a rollback file alone proves nothing |
+| Correlation IDs, trace propagation, bounded metric cardinality | Instrumentation conventions plus runtime telemetry tests; global application claims need global evidence |
+| Cache consistency, key completeness and acceptable staleness | Domain design and application tests |
+| Human review, required checks, no shared-branch force push | Protected forge settings/review controls, not local Git hooks |
+| Credential access, destructive commands and external navigation approval | Agent/runtime permissions and sandbox controls |
+| Agent question count, doubt cycles, confidence, context trimming or task ordering | Agent harness/evals, outside lint-kit |
+
+Do not build a forge administration platform or an agent-session recorder for this proposal.
+The policy guard may rely on protected forge controls, but must document that external dependency.
+
+## 8. Rejected automation and source corrections
+
+### Drop from the implementation roadmap
+
+| Candidate/group | Reason |
+| --- | --- |
+| `no-abstraction-before-the-third-use`, `no-one-time-utility-file`, single-use-helper measures | Caller count does not measure useful depth. Lint-kit already rejected the related measure; changing one use to three does not fix it |
+| AI-aesthetic defaults; mandatory skeletons instead of spinners | Product/style choices. Keep accessibility and performance requirements separately |
+| `test-pyramid-ratio`, assertion-count/concept proxies, `tests-pass-on-first-run-is-a-signal` | Counts and commit layout do not establish test quality; they encourage gaming |
+| `no-repeated-test-run-without-a-change` | Repetition can investigate flakiness/environmental behavior; transcripts are also outside scope |
+| `mock-only-at-boundaries`, broad assertion-specificity and over-mocking scores | Paths/names/counts cannot establish the right test seam or intended behavior; retain review guidance |
+| Singular cache invalidation; no caching of names such as `balance`/`permission` | TTL plus event invalidation can be valid; names do not establish consistency requirements |
+| Branch-age/review-response limits, no squash merging, one dependency per change | Team workflow policies, not portable defaults |
+| Universal boolean prefixes, enum casing or plural REST nouns | Optional team conventions, not defects; do not prioritize custom rules |
+| Blanket no-test-changes/no-error-handler-removal during refactors; no delete-and-replace commits | Legitimate atomic changes/refactors exist. Behavioral verification is stronger than a deletion prohibition |
+| Missing loading/error/empty-state names, “one connection pool per process” by call count, N+1 by loop shape | Cross-module/runtime ownership is not established by these proxies |
+| General prose judges: good comments, complete ADRs, accurate specs, meaningful review rationale | Structural checks can validate fields/links, not truth or sufficiency |
+
+A detector such as “database call inside a loop” may later earn a narrowly named advisory check
+for a specific ORM. It is not selected now and must not be advertised as proving “N+1.”
+
+### Correct the interpretation before implementation
+
+- **Idempotency:** a UUID generated once per operation is valid. The defect is generating a new
+  key inside each retry attempt, not using random UUIDs in general.
+- **Accessibility:** WCAG 2.2 AA's [target-size minimum](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html)
+  is 24 CSS pixels with exceptions, not a universal 44px minimum. Its
+  [large-text contrast definition](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)
+  distinguishes 18pt regular and 14pt bold; it is not simply “18px+.” Apply current standards and
+  rendered measurements, not literal adoption of incorrect source prose.
+- **bfcache:** do not ban security-required `Cache-Control: no-store`;
+  [Chrome supports some such pages in bfcache](https://developer.chrome.com/docs/web-platform/bfcache-ccns).
+- **Security claims:** a function called `sanitize` or `assertAllowedHost` is not evidence that
+  data is safe. Validation must apply to the actual value, sink and runtime behavior.
+- **Citation quality:** the earlier timing-safe-comparison entry quoted “grep the staged diff.”
+  That does not substantiate the rule. Verify derivation, not only quotation location, before
+  accepting a source-backed check. Recommendations added here are identified as such.
+
+The candidate catalog remains unchanged research. In particular, its “mechanical” labels,
+aggregate counts, constraints-guard availability claim and attribution of rejected helper
+measures must not be copied into implementation documentation as verified facts.
+
+## 9. Rollout and release criteria
+
+The [implementation roadmap](agent-skills-implementation-roadmap.md) turns this scope into
+one-PR issues with explicit stack parents and cross-stack dependencies. Track execution in
+[GitHub issue #39](https://github.com/shayshahal/lint-kit/issues/39): foundation first, then
+three independent first-release stacks. Later issues are gated pilots, not release commitments.
+
+| Phase | Deliverable | Exit criterion |
+| --- | --- | --- |
+| 0: overlap and pilot | Real-config overlap tests; choose one adopting repository and supported formats/runners | Every first-release check has precise scope, counterexamples and an owner; no duplicate diagnostic |
+| 1: first release | Guard MVP, Gitleaks integration, testing set with focus/async/skip checks | Installed-tool tests pass; trusted CI cannot be bypassed by branch changes; execution failures cannot report clean |
+| 2: targeted expansion | Curated Semgrep/dependency scanning, selected narrow security rules, skill/document pilot | Real-project findings reviewed; only sufficiently reliable shapes promoted to blocking |
+| 3: project-driven options | Logging/design conventions, browser/contract/performance integrations; optional regression experiment | An adopting project supplies configuration and reproducible fixtures; no broad automatic installation |
+
+Do not implement every phase as one change. Phase 1 is the initial commitment; later phases
+require a successful pilot and separate scope decisions. Guard CI trust wiring is required before
+claiming enforcement; an initial local-only version must be described as feedback.
+
+For every shipped set/integration:
+
+- Unit fixtures cover positive findings, legitimate counterexamples and tool/configuration errors.
+- End-to-end tests run the actual installed command, including fresh/repeat/upgrade installs,
+  project-relative paths, monorepos and supported Windows/POSIX environments.
+- Baseline and deletion-only behavior are tested where applicable; diagnostics retain stable
+  rule IDs and useful locations without leaking secrets.
+- Upstream versions/configuration compatibility are recorded. Unsupported shapes are left alone
+  with a concrete manual action, following the existing support policy.
+- Colocated docs, installer docs, support docs and enforcement policy describe only what shipped.
+  New rule docs use the existing rule-section/test conventions.
+- A pilot records reviewed findings, false positives and runtime cost. A blocker must demonstrate
+  that its documented legitimate counterexamples pass; importance alone is not confidence.
+
+**Success:** a branch cannot silently weaken enrolled verification, new focused/incorrectly
+handled async tests and newly introduced secrets are caught, and checks never mistake missing
+evidence for a clean verdict. Everything else stays opt-in, advisory or outside lint-kit until
+its detector earns stronger claims.
